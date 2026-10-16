@@ -10,7 +10,7 @@
  *   await streamChat(req, (evt) => { ... }, ac.signal)
  */
 import { getApiBase } from './config'
-import { getOwnerId } from './owner'
+import { getToken } from './token'
 import type { ChatRequest, SSEEvent } from '@/types'
 
 export interface StreamHandlers {
@@ -26,18 +26,22 @@ export async function streamChat(
 ): Promise<void> {
   try {
     // 每次发送时取当前地址，用户在设置页改完立即生效
+    const token = getToken()
     const resp = await fetch(`${getApiBase()}/chat/stream`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        // SSE 走原生 fetch（不经 axios 拦截器），归属头要自己带
-        'X-Owner-Id': getOwnerId(),
+        // SSE 走原生 fetch（不经 axios 拦截器），令牌要自己带
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
       body: JSON.stringify(req),
       signal,
     })
 
     if (!resp.ok) {
+      if (resp.status === 401) {
+        throw new Error('登录已过期，请刷新页面重新登录')
+      }
       throw new Error(`HTTP ${resp.status}: ${await resp.text().catch(() => '')}`)
     }
     if (!resp.body) throw new Error('响应无数据流')

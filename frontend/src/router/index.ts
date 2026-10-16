@@ -1,9 +1,23 @@
 import { createRouter, createWebHistory } from 'vue-router'
 
+import { useAuthStore } from '@/stores/auth'
+
 const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: '/', redirect: '/chat' },
+    {
+      path: '/login',
+      name: 'login',
+      component: () => import('@/views/LoginView.vue'),
+      meta: { title: '登录', public: true },
+    },
+    {
+      path: '/register',
+      name: 'register',
+      component: () => import('@/views/RegisterView.vue'),
+      meta: { title: '注册', public: true },
+    },
     {
       path: '/chat',
       name: 'chat',
@@ -35,6 +49,24 @@ const router = createRouter({
       meta: { title: '系统状态', desc: '服务健康、工具清单、配置检查', icon: '⚙' },
     },
   ],
+})
+
+/**
+ * 全局守卫：未登录进工作台 → 登录页（带 redirect 回来）；
+ * 已登录访问登录/注册页 → 回工作台。
+ * bootstrapped 为 false 只可能是挂载前的极短窗口（main.ts 保证
+ * bootstrap 先于 mount 完成），放行即可。
+ */
+router.beforeEach((to) => {
+  const auth = useAuthStore()
+  if (!auth.bootstrapped) return true
+  if (to.meta?.public) {
+    return auth.isAuthenticated ? { name: 'chat' } : true
+  }
+  if (!auth.isAuthenticated) {
+    return { path: '/login', query: { redirect: to.fullPath } }
+  }
+  return true
 })
 
 router.afterEach((to) => {

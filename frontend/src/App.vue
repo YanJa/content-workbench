@@ -32,12 +32,14 @@ import { checkHealth } from '@/api/http'
 import { useQueueStore } from '@/stores/queue'
 import { useThemeStore } from '@/stores/theme'
 import { useOnboardingStore } from '@/stores/onboarding'
+import { useAuthStore } from '@/stores/auth'
 
 const route = useRoute()
 const router = useRouter()
 const queue = useQueueStore()
 const theme = useThemeStore()
 const onboarding = useOnboardingStore()
+const auth = useAuthStore()
 
 const llmReady = ref(false)
 const collapsed = ref(false)
@@ -142,11 +144,19 @@ function onMenuSelect(key: string) {
   void router.push({ name: key })
 }
 
+/** 退出登录：清令牌回登录页（守卫会把后续工作台访问都挡在登录页外）。 */
+function onLogout() {
+  auth.logout()
+  void router.replace('/login')
+}
+
 onMounted(async () => {
   isMobile.value = window.innerWidth < 768
   window.addEventListener('resize', () => {
     isMobile.value = window.innerWidth < 768
   })
+  // 未登录时探活/轮询只会拿 401，等登录后由 LoginView 跳转进来再跑
+  if (!auth.isAuthenticated) return
   try {
     const h = await checkHealth()
     llmReady.value = h.llm_configured
@@ -172,7 +182,11 @@ onMounted(async () => {
   >
     <NMessageProvider>
       <NDialogProvider>
-        <NLayout has-sider class="app-layout">
+        <!-- 未登录：登录/注册页全屏渲染在工作台外壳之外 -->
+        <div v-if="!auth.isAuthenticated" class="auth-shell">
+          <RouterView />
+        </div>
+        <NLayout v-else has-sider class="app-layout">
           <NLayoutSider
             v-if="!isMobile"
             bordered
@@ -231,6 +245,10 @@ onMounted(async () => {
                     {{ llmReady ? 'AI 已就绪' : 'AI 未配置' }}
                   </span>
                 </NBadge>
+                <span class="user-name" :title="`账号：${auth.user?.username ?? ''}`">
+                  {{ auth.user?.username }}
+                </span>
+                <NButton size="small" quaternary @click="onLogout">退出</NButton>
                 <NButton
                   size="small"
                   quaternary
@@ -281,6 +299,7 @@ onMounted(async () => {
 
         <!-- 新手引导：首次自动弹一次，之后从侧栏/头部手动重看 -->
         <GuideTour
+          v-if="auth.isAuthenticated"
           v-model:show="guideShow"
           @finish="onGuideFinish"
           @skip="onGuideSkip"
@@ -397,6 +416,22 @@ onMounted(async () => {
   font-size: 12px;
   color: var(--app-text-2);
   padding: 2px 6px;
+}
+
+/* 头部当前账号名 + 退出（用户模块） */
+.user-name {
+  font-size: 12px;
+  color: var(--app-text-2);
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 未登录时的全屏容器（登录/注册页） */
+.auth-shell {
+  min-height: 100vh;
+  background: var(--app-bg);
 }
 
 .app-content {

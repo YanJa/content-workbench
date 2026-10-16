@@ -5,6 +5,7 @@
  * 这几件事摊开给运营同学看，出问题能自己定位。
  */
 import { computed, h, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import {
   NAlert,
   NBadge,
@@ -29,7 +30,7 @@ import {
 import { checkHealth } from '@/api/http'
 import { listTools } from '@/api/tools'
 import { getApiBase, isCustomApiBase, setApiBase } from '@/api/config'
-import { getOwnerId, isCustomOwner, setOwnerId } from '@/api/owner'
+import { useAuthStore } from '@/stores/auth'
 import {
   checkWeChatAccount,
   createWeChatAccount,
@@ -59,6 +60,9 @@ const err = ref('')
 
 const model = computed(() => import.meta.env.VITE_MODEL_LABEL || 'deepseek-flash')
 
+const router = useRouter()
+const auth = useAuthStore()
+
 // 走 vite dev server 时 /api 已由 proxy 转发到后端，手动指定地址是噪音；
 // 只有生产构建（dist 静态部署、没有 dev proxy）时才需要暴露这个配置。
 const showApiBase = import.meta.env.PROD
@@ -70,14 +74,16 @@ const apiBaseMsg = ref('')
 
 const usingCustom = computed(() => isCustomApiBase())
 
-// ---- 数据归属（用户模块落地前的隔离口径，见 backend/app/core/tenant.py）----
-const ownerId = ref(getOwnerId())
-const usingCustomOwner = computed(() => isCustomOwner())
+// ---- 账号（用户模块：数据归属 = 登录身份，见 backend/app/core/tenant.py）----
+const createdAtText = computed(() => {
+  const ts = auth.user?.created_at
+  if (!ts) return '-'
+  return new Date(ts * 1000).toLocaleString('zh-CN', { hour12: false })
+})
 
-function resetOwner() {
-  setOwnerId('')
-  ownerId.value = getOwnerId()
-  void refresh()
+function onLogout() {
+  auth.logout()
+  void router.replace('/login')
 }
 
 function applyApiBase() {
@@ -480,25 +486,15 @@ const envColumns: DataTableColumns<EnvRow> = [
         </div>
       </NCard>
 
-      <!-- 数据归属：所有内容/队列/公众号账号/用量都按它隔离。
-           用户模块上线后这里会被登录身份取代。 -->
-      <NCard size="small" title="数据归属" style="margin-bottom: 16px">
+      <!-- 账号：所有内容/队列/公众号账号/用量都按登录身份隔离 -->
+      <NCard size="small" title="账号" style="margin-bottom: 16px">
         <div class="api-base-hint">
-          当前归属：<code>{{ ownerId }}</code>
-          <NTag v-if="usingCustomOwner" size="small" type="warning" :bordered="false">自定义</NTag>
-          <NTag v-else size="small" :bordered="false">默认</NTag>
+          当前账号：<code>{{ auth.user?.username }}</code>
         </div>
         <div class="api-base-hint" style="margin-top: 6px; opacity: 0.75">
-          内容、发布队列、公众号账号、AI 用量、复刻音色都按归属隔离，互相不可见。
-          用户体系上线后，归属将改为登录身份，无需手动设置。
-          <NButton
-            v-if="usingCustomOwner"
-            size="tiny"
-            style="margin-left: 8px"
-            @click="resetOwner"
-          >
-            恢复默认
-          </NButton>
+          注册时间：{{ createdAtText }}。内容、发布队列、公众号账号、AI
+          用量、复刻音色都按登录身份隔离，互相不可见。
+          <NButton size="tiny" style="margin-left: 8px" @click="onLogout">退出登录</NButton>
         </div>
       </NCard>
 
