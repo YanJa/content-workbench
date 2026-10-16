@@ -1,30 +1,40 @@
-"""租户（数据归属）解析 —— 用户模块落地前的「接缝」。
+"""租户（数据归属）解析 —— 用户模块的唯一身份接缝。
 
 背景
 ----
-所有表早有 `owner` 列，但用户模块还没做。这之前系统是「单租户」运行：
-所有请求都归属 `default` 这个虚拟租户。等真有了用户体系（登录/Token），
-**只需要改本文件**：把 `current_owner` 的取值从「读请求头」换成「从会话
-解析用户 ID」，路由 / 服务 / 模型一行都不用动。
+所有业务表早有 `owner` 列。用户模块上线前系统是「单租户」：owner 由
+客户端通过 `X-Owner-Id` 头 / `?owner=` 查询参数**自称**，零验证
+（git 历史里的旧版注释自述「这是隔离接缝，不是安全边界」）。现在替换为
+服务端解析身份：
+
+1. 普通请求：`Authorization: Bearer <JWT>` → 解析出 User → `owner = user.id`。
+2. 浏览器直链（`<img>` / `<audio>` / `<video>` 的 src）没法带请求头：
+   URL 带 `?o=<uid>&sig=<hmac>`，HMAC 校验通过即放行（签名生成见
+   `core/security.py` 的 `link_url`）；也允许带 Bearer 头访问
+   （同源前端 fetch 场景）。
+3. 都没有 → 普通端点 401；直链端点 404（不泄露资源是否存在）。
 
 约定
 ----
-1. 前端普通请求带 `X-Owner-Id` 请求头。
-2. `<img>` / `<audio>` / `<video>` 这类浏览器直链没法带头，允许
-   `?owner=` 查询参数（见各静态服务端点）。
-3. 都不传 = `default`：兼容老前端、curl、以及存量数据。
-4. 格式限 `[A-Za-z0-9._-]{1,64}`：owner 会进文件路径（音色目录按 owner
-   隔离），必须防路径穿越。
-
-注意：这是**隔离接缝**，不是安全边界。真正的权限校验要等用户模块
-（登录态 + 服务端会话），届时 `current_owner` 只认服务端解析出的身份，
-不再信任客户端传的 header。
+- `current_user` 返回 **User 对象**而不是 id：个别端点需要 username 等
+  字段时不用再查库。
+- `link_auth` 返回 owner 字符串：直链端点只关心归属，路径匹配靠签名
+  本身完成（签名绑 `request.url.path`，见 `link_ok`）。
+- `normalize_owner` 保留：owner 会进文件路径（音色目录按 owner 隔离、
+  slide folder 等），字符白名单校验仍需要；用户模块后 owner 一律来自
+  服务端，这个函数主要给路径段校验用。
 """
 from __future__ import annotations
 
 import re
 
-from fastapi import Depends, Header, HTTPException, Query
+from fastapi import Depends, Header, HTTPException, Query, Request
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.security import decode_token, link_ok
+from app.db.session import get_db
+from app.models.user import User
 
 DEFAULT_OWNER = "default"
 
@@ -42,24 +52,62 @@ def normalize_owner(raw: str | None) -> str:
     return v
 
 
-def current_owner(
-    x_owner_id: str | None = Header(
-        default=None, alias="X-Owner-Id", description="数据归属（用户模块上线前的隔离口径）"
-    ),
-    owner: str | None = Query(
-        default=None, description="直链场景（img/audio 的 src）没法带请求头，用查询参数"
-    ),
-) -> str:
-    """FastAPI 依赖：解析本次请求的数据归属。
+def _bearer_user_id(authorization: str | None) -> str | None:
+    """从 Authorization 头里解出 user_id；形似 Bearer 才尝试，否则 None。"""
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return None
+    return decode_token(authorization[7:].strip())
 
-    头优先于查询参数。用户模块落地时，这个函数是唯一需要改的地方
-    （换成从登录态/Token 取用户 ID，并不再信任客户端传入值）。
+
+async def current_user(
+    authorization: str | None = Header(default=None, description="Bearer <JWT>，登录后由前端自动携带"),
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    """FastAPI 依赖：从登录态解析当前用户。
+
+    用户模块落地后这是唯一身份接缝：所有 `Depends(current_user)` 的端点
+    拿到的 owner 都是服务端解析出的 user.id，不再信任客户端传入值。
+    Token 缺失 / 无效 / 过期 / 用户被删 → 401。
     """
-    try:
-        return normalize_owner(x_owner_id or owner)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
+    user_id = _bearer_user_id(authorization)
+    if not user_id:
+        raise HTTPException(401, "未登录或登录已过期，请重新登录")
+    user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if user is None:
+        raise HTTPException(401, "账号不存在或已被删除")
+    return user
 
 
-# 便于 `Depends(current_owner)` 复用，也方便测试直接 import
-OwnerDep = Depends(current_owner)
+async def current_owner_id(user: User = Depends(current_user)) -> str:
+    """FastAPI 依赖：当前用户的数据归属 id。
+
+    `current_user` 返回 User 对象（个别端点要 username 等字段）；这个薄封装
+    返回 `user.id`，让用户模块上线前写成 `owner: str = Depends(current_owner)`
+    的端点签名一行不用动 —— 函数体里 owner 照旧当字符串用。
+    """
+    return user.id
+
+
+async def link_auth(
+    request: Request,
+    o: str | None = Query(default=None, description="直链归属（用户 id）"),
+    sig: str | None = Query(default=None, description="直链 HMAC 签名"),
+    authorization: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+) -> str:
+    """FastAPI 依赖：浏览器直链（img/audio/video 的 src）鉴权。
+
+    优先级：HMAC 签名 > Bearer 头。签名绑 `request.url.path`（不含
+    query），所以每个 URL 只能访问它签名时对应的那个路径。两者都没有
+    → 404：对匿名访问者而言「资源不存在」，不泄露存在性。
+    """
+    if o and sig:
+        if link_ok(o, request.url.path, sig):
+            return o
+        raise HTTPException(404, "资源不存在")
+    user_id = _bearer_user_id(authorization)
+    if user_id:
+        user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+        if user is not None:
+            return user.id
+    raise HTTPException(404, "资源不存在")

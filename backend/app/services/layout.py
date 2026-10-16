@@ -29,6 +29,7 @@ from app.assets.gzh.themes import (
 )
 from app.core.config import settings
 from app.core.logging import logger
+from app.core.security import link_url
 from app.db.session import SessionLocal
 from app.models.content import Content, QueueItem
 from app.prompts.layout_prompt import LAYOUT_FIX_HINT, build_layout_messages
@@ -264,12 +265,12 @@ def _apply_account_placeholders(html: str, account) -> str:
 
 
 def _qrcode_public_url(owner: str, qrcode_path: str) -> str:
-    """二维码相对路径 → 可直连 URL（带 ?owner= 做租户隔离）。"""
+    """二维码相对路径 → 可直连 URL（HMAC 签名做租户隔离）。"""
     parts = (qrcode_path or "").split("/")
     if len(parts) != 3:
         return ""
     _, aid, fname = parts
-    return f"{settings.API_PREFIX}/settings/wechat/qrcodes/{aid}/{fname}?owner={owner}"
+    return link_url(f"{settings.API_PREFIX}/settings/wechat/qrcodes/{aid}/{fname}", owner)
 
 
 def _inject_qrcode(html: str, account) -> str:
@@ -605,10 +606,7 @@ async def _ensure_cover(db: AsyncSession, content: Content) -> None:
         return
 
     owner = content.owner or "default"
-    url = (
-        f"{settings.API_PREFIX}/content/images/{content.id}/{path.name}"
-        f"?owner={owner}"
-    )
+    url = link_url(f"{settings.API_PREFIX}/content/images/{content.id}/{path.name}", owner)
     imgs.insert(
         0,
         {

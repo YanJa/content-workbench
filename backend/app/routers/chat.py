@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.logging import logger
-from app.core.tenant import current_owner
+from app.core.tenant import current_owner_id
 from app.db.session import get_db
 from app.prompts.platforms import build_system_prompt
 from app.schemas.models import (
@@ -39,7 +39,7 @@ def _sse(event: dict) -> str:
 async def chat_stream(
     req: ChatRequest,
     db: AsyncSession = Depends(get_db),
-    owner: str = Depends(current_owner),
+    owner: str = Depends(current_owner_id),
 ):
     """流式对话（SSE）。
 
@@ -204,7 +204,7 @@ async def chat_stream(
 async def confirm_tool(
     req: ToolConfirmRequest,
     db: AsyncSession = Depends(get_db),
-    owner: str = Depends(current_owner),
+    owner: str = Depends(current_owner_id),
 ):
     """用户确认后执行危险工具。
 
@@ -248,7 +248,7 @@ async def confirm_tool(
 # ---------------------------------------------------------------- 会话管理
 @router.get("/conversations", response_model=list[ConversationOut])
 async def list_conversations(
-    db: AsyncSession = Depends(get_db), owner: str = Depends(current_owner)
+    db: AsyncSession = Depends(get_db), owner: str = Depends(current_owner_id)
 ):
     return await conv_svc.list_conversations(db, owner)
 
@@ -257,7 +257,7 @@ async def list_conversations(
 async def create_conversation(
     req: ConversationCreate,
     db: AsyncSession = Depends(get_db),
-    owner: str = Depends(current_owner),
+    owner: str = Depends(current_owner_id),
 ):
     conv = await conv_svc.create_conversation(db, owner, req.title, req.scene)
     await db.commit()
@@ -266,7 +266,7 @@ async def create_conversation(
 
 @router.get("/conversations/{conv_id}", response_model=ConversationDetail)
 async def get_conversation(
-    conv_id: str, db: AsyncSession = Depends(get_db), owner: str = Depends(current_owner)
+    conv_id: str, db: AsyncSession = Depends(get_db), owner: str = Depends(current_owner_id)
 ):
     conv = await conv_svc.get_conversation(db, conv_id, owner)
     if not conv:
@@ -283,7 +283,7 @@ async def rename_conversation(
     conv_id: str,
     req: ConversationRename,
     db: AsyncSession = Depends(get_db),
-    owner: str = Depends(current_owner),
+    owner: str = Depends(current_owner_id),
 ):
     """重命名会话标题。"""
     conv = await conv_svc.rename_conversation(db, conv_id, owner, req.title)
@@ -295,7 +295,7 @@ async def rename_conversation(
 
 @router.delete("/conversations/{conv_id}", tags=["会话"])
 async def delete_conversation(
-    conv_id: str, db: AsyncSession = Depends(get_db), owner: str = Depends(current_owner)
+    conv_id: str, db: AsyncSession = Depends(get_db), owner: str = Depends(current_owner_id)
 ):
     ok = await conv_svc.delete_conversation(db, conv_id, owner)
     if not ok:

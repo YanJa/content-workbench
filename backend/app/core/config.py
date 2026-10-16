@@ -62,6 +62,18 @@ class Settings(BaseSettings):
     # 高峰 = 工作日 UTC 01:00-04:00 与 06:00-10:00（北京时间 09-12 点、14-18 点）
     ENABLE_PEAK_GUARD: bool = False
 
+    # ---------- 认证（用户模块） ----------
+    # JWT 签发与直链 HMAC 签名共用密钥。留空 = 首次启动自动生成并持久化到
+    # data/secret.key（见 core/security.py）；生产环境建议显式配置。
+    JWT_SECRET: str = ""
+    # Token 有效期（小时）。直链 HMAC 签名不过期，不受此项影响。
+    JWT_TTL_HOURS: int = 168
+    # 注册通道：invite=需邀请码 / open=开放 / closed=关闭。
+    # 无论哪种模式，第一个注册的用户永远放行（认领存量数据刚需）。
+    AUTH_REGISTER_MODE: Literal["invite", "open", "closed"] = "invite"
+    # 邀请码（AUTH_REGISTER_MODE=invite 时生效）；留空 = 仅允许首用户注册。
+    INVITE_CODE: str = ""
+
     # ---------- 会话 ----------
     # 保留最近 N 轮原文，更早的压缩为摘要
     CONTEXT_WINDOW_TURNS: int = 10

@@ -30,6 +30,7 @@ from sqlalchemy import func, select
 
 from app.core.config import settings
 from app.core.logging import logger
+from app.core.security import link_url
 from app.db.session import SessionLocal
 from app.models.renderjob import RenderJob
 from app.services import video_pipeline
@@ -111,10 +112,12 @@ def _out(job: RenderJob) -> dict[str, Any]:
         "finished_at": job.finished_at,
         # 成片可访问 URL：前端直接拿来 <video> 预览/下载。
         # 路由挂在 /video/outputs/ 下，不是 /outputs/ —— 早期版本拼错过。
-        # owner 走查询参数：<video>/<a> 是浏览器直链，带不了请求头。
+        # 浏览器直链带不了请求头，用 HMAC 签名（见 core/security.link_url）。
         "output_url": (
-            f"{settings.API_PREFIX}/video/outputs/{job.output_path}"
-            f"?owner={job.owner or 'default'}"
+            link_url(
+                f"{settings.API_PREFIX}/video/outputs/{job.output_path}",
+                job.owner or "default",
+            )
             if job.output_path
             else ""
         ),

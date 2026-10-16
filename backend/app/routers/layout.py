@@ -13,7 +13,8 @@ from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.tenant import current_owner
+from app.core.security import link_url
+from app.core.tenant import current_owner_id, link_auth
 from app.core.logging import logger
 from app.db.session import get_db
 from app.models.content import Content
@@ -48,8 +49,8 @@ def _image_dir(content_id: str) -> Path:
 
 
 def _image_url(content_id: str, filename: str, owner: str = "default") -> str:
-    # 浏览器 <img src> 不会带 X-Owner-Id 头，owner 走查询参数
-    return f"{settings.API_PREFIX}/content/images/{content_id}/{filename}?owner={owner}"
+    # 浏览器 <img src> 带不了请求头，用 HMAC 签名直链（见 core/security.link_url）
+    return link_url(f"{settings.API_PREFIX}/content/images/{content_id}/{filename}", owner)
 
 
 # ---------------------------------------------------------------- 排版
@@ -73,7 +74,7 @@ async def do_layout(
     content_id: str,
     req: LayoutRequest,
     db: AsyncSession = Depends(get_db),
-    owner: str = Depends(current_owner),
+    owner: str = Depends(current_owner_id),
 ):
     """提交排版任务（**秒回**）。
 
@@ -97,11 +98,18 @@ async def do_layout(
 
 
 @router.get("/items/{content_id}/layout/{task_id}")
-async def layout_job_status(content_id: str, task_id: str):
+async def layout_job_status(
+    content_id: str,
+    task_id: str,
+    db: AsyncSession = Depends(get_db),
+    owner: str = Depends(current_owner_id),
+):
     """轮询排版任务进度 / 结果。
 
     404 表示任务已中断（进程重启后内存任务表清空），前端据此提示「重新排版」。
     """
+    # 归属校验先做：内容不属于该用户时当作「任务不存在」，不泄露存在性
+    await _get_content(db, content_id, owner)
     job = get_layout_job(task_id)
     if job is None or job["content_id"] != content_id:
         raise HTTPException(404, "排版任务不存在或已中断，请重新排版")
@@ -112,7 +120,7 @@ async def layout_job_status(content_id: str, task_id: str):
 async def cancel_processing(
     content_id: str,
     db: AsyncSession = Depends(get_db),
-    owner: str = Depends(current_owner),
+    owner: str = Depends(current_owner_id),
 ):
     """取消某内容的「加工中」状态（解卡）。
 
@@ -139,7 +147,7 @@ async def generate_images(
     content_id: str,
     req: ImageGenRequest,
     db: AsyncSession = Depends(get_db),
-    owner: str = Depends(current_owner),
+    owner: str = Depends(current_owner_id),
 ):
     """调本地生图脚本生成配图，追加到内容里。"""
     c = await _get_content(db, content_id, owner)
@@ -188,7 +196,7 @@ async def upload_image(
     content_id: str,
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
-    owner: str = Depends(current_owner),
+    owner: str = Depends(current_owner_id),
 ):
     """手动上传配图（无生图脚本时的兜底路径）。"""
     c = await _get_content(db, content_id, owner)
@@ -224,7 +232,7 @@ async def update_image(
     image_id: str,
     req: ImageUpdateRequest,
     db: AsyncSession = Depends(get_db),
-    owner: str = Depends(current_owner),
+    owner: str = Depends(current_owner_id),
 ):
     """改配图说明 / 排序位置。"""
     c = await _get_content(db, content_id, owner)
@@ -249,7 +257,7 @@ async def delete_image(
     content_id: str,
     image_id: str,
     db: AsyncSession = Depends(get_db),
-    owner: str = Depends(current_owner),
+    owner: str = Depends(current_owner_id),
 ):
     """删除配图（连带删文件）。"""
     c = await _get_content(db, content_id, owner)
@@ -281,7 +289,7 @@ async def generate_cover(
     content_id: str,
     req: CoverGenRequest,
     db: AsyncSession = Depends(get_db),
-    owner: str = Depends(current_owner),
+    owner: str = Depends(current_owner_id),
 ):
     """生成封面并**插到配图首位**（index 1），使 `<!--IMG:1-->` 指向封面。
 
@@ -363,12 +371,13 @@ async def serve_image(
     content_id: str,
     filename: str,
     db: AsyncSession = Depends(get_db),
-    owner: str = Depends(current_owner),
+    owner: str = Depends(link_auth),
 ):
     """提供配图文件（预览 / 公众号排版预览用）。
 
-    <img src> 是浏览器直链、带不了请求头，owner 走查询参数
-    （current_owner 头优先、参数兜底）。
+    <img src> 是浏览器直链、带不了请求头，用 HMAC 签名 URL
+    （?o=<uid>&sig=...，生成见 core/security.link_url）；同源前端
+    fetch 也可以带 Bearer 头。
     """
     # 防路径穿越：只允许这两个段是纯文件名
     if "/" in content_id or "/" in filename or ".." in filename:

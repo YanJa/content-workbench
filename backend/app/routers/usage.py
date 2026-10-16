@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import logger
 from app.core.pricing import pricing_state, pricing_table, reload_pricing
-from app.core.tenant import current_owner
+from app.core.tenant import current_owner_id
 from app.db.session import get_db
 from app.services import usage as usage_svc
 
@@ -20,7 +20,7 @@ async def summary(
     start: int | None = Query(None, description="起始时间戳（秒）"),
     end: int | None = Query(None, description="结束时间戳（秒）"),
     db: AsyncSession = Depends(get_db),
-    owner: str = Depends(current_owner),
+    owner: str = Depends(current_owner_id),
 ):
     """总量 + 按天/按模型/按场景三条序列。
 
@@ -40,7 +40,7 @@ async def records(
     model: str | None = Query(None),
     scene: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
-    owner: str = Depends(current_owner),
+    owner: str = Depends(current_owner_id),
 ):
     """明细分页。"""
     items, total = await usage_svc.records(
@@ -63,7 +63,7 @@ async def top_conversations(
     days: int | None = Query(30, ge=1, le=36_500, description="最近 N 天；不传则不限"),
     limit: int = Query(10, ge=1, le=50),
     db: AsyncSession = Depends(get_db),
-    owner: str = Depends(current_owner),
+    owner: str = Depends(current_owner_id),
 ):
     """消耗最高的会话，方便直接从用量页定位到是哪次对话烧的钱。"""
     return await usage_svc.top_conversations(db, owner=owner, days=days, limit=limit)

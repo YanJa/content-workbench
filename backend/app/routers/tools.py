@@ -5,9 +5,13 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.tenant import current_owner
+from app.core.tenant import current_owner_id, link_auth
+from app.db.session import get_db
+from app.models.slide import PptSlideClaim
 from app.schemas.models import (
     JobOut,
     JobPage,
@@ -52,7 +56,7 @@ def _job_out(job: dict) -> JobOut:
 
 
 @video_router.post("/render")
-async def render(req: VideoRenderRequest, owner: str = Depends(current_owner)):
+async def render(req: VideoRenderRequest, owner: str = Depends(current_owner_id)):
     """提交视频渲染任务（异步）。"""
     if not req.script.strip():
         raise HTTPException(400, "口播稿不能为空")
@@ -86,7 +90,7 @@ async def job_list(
     page_size: int = Query(10, ge=1, le=100, alias="pageSize"),
     status: str | None = Query(None, description="按状态过滤：queued/running/done/failed"),
     keyword: str | None = Query(None, description="按标题模糊搜索"),
-    owner: str = Depends(current_owner),
+    owner: str = Depends(current_owner_id),
 ):
     """任务列表（分页 + 状态过滤 + 标题搜索，按创建时间倒序）。"""
     items, total = await list_jobs(
@@ -102,7 +106,7 @@ async def job_list(
 
 
 @video_router.get("/jobs/{job_id}/progress", response_model=JobProgress)
-async def job_progress(job_id: str, owner: str = Depends(current_owner)):
+async def job_progress(job_id: str, owner: str = Depends(current_owner_id)):
     """轮询专用的轻量进度接口（约 200 字节，完整接口约 22KB）。
 
     轮询只要「跑到哪了」，不需要 script / visual_scenes 那两个大字段 ——
@@ -116,7 +120,7 @@ async def job_progress(job_id: str, owner: str = Depends(current_owner)):
 
 
 @video_router.get("/jobs/{job_id}", response_model=JobOut)
-async def job_status(job_id: str, owner: str = Depends(current_owner)):
+async def job_status(job_id: str, owner: str = Depends(current_owner_id)):
     """查询渲染进度。"""
     job = await get_job(job_id, owner)
     if not job:
@@ -125,7 +129,7 @@ async def job_status(job_id: str, owner: str = Depends(current_owner)):
 
 
 @video_router.patch("/jobs/{job_id}", response_model=JobOut)
-async def job_update(job_id: str, patch: JobPatch, owner: str = Depends(current_owner)):
+async def job_update(job_id: str, patch: JobPatch, owner: str = Depends(current_owner_id)):
     """改名 / 改口播稿 / 改每页结构 / 换音色（渲染中的任务返回 409）。"""
     try:
         job = await update_job(
@@ -146,7 +150,7 @@ async def job_update(job_id: str, patch: JobPatch, owner: str = Depends(current_
 
 
 @video_router.post("/jobs/{job_id}/retry", response_model=JobOut)
-async def job_retry(job_id: str, owner: str = Depends(current_owner)):
+async def job_retry(job_id: str, owner: str = Depends(current_owner_id)):
     """失败的任务沿原参数重跑。"""
     job = await retry_job(job_id, owner)
     if not job:
@@ -155,7 +159,7 @@ async def job_retry(job_id: str, owner: str = Depends(current_owner)):
 
 
 @video_router.delete("/jobs/{job_id}")
-async def job_delete(job_id: str, owner: str = Depends(current_owner)):
+async def job_delete(job_id: str, owner: str = Depends(current_owner_id)):
     """删除任务，连带清掉成片文件。"""
     if not await delete_job(job_id, owner):
         raise HTTPException(404, "任务不存在")
@@ -203,12 +207,15 @@ async def voices():
 
 @video_router.get("/preview-card", tags=["视频"])
 async def preview_card(
-    title: str = "", body: str = "", idx: int = 0, total: int = 1, slide_image: str = ""
+    title: str = "", body: str = "", idx: int = 0, total: int = 1, slide_image: str = "",
+    db: AsyncSession = Depends(get_db),
+    owner: str = Depends(link_auth),
 ):
     """单页「画面卡片」实时预览：PPT 编辑区每页旁边的缩略图就是它。
 
     和渲染管线用同一个 build_card，所见即所得；参数走 query 是为了能直接
-    当 <img> 的 src。传了 slide_image（真实幻灯片图）就按真图合成。
+    当 <img> 的 src。传了 slide_image（真实幻灯片图）就按真图合成 ——
+    读取前先过 slides 目录归属认领（见 _claim_slide_folder）。
     """
     import tempfile
 
@@ -217,6 +224,7 @@ async def preview_card(
     if slide_image:
         path = _resolve_slide_image(slide_image)
         if path is not None:
+            await _claim_slide_folder(db, slide_image, owner)
             out = Path(tempfile.mkdtemp(prefix="cwb_card_")) / "card.png"
             _slide_photo_card(path, (720, 1280), out)
             return FileResponse(out, media_type="image/png")
@@ -244,21 +252,58 @@ def _resolve_slide_image(rel: str) -> Path | None:
     return path if path.is_file() else None
 
 
+async def _claim_slide_folder(db: AsyncSession, slide_image: str, owner: str) -> None:
+    """slides/<folder>/ 目录的归属懒认领。
+
+    folder = md5(pptx 内容)[:16]，两个人上传同一份 PPT 会撞目录：
+    谁先把渲染产物写进去，另一个人（或任何拿到路径的人）不鉴权就能读。
+    首次访问登记归属；之后只有归属者（或持签名直链者）能读，
+    归属不符 404 —— 不泄露「这个目录存在」。
+    """
+    import re
+
+    m = re.fullmatch(r"slides/([A-Za-z0-9_-]+)/(page_\d+\.png)", slide_image or "")
+    if not m or len(m.group(1)) > 16:  # 列宽防御：slide_key 是 String(16)
+        raise HTTPException(404, "图片不存在")
+    folder = m.group(1)
+    claim = (
+        await db.execute(select(PptSlideClaim).where(PptSlideClaim.slide_key == folder))
+    ).scalar_one_or_none()
+    if claim is None:
+        db.add(PptSlideClaim(slide_key=folder, owner=owner))
+        await db.commit()
+    elif claim.owner != owner:
+        raise HTTPException(404, "图片不存在")
+
+
 @video_router.get("/slide-images/{folder}/{filename}", tags=["视频"])
-async def serve_slide_image(folder: str, filename: str):
-    """PPT 每页的真实幻灯片图（LibreOffice 渲染产物）。"""
+async def serve_slide_image(
+    folder: str,
+    filename: str,
+    db: AsyncSession = Depends(get_db),
+    owner: str = Depends(link_auth),
+):
+    """PPT 每页的真实幻灯片图（LibreOffice 渲染产物）。
+
+    slides 目录按内容哈希命名、跨用户会撞车，读取前过归属认领
+    （见 _claim_slide_folder）。
+    """
     path = _resolve_slide_image(f"slides/{folder}/{filename}")
     if path is None:
         raise HTTPException(404, "图片不存在")
+    await _claim_slide_folder(db, f"slides/{folder}/{filename}", owner)
     return FileResponse(path, media_type="image/png")
 
 
 @video_router.get("/outputs/{filename}", tags=["视频"])
-async def serve_output(filename: str, owner: str = Depends(current_owner)):
+async def serve_output(filename: str, owner: str = Depends(link_auth)):
     """成片文件预览/下载。
 
     文件名只允许字母数字下划线中横线，防止 ../ 路径穿越 ——
     这里用的是前端传回来的名字，不能信。
+
+    浏览器直链（<video>/<a> 的 src）用 HMAC 签名 URL（?o=&sig=，
+    见 core/security.link_url）；同源前端 fetch 也可以带 Bearer 头。
 
     文件名就是 `<job_id>.mp4`（见 render._run），顺手按 job 归属校验，
     避免拿到别人的成片直链就能看。

@@ -13,7 +13,8 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
 from app.core.config import settings
-from app.core.tenant import current_owner
+from app.core.security import link_url
+from app.core.tenant import current_owner_id, link_auth
 from app.services import voices as V
 
 router = APIRouter(prefix="/video/voices", tags=["声音复刻"])
@@ -28,7 +29,7 @@ async def provider():
 
 
 @router.get("/clones")
-async def list_voices(owner: str = Depends(current_owner)):
+async def list_voices(owner: str = Depends(current_owner_id)):
     """已复刻音色列表（含试听地址），可直接拼进音色选择器。
 
     路径刻意用 `/voices/clones` 而不是 `/voices`：后者是 tools.py 里
@@ -37,11 +38,9 @@ async def list_voices(owner: str = Depends(current_owner)):
     """
     items = V.list_profiles(owner)
     for it in items:
-        # sample_url 是给 <audio src> 用的直链，浏览器不会带 X-Owner-Id 头，
-        # 只能把 owner 放查询参数（current_owner 同时认头和参数）。
-        it["sample_url"] = (
-            f"{settings.API_PREFIX}/video/voices/{it['id']}/sample?owner={owner}"
-        )
+        # sample_url 是给 <audio src> 用的直链，浏览器不会带请求头，
+        # 用 HMAC 签名（见 core/security.link_url）。
+        it["sample_url"] = link_url(f"{settings.API_PREFIX}/video/voices/{it['id']}/sample", owner)
         it["value"] = V.CLONE_PREFIX + it["id"]
     return {"items": items, "provider": V.provider_status()}
 
@@ -50,7 +49,7 @@ async def list_voices(owner: str = Depends(current_owner)):
 async def clone(
     file: UploadFile = File(...),
     name: str = Form(""),
-    owner: str = Depends(current_owner),
+    owner: str = Depends(current_owner_id),
 ):
     """上传一段录音，后台开始复刻。立刻返回 profile_id，进度靠 GET /clone/{id}。
 
@@ -88,7 +87,7 @@ async def clone(
 
 
 @router.get("/clone/{profile_id}")
-async def clone_status(profile_id: str, owner: str = Depends(current_owner)):
+async def clone_status(profile_id: str, owner: str = Depends(current_owner_id)):
     """复刻进度。完成时带上质量评估（录音太短/太轻都会被明确告知）。"""
     job = V.get_clone_job(profile_id, owner)
     if job:
@@ -107,8 +106,11 @@ async def clone_status(profile_id: str, owner: str = Depends(current_owner)):
 
 
 @router.get("/{profile_id}/sample")
-async def sample(profile_id: str, owner: str = Depends(current_owner)):
-    """试听：优先返回参考音频（就是用户自己的声音，最直观）。"""
+async def sample(profile_id: str, owner: str = Depends(link_auth)):
+    """试听：优先返回参考音频（就是用户自己的声音，最直观）。
+
+    <audio src> 直链，HMAC 签名鉴权（见 core/security.link_url）。
+    """
     p = V.profile_audio_path(profile_id, owner)
     if p is None:
         raise HTTPException(404, "试听文件不存在")
@@ -117,7 +119,7 @@ async def sample(profile_id: str, owner: str = Depends(current_owner)):
 
 
 @router.get("/{profile_id}/meta")
-async def meta(profile_id: str, owner: str = Depends(current_owner)):
+async def meta(profile_id: str, owner: str = Depends(current_owner_id)):
     vm = V.get_profile(profile_id, owner)
     if not vm:
         raise HTTPException(404, "音色不存在")
@@ -125,14 +127,14 @@ async def meta(profile_id: str, owner: str = Depends(current_owner)):
 
 
 @router.delete("/{profile_id}")
-async def delete(profile_id: str, owner: str = Depends(current_owner)):
+async def delete(profile_id: str, owner: str = Depends(current_owner_id)):
     if not V.delete_profile(profile_id, owner):
         raise HTTPException(404, "音色不存在")
     return {"ok": True}
 
 
 @router.put("/{profile_id}")
-async def rename(profile_id: str, payload: dict, owner: str = Depends(current_owner)):
+async def rename(profile_id: str, payload: dict, owner: str = Depends(current_owner_id)):
     """给音色改个名字（"我的音色 1015 16:20" 这种默认名没人记得住）。"""
     vm = V.get_profile(profile_id, owner)
     if not vm:

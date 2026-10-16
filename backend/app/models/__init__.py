@@ -7,6 +7,8 @@ from app.models.content import Content, QueueItem  # noqa: F401
 from app.models.conversation import Conversation, Message  # noqa: F401
 from app.models.renderjob import RenderJob  # noqa: F401
 from app.models.settings import AppSetting, WeChatAccount  # noqa: F401
+from app.models.slide import PptSlideClaim  # noqa: F401
+from app.models.user import User  # noqa: F401
 from app.models.usage import LlmUsage  # noqa: F401
 
 __all__ = [
@@ -18,4 +20,6 @@ __all__ = [
     "RenderJob",
     "WeChatAccount",
     "AppSetting",
+    "User",
+    "PptSlideClaim",
 ]

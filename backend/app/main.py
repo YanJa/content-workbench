@@ -17,7 +17,7 @@ from app.core.cache import close_cache, get_cache
 from app.core.config import settings
 from app.core.logging import logger
 from app.db.session import init_db
-from app.routers import chat, layout, queue, settings as settings_router, tools, usage, voice_clone
+from app.routers import auth, chat, layout, queue, settings as settings_router, tools, usage, voice_clone
 
 # 导入内置工具以完成注册（必须有这一句）
 from app.tools import builtin  # noqa: F401
@@ -79,6 +79,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(auth.router, prefix=settings.API_PREFIX)
 app.include_router(chat.router, prefix=settings.API_PREFIX)
 app.include_router(queue.router, prefix=settings.API_PREFIX)
 app.include_router(queue.content_router, prefix=settings.API_PREFIX)

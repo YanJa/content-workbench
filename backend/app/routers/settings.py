@@ -16,7 +16,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.logging import logger
-from app.core.tenant import current_owner
+from app.core.security import link_url
+from app.core.tenant import current_owner_id, link_auth
 from app.db.session import get_db
 from app.models.settings import AppSetting, WeChatAccount
 from app.schemas.models import (
@@ -63,7 +64,7 @@ async def _set_setting(db: AsyncSession, owner: str, key: str, value: str) -> No
 
 
 def _qrcode_url(owner: str, qrcode_path: str) -> str:
-    """把二维码相对路径拼成可直连的 URL（带 ?owner= 做租户隔离）。
+    """把二维码相对路径拼成可直连的 URL（HMAC 签名做租户隔离）。
 
     路径形如 `qrcodes/{account_id}/{filename}`，因此拆成三段。
     """
@@ -73,7 +74,7 @@ def _qrcode_url(owner: str, qrcode_path: str) -> str:
     if len(parts) != 3:
         return ""
     _, aid, fname = parts
-    return f"{settings.API_PREFIX}/settings/wechat/qrcodes/{aid}/{fname}?owner={owner}"
+    return link_url(f"{settings.API_PREFIX}/settings/wechat/qrcodes/{aid}/{fname}", owner)
 
 
 def _out(a: WeChatAccount) -> WeChatAccountOut:
@@ -103,7 +104,7 @@ async def _get(db: AsyncSession, account_id: str, owner: str = "default") -> WeC
 
 
 @router.get("/wechat", response_model=list[WeChatAccountOut])
-async def list_accounts(db: AsyncSession = Depends(get_db), owner: str = Depends(current_owner)):
+async def list_accounts(db: AsyncSession = Depends(get_db), owner: str = Depends(current_owner_id)):
     """公众号列表（默认号排最前）。"""
     stmt = (
         select(WeChatAccount)
@@ -117,7 +118,7 @@ async def list_accounts(db: AsyncSession = Depends(get_db), owner: str = Depends
 async def create_account(
     req: WeChatAccountCreate,
     db: AsyncSession = Depends(get_db),
-    owner: str = Depends(current_owner),
+    owner: str = Depends(current_owner_id),
 ):
     """新增公众号。若这是第一个号，或显式指定 is_default，则设为默认。"""
     existing = (
@@ -150,7 +151,7 @@ async def update_account(
     account_id: str,
     req: WeChatAccountUpdate,
     db: AsyncSession = Depends(get_db),
-    owner: str = Depends(current_owner),
+    owner: str = Depends(current_owner_id),
 ):
     a = await _get(db, account_id, owner)
     if req.name is not None:
@@ -175,7 +176,7 @@ async def update_account(
 
 @router.delete("/wechat/{account_id}")
 async def delete_account(
-    account_id: str, db: AsyncSession = Depends(get_db), owner: str = Depends(current_owner)
+    account_id: str, db: AsyncSession = Depends(get_db), owner: str = Depends(current_owner_id)
 ):
     a = await _get(db, account_id, owner)
     was_default = a.is_default
@@ -194,7 +195,7 @@ async def delete_account(
 
 @router.post("/wechat/{account_id}/check")
 async def check_account(
-    account_id: str, db: AsyncSession = Depends(get_db), owner: str = Depends(current_owner)
+    account_id: str, db: AsyncSession = Depends(get_db), owner: str = Depends(current_owner_id)
 ):
     """测试连通性：拉 access_token。成功则回写 verified_at。
 
@@ -220,7 +221,7 @@ async def check_account(
 
 @router.post("/wechat/{account_id}/default", response_model=WeChatAccountOut)
 async def set_default(
-    account_id: str, db: AsyncSession = Depends(get_db), owner: str = Depends(current_owner)
+    account_id: str, db: AsyncSession = Depends(get_db), owner: str = Depends(current_owner_id)
 ):
     a = await _get(db, account_id, owner)
     await db.execute(
@@ -238,7 +239,7 @@ async def upload_qrcode(
     account_id: str,
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
-    owner: str = Depends(current_owner),
+    owner: str = Depends(current_owner_id),
 ):
     """上传公众号二维码图（文末关注卡「扫码 / 长按关注」用）。
 
@@ -278,9 +279,9 @@ async def serve_qrcode(
     account_id: str,
     filename: str,
     db: AsyncSession = Depends(get_db),
-    owner: str = Depends(current_owner),
+    owner: str = Depends(link_auth),
 ):
-    """二维码静态服务（按 owner 隔离）。
+    """二维码静态服务（HMAC 签名直链隔离，见 core/security.link_url）。
 
     注意：本路由必须在 `/wechat/{account_id}` 之类的**动态路由之前**语义清晰，
     但因为它带三段路径（qrcodes/{id}/{file}），不会和 `PUT /wechat/{id}` 冲突。
@@ -297,7 +298,7 @@ async def serve_qrcode(
 
 # ---------------------------------------------------------------- 作者信息
 @router.get("/author")
-async def get_author(db: AsyncSession = Depends(get_db), owner: str = Depends(current_owner)):
+async def get_author(db: AsyncSession = Depends(get_db), owner: str = Depends(current_owner_id)):
     """取作者默认信息（未配置返回空串）。
 
     排版时用它替换正文里的 `{{作者名}}` / `{{一句话简介}}` 占位符。
@@ -312,7 +313,7 @@ async def get_author(db: AsyncSession = Depends(get_db), owner: str = Depends(cu
 async def put_author(
     req: AuthorSettingRequest,
     db: AsyncSession = Depends(get_db),
-    owner: str = Depends(current_owner),
+    owner: str = Depends(current_owner_id),
 ):
     """保存作者默认信息。"""
     await _set_setting(db, owner, _AUTHOR_NAME_KEY, req.author_name.strip())

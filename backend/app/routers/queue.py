@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.tenant import current_owner
+from app.core.tenant import current_owner_id
 from app.db.session import get_db
 from app.models.content import Content, QueueItem
 from app.schemas.models import (
@@ -31,7 +31,7 @@ async def list_items(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
-    owner: str = Depends(current_owner),
+    owner: str = Depends(current_owner_id),
 ):
     """分页返回发布队列。
 
@@ -85,7 +85,7 @@ async def list_items(
 
 @router.get("/stats")
 async def stats(
-    db: AsyncSession = Depends(get_db), owner: str = Depends(current_owner)
+    db: AsyncSession = Depends(get_db), owner: str = Depends(current_owner_id)
 ):
     rows = (
         await db.execute(select(QueueItem).where(QueueItem.owner == owner))
@@ -103,7 +103,7 @@ async def update_status(
     item_id: str,
     req: QueueStatusUpdate,
     db: AsyncSession = Depends(get_db),
-    owner: str = Depends(current_owner),
+    owner: str = Depends(current_owner_id),
 ):
     item = await db.get(QueueItem, item_id)
     if not item or (item.owner or "default") != owner:
@@ -120,7 +120,7 @@ async def update_checklist(
     item_id: str,
     req: ChecklistUpdate,
     db: AsyncSession = Depends(get_db),
-    owner: str = Depends(current_owner),
+    owner: str = Depends(current_owner_id),
 ):
     item = await db.get(QueueItem, item_id)
     if not item or (item.owner or "default") != owner:
@@ -132,7 +132,7 @@ async def update_checklist(
 
 @router.delete("/items/{item_id}")
 async def delete_item(
-    item_id: str, db: AsyncSession = Depends(get_db), owner: str = Depends(current_owner)
+    item_id: str, db: AsyncSession = Depends(get_db), owner: str = Depends(current_owner_id)
 ):
     item = await db.get(QueueItem, item_id)
     if not item or (item.owner or "default") != owner:
@@ -144,7 +144,7 @@ async def delete_item(
 
 @router.get("/export")
 async def export_markdown(
-    db: AsyncSession = Depends(get_db), owner: str = Depends(current_owner)
+    db: AsyncSession = Depends(get_db), owner: str = Depends(current_owner_id)
 ):
     """导出发布清单（Markdown），便于同步给团队。"""
     rows = (
@@ -179,7 +179,7 @@ async def list_contents(
     platform: str = Query("all"),
     limit: int = Query(50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
-    owner: str = Depends(current_owner),
+    owner: str = Depends(current_owner_id),
 ):
     stmt = select(Content).where(Content.owner == owner)
     if platform != "all":
@@ -190,7 +190,7 @@ async def list_contents(
 
 @content_router.get("/items/{content_id}", response_model=ContentOut)
 async def get_content(
-    content_id: str, db: AsyncSession = Depends(get_db), owner: str = Depends(current_owner)
+    content_id: str, db: AsyncSession = Depends(get_db), owner: str = Depends(current_owner_id)
 ):
     """按 ID 取单条内容（队列页推草稿箱时需要正文）。"""
     c = await db.get(Content, content_id)
@@ -203,7 +203,7 @@ async def get_content(
 async def create_content(
     req: ContentCreateRequest,
     db: AsyncSession = Depends(get_db),
-    owner: str = Depends(current_owner),
+    owner: str = Depends(current_owner_id),
 ):
     """用户点「保存到队列」时调用：建内容 + 入队（状态 draft = 待加工）。
 
@@ -248,7 +248,7 @@ async def update_content(
     content_id: str,
     req: ContentUpdateRequest,
     db: AsyncSession = Depends(get_db),
-    owner: str = Depends(current_owner),
+    owner: str = Depends(current_owner_id),
 ):
     """部分更新内容（加工排版面板里编辑正文 / 排版 HTML 后保存）。
 
