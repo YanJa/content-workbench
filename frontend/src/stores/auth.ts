@@ -15,10 +15,11 @@ import {
   register as apiRegister,
   type AuthUser,
   type ClaimedSummary,
+  type Role,
 } from '@/api/auth'
 import { clearToken, getToken, setToken } from '@/api/token'
 
-export type { AuthUser, ClaimedSummary }
+export type { AuthUser, ClaimedSummary, Role }
 
 export const useAuthStore = defineStore('auth', () => {
   const user = ref<AuthUser | null>(null)
@@ -26,6 +27,15 @@ export const useAuthStore = defineStore('auth', () => {
   const bootstrapped = ref(false)
 
   const isAuthenticated = computed(() => user.value !== null)
+  /**
+   * 是否管理员。角色来自 /auth/me，每次 bootstrap 都重取 —— 不缓存进本地，
+   * 也不从 token 里解（token 是 7 天有效的 JWT，把角色签进去就得等 7 天
+   * 才生效；见后端 core/rbac.py 的说明）。
+   *
+   * 注意这只用来控制菜单显隐和提前跳转，**不是权限控制** —— 真正的校验
+   * 在后端每个管理端点上。
+   */
+  const isAdmin = computed(() => user.value?.role === 'admin')
 
   async function bootstrap(): Promise<void> {
     if (!getToken()) {
@@ -68,5 +78,14 @@ export const useAuthStore = defineStore('auth', () => {
     user.value = null
   }
 
-  return { user, bootstrapped, isAuthenticated, bootstrap, login, register, logout }
+  return {
+    user,
+    bootstrapped,
+    isAuthenticated,
+    isAdmin,
+    bootstrap,
+    login,
+    register,
+    logout,
+  }
 })

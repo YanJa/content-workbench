@@ -42,18 +42,25 @@ const llmReady = ref(false)
 /** 新手引导：首次自动弹一次，之后靠侧栏/头部按钮手动重看 */
 const guideShow = ref(false)
 
-/** 导航单一数据源：桌面侧栏和移动底栏都由它派生，避免两处重复定义。
- *  icon 是 NavIcon 的 name——「系统状态」用脉冲线而非齿轮，因为页面本职是健康巡检。 */
+/**
+ * 导航单一数据源：桌面侧栏和移动底栏都由它派生，避免两处重复定义。
+ *  icon 是 NavIcon 的 name——「系统状态」用脉冲线而非齿轮，因为页面本职是健康巡检。
+ *  adminOnly 的项对非管理员隐藏（后端还有一道 403，这里只是不给人看）。
+ */
 const NAV = [
   { key: 'chat', icon: 'chat', label: '对话创作' },
   { key: 'queue', icon: 'queue', label: '发布队列' },
   { key: 'video', icon: 'video', label: '视频生产' },
   { key: 'usage', icon: 'usage', label: 'AI 用量' },
   { key: 'settings', icon: 'activity', label: '系统状态' },
+  { key: 'admin-users', icon: 'users', label: '用户管理', adminOnly: true },
 ]
 
+/** 按角色过滤后的导航。桌面/移动两处都从这里派生，只写一遍过滤逻辑。 */
+const visibleNav = computed(() => NAV.filter((n) => !n.adminOnly || auth.isAdmin))
+
 const menuOptions = computed<MenuOption[]>(() =>
-  NAV.map((n) => ({
+  visibleNav.value.map((n) => ({
     key: n.key,
     label:
       n.key === 'queue' && queue.pendingCount > 0
@@ -65,7 +72,7 @@ const menuOptions = computed<MenuOption[]>(() =>
 
 /** 移动端底部导航直接渲染静态配置，避免用函数式 label 导致渲染异常。 */
 const mobileTabs = computed(() =>
-  NAV.map((n) =>
+  visibleNav.value.map((n) =>
     n.key === 'queue' && queue.pendingCount > 0
       ? { ...n, label: `队列 ${queue.pendingCount}` }
       : n,
@@ -227,7 +234,7 @@ onMounted(async () => {
                 :class="{ active: activeKey === item.key }"
                 @click="onMenuSelect(item.key)"
               >
-                <span class="tab-icon">{{ item.icon }}</span>
+                <NavIcon :name="item.icon" :size="20" />
                 <span class="tab-label">{{ item.label }}</span>
               </div>
             </div>

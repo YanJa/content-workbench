@@ -66,6 +66,13 @@ _SQLITE_COLUMN_PATCHES: dict[str, dict[str, str]] = {
     "messages": {
         "reasoning": "TEXT DEFAULT ''",
     },
+    # RBAC：用户表加角色与停用标记。老库已有用户行，所以两列都必须带
+    # DEFAULT —— 补出来的是 'member' / 1，真正的管理员由启动时自愈
+    # ensure_admin_exists() 升级（见 core/rbac.py）。
+    "users": {
+        "role": "VARCHAR(16) DEFAULT 'member'",
+        "is_active": "BOOLEAN DEFAULT 1",
+    },
 }
 
 

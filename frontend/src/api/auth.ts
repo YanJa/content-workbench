@@ -6,10 +6,23 @@
  */
 import { http } from './http'
 
+/**
+ * 角色。**叫 Role 而不是复用聊天消息那个 role** —— types/index.ts 里
+ * 早有一个 `role: 'user' | 'assistant' | 'tool' | 'system'`（对话消息角色），
+ * 语义完全不同，混在一起迟早出错。
+ *
+ * 由系统预置的管理员账号持有 admin；注册进来的一律 member。
+ */
+export type Role = 'admin' | 'member'
+
 export interface AuthUser {
   id: string
   username: string
   created_at: number
+  /** 角色：决定侧栏菜单显隐与管理端点能否调用 */
+  role: Role
+  /** 停用后所有 Bearer 请求当场 401，不等令牌过期 */
+  is_active: boolean
 }
 
 /** 首用户注册时的存量认领摘要（后端 `_claim_legacy_data` 返回） */

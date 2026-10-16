@@ -73,6 +73,11 @@ class Settings(BaseSettings):
     AUTH_REGISTER_MODE: Literal["invite", "open", "closed"] = "invite"
     # 邀请码（AUTH_REGISTER_MODE=invite 时生效）；留空 = 仅允许首用户注册。
     INVITE_CODE: str = ""
+    # 预置管理员账号：启动时保证这个用户名的账号存在且是 admin（见 core/rbac.py）。
+    # 账号已存在时只摆正角色、不动密码；不存在时按下面的初始密码创建。
+    ADMIN_USERNAME: str = "admin"
+    # 预置管理员的初始密码。留空 = 随机生成并打进启动日志（只打创建那一次）。
+    ADMIN_INITIAL_PASSWORD: str = ""
 
     # ---------- 会话 ----------
     # 保留最近 N 轮原文，更早的压缩为摘要

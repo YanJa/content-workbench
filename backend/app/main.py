@@ -18,7 +18,17 @@ from app.core.config import settings
 from app.core.logging import logger
 from app.core.tenant import current_owner_id
 from app.db.session import init_db
-from app.routers import auth, chat, layout, queue, settings as settings_router, tools, usage, voice_clone
+from app.routers import (
+    admin,
+    auth,
+    chat,
+    layout,
+    queue,
+    settings as settings_router,
+    tools,
+    usage,
+    voice_clone,
+)
 
 # 导入内置工具以完成注册（必须有这一句）
 from app.tools import builtin  # noqa: F401
@@ -38,6 +48,11 @@ async def lifespan(app: FastAPI):
     os.makedirs(os.path.join(settings.UPLOAD_DIR, "gen"), exist_ok=True)
 
     await init_db()
+    # 预置管理员账号：保证 ADMIN_USERNAME 存在且是 admin（不存在就建，
+    # 已存在只摆正角色、不动密码）。放在 init_db 之后 —— 要先有表才能查。
+    from app.core.rbac import ensure_admin_account
+
+    await ensure_admin_account()
     get_cache()
 
     # 上一次进程退出时正在渲染的任务，统一标成失败，不让它挂着假装在跑
@@ -90,6 +105,7 @@ app.include_router(tools.router, prefix=settings.API_PREFIX)
 app.include_router(tools.video_router, prefix=settings.API_PREFIX)
 app.include_router(voice_clone.router, prefix=settings.API_PREFIX)
 app.include_router(usage.router, prefix=settings.API_PREFIX)
+app.include_router(admin.router, prefix=settings.API_PREFIX)
 
 
 @app.get("/", tags=["系统"])

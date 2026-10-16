@@ -490,6 +490,14 @@ const envColumns: DataTableColumns<EnvRow> = [
       <NCard size="small" title="账号" style="margin-bottom: 16px">
         <div class="api-base-hint">
           当前账号：<code>{{ auth.user?.username }}</code>
+          <NTag
+            size="tiny"
+            :bordered="false"
+            :type="auth.isAdmin ? 'warning' : 'default'"
+            style="margin-left: 6px"
+          >
+            {{ auth.isAdmin ? '管理员' : '普通成员' }}
+          </NTag>
         </div>
         <div class="api-base-hint" style="margin-top: 6px; opacity: 0.75">
           注册时间：{{ createdAtText }}。内容、发布队列、公众号账号、AI

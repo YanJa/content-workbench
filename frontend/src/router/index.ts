@@ -56,14 +56,41 @@ const router = createRouter({
           component: () => import('@/views/SettingsView.vue'),
           meta: { title: '系统状态', desc: '服务健康、工具清单、配置检查', icon: '⚙' },
         },
+        {
+          path: 'admin/users',
+          name: 'admin-users',
+          component: () => import('@/views/AdminUsersView.vue'),
+          meta: {
+            title: '用户管理',
+            desc: '建账号、改角色、停用与全站用量',
+            icon: '⚙',
+            adminOnly: true,
+          },
+        },
       ],
     },
   ],
 })
 
+// 让 TS 认识 meta.adminOnly（vue-router 的 RouteMeta 默认不含自定义字段）
+declare module 'vue-router' {
+  interface RouteMeta {
+    title?: string
+    desc?: string
+    icon?: string
+    public?: boolean
+    /**
+     * 仅管理员可见。这只是「提前挡一道」——真正的权限校验在后端，
+     * 非管理员直接调 /api/admin/* 一样是 403。
+     */
+    adminOnly?: boolean
+  }
+}
+
 /**
  * 全局守卫：未登录进工作台 → 登录页（带 redirect 回来）；
- * 已登录访问登录/注册页 → 回工作台。
+ * 已登录访问登录/注册页 → 回工作台；
+ * 非管理员访问管理页 → 回对话页。
  * bootstrapped 为 false 只可能是挂载前的极短窗口（main.ts 保证
  * bootstrap 先于 mount 完成），放行即可。
  */
@@ -75,6 +102,9 @@ router.beforeEach((to) => {
   }
   if (!auth.isAuthenticated) {
     return { path: '/login', query: { redirect: to.fullPath } }
+  }
+  if (to.meta?.adminOnly && !auth.isAdmin) {
+    return { name: 'chat' }
   }
   return true
 })

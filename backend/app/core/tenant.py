@@ -23,6 +23,12 @@
 - `normalize_owner` 保留：owner 会进文件路径（音色目录按 owner 隔离、
   slide folder 等），字符白名单校验仍需要；用户模块后 owner 一律来自
   服务端，这个函数主要给路径段校验用。
+
+停用即时生效
+------------
+`role` 和 `is_active` 都**不进 JWT**（详见 core/rbac.py 的说明）：令牌
+有效期 7 天，签进去就得等 7 天才生效。所以每次请求都查一次库，顺手校验
+`is_active` —— 被停用的人手里的旧 token 当场失效，不用等它自然过期。
 """
 from __future__ import annotations
 
@@ -75,6 +81,8 @@ async def current_user(
     user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
     if user is None:
         raise HTTPException(401, "账号不存在或已被删除")
+    if not user.is_active:
+        raise HTTPException(401, "账号已被停用，请联系管理员")
     return user
 
 
@@ -100,6 +108,11 @@ async def link_auth(
     优先级：HMAC 签名 > Bearer 头。签名绑 `request.url.path`（不含
     query），所以每个 URL 只能访问它签名时对应的那个路径。两者都没有
     → 404：对匿名访问者而言「资源不存在」，不泄露存在性。
+
+    停用的用户只影响 Bearer 那一档：**HMAC 分支刻意不动**。历史图片的
+    URL 已经写进 `contents.body_html` / `contents.images`，签名绑的是
+    `o=<uid>`；停用就封会让存量文章的配图集体 404，那是牵连无辜读者，
+    不是惩罚被停用的人。
     """
     if o and sig:
         if link_ok(o, request.url.path, sig):
@@ -108,6 +121,6 @@ async def link_auth(
     user_id = _bearer_user_id(authorization)
     if user_id:
         user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
-        if user is not None:
+        if user is not None and user.is_active:
             return user.id
     raise HTTPException(404, "资源不存在")

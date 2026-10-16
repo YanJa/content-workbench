@@ -40,6 +40,13 @@ const NODES: Record<string, Node[]> = {
     ['rect', { x: '11', y: '7', width: '4', height: '14', rx: '1' }],
     ['rect', { x: '17', y: '10', width: '2.5', height: '11', rx: '1' }],
   ],
+  // 用户管理：一个人 + 身后半个人
+  users: [
+    ['path', { d: 'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2' }],
+    ['circle', { cx: '9', cy: '7', r: '4' }],
+    ['path', { d: 'M22 21v-2a4 4 0 0 0-3-3.87' }],
+    ['path', { d: 'M16 3.13a4 4 0 0 1 0 7.75' }],
+  ],
 }
 
 export default defineComponent({

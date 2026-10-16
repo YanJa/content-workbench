@@ -20,8 +20,9 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 import app.models  # noqa: F401  # 必须导入，create_all 才看得到所有表
+from app.core import rbac as rbac_mod
 from app.core.config import settings
-from app.core.security import link_url
+from app.core.security import hash_password, link_url
 from app.db.session import Base, get_db
 from app.main import app
 from app.models.content import Content, QueueItem
@@ -59,6 +60,12 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "OUTPUT_DIR", str(tmp_path / "outputs"))
     monkeypatch.setattr(settings, "AUTH_REGISTER_MODE", "invite")
     monkeypatch.setattr(settings, "INVITE_CODE", "test-invite")
+    monkeypatch.setattr(settings, "ADMIN_USERNAME", "admin")
+    # 固定预置管理员的初始密码，测试里才能登录它（PASSWORD 是测试统一口令）
+    monkeypatch.setattr(settings, "ADMIN_INITIAL_PASSWORD", PASSWORD)
+    # ensure_admin_exists() 走的是模块级 SessionLocal（lifespan 里没有请求
+    # 上下文，拿不到 get_db 依赖）；测试里换成临时库的 maker，否则会碰开发库。
+    monkeypatch.setattr(rbac_mod, "SessionLocal", Maker)
     auth_mod._ATTEMPTS.clear()
 
     yield SimpleNamespace(tmp=tmp_path, Maker=Maker)
@@ -118,6 +125,43 @@ async def _seed_legacy(Maker):
         )
         s.add(Conversation(id="conv1", title="旧会话", owner="default"))
         await s.commit()
+
+
+async def _add_user(Maker, username, *, role="member", is_active=True, created_at=1000, uid=None):
+    """绕过 API 直接插一个用户（测 ensure_admin_exists 需要预置各种格局）。"""
+    from app.models.user import User
+
+    async with Maker() as s:
+        u = User(
+            id=uid or (username * 32)[:32],
+            username=username,
+            password_hash=hash_password(PASSWORD),
+            role=role,
+            is_active=is_active,
+            created_at=created_at,
+        )
+        s.add(u)
+        await s.commit()
+        return u.id
+
+
+async def _get_users(Maker):
+    from sqlalchemy import select
+
+    from app.models.user import User
+
+    async with Maker() as s:
+        rows = (await s.execute(select(User).order_by(User.created_at.asc()))).scalars().all()
+        return [{"id": u.id, "username": u.username, "role": u.role, "is_active": bool(u.is_active)}
+                for u in rows]
+
+
+def _admin_token(client, username="admin"):
+    """预置管理员账号（启动时 lifespan 干的事）并登录，返回 token。"""
+    asyncio.run(rbac_mod.ensure_admin_account())
+    resp = _login(client, username)
+    assert resp.status_code == 200, resp.text
+    return resp.json()["token"]
 
 
 # ---------------------------------------------------------------- 注册
@@ -395,6 +439,308 @@ def test_layout_job_status_owner(env, monkeypatch):
     assert client.get(url, headers=_auth(bob["token"])).status_code == 404
 
 
+# ---------------------------------------------------------------- RBAC
+def test_registered_users_are_always_members(env):
+    """注册进来的一律 member —— 管理员是系统预置的，不靠注册顺序决定。
+
+    不做「第一个注册的人自动当管理员」：那等于谁先打开页面谁拿管理员，
+    演示时方便，真机上危险。
+    """
+    client = TestClient(app)
+    first = _register(client, "alice").json()
+    assert first["user"]["role"] == "member", first
+
+    second = _register(client, "bob", invite="test-invite").json()
+    assert second["user"]["role"] == "member", second
+
+
+def test_me_returns_role_and_active(env):
+    client = TestClient(app)
+    token = _admin_token(client)
+    me = client.get("/api/auth/me", headers=_auth(token)).json()
+    assert me["role"] == "admin" and me["is_active"] is True
+
+
+def test_ensure_admin_account_creates_it_when_missing(env):
+    """库里没有同名账号 → 建一个 admin，且能用配置的初始密码登录。"""
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(settings, "ADMIN_INITIAL_PASSWORD", "init-pass-2026")
+    try:
+        asyncio.run(rbac_mod.ensure_admin_account())
+    finally:
+        monkeypatch.undo()
+
+    users = asyncio.run(_get_users(env.Maker))
+    assert [u["username"] for u in users] == ["admin"]
+    assert users[0]["role"] == "admin" and users[0]["is_active"] is True
+
+    client = TestClient(app)
+    assert _login(client, "admin", "init-pass-2026").status_code == 200
+
+
+def test_ensure_admin_account_generates_password_when_unset(env, monkeypatch):
+    """没配初始密码 → 随机生成一个（不会建出个空密码 / 弱口令的账号）。"""
+    monkeypatch.setattr(settings, "ADMIN_INITIAL_PASSWORD", "")
+    asyncio.run(rbac_mod.ensure_admin_account())
+
+    users = asyncio.run(_get_users(env.Maker))
+    assert users[0]["username"] == "admin" and users[0]["role"] == "admin"
+
+    client = TestClient(app)
+    # 随机口令 ≠ fixture 里的测试统一口令，所以这里必须进不去
+    assert _login(client, "admin", PASSWORD).status_code == 401
+
+
+def test_ensure_admin_account_promotes_existing_without_touching_password(env):
+    """同名账号已存在（比如用户自己注册的）→ 只摆正角色，**绝不动密码**。
+
+    改密码等于把人锁在自己的系统门外 —— 那是他自己设的。
+    """
+    asyncio.run(_add_user(env.Maker, "admin", role="member", created_at=1000))
+    asyncio.run(_add_user(env.Maker, "bob", role="member", created_at=2000))
+
+    asyncio.run(rbac_mod.ensure_admin_account())
+
+    users = asyncio.run(_get_users(env.Maker))
+    assert next(u for u in users if u["username"] == "admin")["role"] == "admin"
+    assert next(u for u in users if u["username"] == "bob")["role"] == "member"
+
+    # 密码仍是注册时那个
+    client = TestClient(app)
+    assert _login(client, "admin").status_code == 200
+
+    # 幂等：再跑一次不报错、不多造人
+    asyncio.run(rbac_mod.ensure_admin_account())
+    assert len(asyncio.run(_get_users(env.Maker))) == 2
+
+
+def test_admin_endpoints_require_admin(env):
+    client = TestClient(app)
+    admin_token = _admin_token(client)
+    member_token = _register(client, "bob", invite="test-invite").json()["token"]
+
+    assert client.get("/api/admin/users", headers=_auth(admin_token)).status_code == 200
+    assert client.get("/api/admin/stats", headers=_auth(admin_token)).status_code == 200
+
+    r = client.get("/api/admin/users", headers=_auth(member_token))
+    assert r.status_code == 403, r.text
+    assert client.get("/api/admin/stats", headers=_auth(member_token)).status_code == 403
+    # 没带令牌 → 401（身份都没有，轮不到判角色）
+    assert client.get("/api/admin/users").status_code == 401
+
+
+def test_admin_create_user_bypasses_invite_code(env):
+    client = TestClient(app)
+    admin_token = _admin_token(client)
+
+    r = client.post(
+        "/api/admin/users",
+        json={"username": "bob", "password": PASSWORD, "role": "member"},
+        headers=_auth(admin_token),
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["role"] == "member"
+    # 代建的账号没邀请码也能登录
+    assert _login(client, "bob").status_code == 200
+
+    assert client.post(
+        "/api/admin/users",
+        json={"username": "bob", "password": PASSWORD},
+        headers=_auth(admin_token),
+    ).status_code == 409
+    assert client.post(
+        "/api/admin/users",
+        json={"username": "carol", "password": "short"},
+        headers=_auth(admin_token),
+    ).status_code == 422
+
+
+def test_deactivated_user_loses_access_immediately(env):
+    """停用即时生效：不进 JWT，所以旧 token 下一次请求就 401。"""
+    client = TestClient(app)
+    admin_token = _admin_token(client)
+    bob = _register(client, "bob", invite="test-invite").json()
+    bob_id, bob_token = bob["user"]["id"], bob["token"]
+
+    assert client.get("/api/queue/items", headers=_auth(bob_token)).status_code == 200
+
+    r = client.patch(
+        f"/api/admin/users/{bob_id}",
+        json={"is_active": False},
+        headers=_auth(admin_token),
+    )
+    assert r.status_code == 200 and r.json()["is_active"] is False
+
+    # 不等 token 过期，当场失效
+    denied = client.get("/api/queue/items", headers=_auth(bob_token))
+    assert denied.status_code == 401, denied.text
+    assert "停用" in denied.json()["detail"]
+
+    # 恢复启用后又能用
+    client.patch(f"/api/admin/users/{bob_id}", json={"is_active": True}, headers=_auth(admin_token))
+    assert client.get("/api/queue/items", headers=_auth(bob_token)).status_code == 200
+
+
+def test_deactivated_login_has_distinct_message(env):
+    """被停用的人登录，提示必须和「密码错误」区分开，否则他会一直重试。"""
+    client = TestClient(app)
+    admin_token = _admin_token(client)
+    bob_id = _register(client, "bob", invite="test-invite").json()["user"]["id"]
+    client.patch(f"/api/admin/users/{bob_id}", json={"is_active": False}, headers=_auth(admin_token))
+
+    r = _login(client, "bob")
+    assert r.status_code == 401
+    assert r.json()["detail"] == "账号已被停用，请联系管理员"
+    # 密码不对时仍是原来的文案
+    assert _login(client, "bob", password="wrong").json()["detail"] == "用户名或密码错误"
+
+
+def test_admin_cannot_modify_self(env):
+    """不能对自己动手：降级/停用自己都会把系统变成没有管理员的孤儿。"""
+    client = TestClient(app)
+    admin_token = _admin_token(client)
+    my_id = client.get("/api/auth/me", headers=_auth(admin_token)).json()["id"]
+
+    for payload in ({"role": "member"}, {"is_active": False}, {"role": "admin"}):
+        r = client.patch(
+            f"/api/admin/users/{my_id}", json=payload, headers=_auth(admin_token)
+        )
+        assert r.status_code == 400, (payload, r.text)
+        assert "自己" in r.json()["detail"]
+
+
+def test_admin_list_shows_everyone_and_self_target_is_blocked(env):
+    """用户列表能看到所有人；但对自己下手一律被拒（含停用、降级、改角色）。"""
+    client = TestClient(app)
+    admin_token = _admin_token(client)
+    _register(client, "bob", invite="test-invite")
+
+    users = client.get("/api/admin/users", headers=_auth(admin_token)).json()
+    assert {u["username"] for u in users} == {"admin", "bob"}
+
+    bob_id = next(u["id"] for u in users if u["username"] == "bob")
+    my_id = next(u["id"] for u in users if u["username"] == "admin")
+
+    # 停用别人：可以
+    assert client.patch(f"/api/admin/users/{bob_id}", json={"is_active": False},
+                        headers=_auth(admin_token)).status_code == 200
+    # 停用自己：不行（否则系统只剩停用的人，等于把自己锁在门外）
+    r = client.patch(f"/api/admin/users/{my_id}", json={"is_active": False},
+                     headers=_auth(admin_token))
+    assert r.status_code == 400 and "自己" in r.json()["detail"]
+
+
+def test_guard_keeps_at_least_one_admin(env):
+    """「至少保留一名管理员」是兜底防线 —— 直接测 _guard 本身。
+
+    走 HTTP 接口时，操作者自己必然也是 admin，所以「不能对自己」那条会先
+    拦下，系统事实上不可能被清空管理员。这条守卫防的是以后加了「批量改
+    角色 / 删除用户」之类绕过单点操作的接口之后出洞。
+    """
+    from fastapi import HTTPException
+
+    from app.models.user import User
+    from app.routers import admin as admin_mod
+
+    async def _scenario():
+        async with env.Maker() as db:
+            admin_id = await _add_user(env.Maker, "boss", role="admin", uid="a" * 32)
+            member_id = await _add_user(env.Maker, "bob", role="member", uid="b" * 32)
+            target = await db.get(User, admin_id)
+            operator = await db.get(User, member_id)
+
+            # 只有 target 一个 admin → 降级他必须被拒
+            try:
+                await admin_mod._guard(db, target, operator, new_role="member")
+            except HTTPException as e:
+                assert e.status_code == 400 and "至少" in e.detail
+            else:
+                raise AssertionError("唯一 admin 被降级却没拦下")
+
+            # 同样是唯一 admin，停用也要拦
+            try:
+                await admin_mod._guard(db, target, operator, deactivate=True)
+            except HTTPException as e:
+                assert e.status_code == 400 and "至少" in e.detail
+            else:
+                raise AssertionError("唯一 admin 被停用却没拦下")
+
+            # 再加一个 admin → 允许（losing_admin 但人数够）
+            await _add_user(env.Maker, "carol", role="admin", uid="c" * 32)
+            await admin_mod._guard(db, target, operator, new_role="member")
+
+    asyncio.run(_scenario())
+
+
+def test_invalid_role_value_rejected(env):
+    """非法角色值不能落库：下次启动 ensure_admin_exists 找不到 admin 会乱升人。"""
+    client = TestClient(app)
+    admin_token = _admin_token(client)
+    bob_id = _register(client, "bob", invite="test-invite").json()["user"]["id"]
+
+    r = client.patch(f"/api/admin/users/{bob_id}", json={"role": "root"}, headers=_auth(admin_token))
+    assert r.status_code == 400 and "非法的角色值" in r.json()["detail"]
+
+    r2 = client.post(
+        "/api/admin/users",
+        json={"username": "carol", "password": PASSWORD, "role": "root"},
+        headers=_auth(admin_token),
+    )
+    assert r2.status_code == 400
+    # 空 body 也拒绝，免得「改了个寂寞」还回 200
+    assert client.patch(f"/api/admin/users/{bob_id}", json={}, headers=_auth(admin_token)).status_code == 400
+
+
+def test_admin_stats_is_site_wide(env):
+    """全站聚合：不能复用 usage_svc.summary —— 它 owner=None 会 fallback 查 'default'。"""
+    client = TestClient(app)
+    admin_token = _admin_token(client)
+    uid = client.get("/api/auth/me", headers=_auth(admin_token)).json()["id"]
+
+    async def _seed():
+        from app.models.usage import LlmUsage
+
+        async with env.Maker() as s:
+            s.add(Content(id="c9", platform="gzh", kind="text", title="t", body="b", owner=uid))
+            s.add(LlmUsage(owner=uid, model="deepseek-flash", prompt_tokens=100,
+                           completion_tokens=50, total_tokens=150))
+            await s.commit()
+
+    asyncio.run(_seed())
+
+    stats = client.get("/api/admin/stats", headers=_auth(admin_token)).json()
+    assert stats["users"]["total"] == 1 and stats["users"]["admins"] == 1
+    assert stats["contents"] == 1
+    assert stats["llm"]["calls"] == 1 and stats["llm"]["total_tokens"] == 150
+    assert stats["by_user"][0]["username"] == "admin" and stats["by_user"][0]["contents"] == 1
+
+
+def test_admin_cannot_touch_others_content(env):
+    """管理员也看不到别人的内容 —— owner 隔离对 admin 一样生效。
+
+    这是本轮刻意守住的边界：给 admin 开跨用户读取，等于先制造风险再防御风险。
+    """
+    client = TestClient(app)
+    admin_token = _admin_token(client)
+    bob = _register(client, "bob", invite="test-invite").json()
+    bob_id, bob_token = bob["user"]["id"], bob["token"]
+
+    async def _seed():
+        async with env.Maker() as s:
+            s.add(Content(id="c1", platform="gzh", kind="text", title="bob 的稿子",
+                          body="私密", owner=bob_id))
+            await s.commit()
+
+    asyncio.run(_seed())
+
+    # bob 自己能看
+    assert client.get("/api/content/items/c1", headers=_auth(bob_token)).status_code == 200
+    # admin 看 bob 的稿子 → 404（不泄露存在性），而不是 200
+    assert client.get("/api/content/items/c1", headers=_auth(admin_token)).status_code == 404
+    # 列表也只返回自己的
+    assert client.get("/api/content/items", headers=_auth(admin_token)).json() == []
+
+
 # ---------------------------------------------------------------- 端点鉴权回归
 # 新增端点时如果忘了挂 owner 依赖，这个测试会失败 —— 白名单要显式写理由。
 PUBLIC_ENDPOINTS = {
@@ -408,7 +754,9 @@ PUBLIC_ENDPOINTS = {
     ("/api/usage/estimate", "GET"): "成本估算，纯计算不落库",
 }
 
-_AUTH_DEPS = ("current_owner", "current_owner_id", "current_user", "link_auth")
+# require_admin：管理面端点。它内部就 Depends(current_user)，所以带它的端点
+# 天然也有身份校验 —— 单列出来是因为端点源码里只出现这个名字。
+_AUTH_DEPS = ("current_owner", "current_owner_id", "current_user", "link_auth", "require_admin")
 
 
 def test_every_api_endpoint_is_guarded():

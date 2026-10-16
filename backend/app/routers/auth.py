@@ -10,6 +10,14 @@
 
 登录限流：按用户名计数，5 次 / 15 分钟。内存实现、重启清零 —— 对这个
 量级的工作台够用；真被打爆了再挂 Redis（项目已有 cache 层）。
+
+角色：**注册进来的一律是 member**，管理员由系统在启动时预置
+（`core.rbac.ensure_admin_account()`，见 main.py 的 lifespan）。
+刻意不做「第一个注册的人自动当管理员」—— 那是把权限交给一个时间顺序
+而不是一个明确的账号：谁先打开页面谁就是管理员，路人甲也一样。
+
+停用账号登录会被拒，且**文案与「密码错误」区分开** —— 否则用户会一直
+以为是自己记错了密码。
 """
 from __future__ import annotations
 
@@ -27,6 +35,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.logging import logger
+from app.core.rbac import ROLE_MEMBER
 from app.core.security import create_token, hash_password, link_url, verify_password
 from app.core.tenant import current_user
 from app.db.session import get_db
@@ -56,6 +65,9 @@ class UserOut(BaseModel):
     id: str
     username: str
     created_at: int
+    # 角色与停用状态：前端据此决定菜单显隐（role）与是否踢回登录页
+    role: str = ROLE_MEMBER
+    is_active: bool = True
 
 
 class TokenOut(BaseModel):
@@ -63,6 +75,16 @@ class TokenOut(BaseModel):
     user: UserOut
     # 仅首用户注册时非空：告知用户本次接管了多少存量数据
     claimed: dict | None = None
+
+
+def _user_out(user: User) -> UserOut:
+    return UserOut(
+        id=user.id,
+        username=user.username,
+        created_at=user.created_at,
+        role=user.role,
+        is_active=user.is_active,
+    )
 
 
 # ---------------------------------------------------------------- 校验与限流
@@ -82,7 +104,7 @@ _PRIVATE_PREFIX = ("10.", "192.168.", "172.16.", "172.17.", "172.18.", "172.19."
                    "172.2", "172.30.", "172.31.", "127.", "::1", "fc00:", "fd00:")
 
 
-def _validate_username(raw: str) -> str:
+def validate_username(raw: str) -> str:
     v = (raw or "").strip()
     if not _USERNAME_RE.fullmatch(v):
         raise HTTPException(422, "用户名只能包含字母、数字、_ 或 -，长度 3~32 位")
@@ -208,10 +230,13 @@ async def register(
     - 按客户端 IP 限流，防「撞邀请码」（邀请码填错也计数）。
       首用户注册豁免 —— 那是把系统交给第一个人的一次性动作，不能被限流挡在门外。
     """
-    username = _validate_username(req.username)
+    username = validate_username(req.username)
     if len(req.password) < 8:
         raise HTTPException(422, "密码至少 8 位")
 
+    # 注：系统启动时会预置管理员账号，所以 users 表通常不为空 —— 存量认领
+    # 这条「单租户过渡」路径只在「一个用户都没有」的库上才可能触发，
+    # 实际上已经退役（老数据都认领完了）。留着是为了空库起服时兜底。
     first_user = (await db.execute(select(User.id).limit(1))).first() is None
     ip_key = f"reg:{_client_ip(request)}"
     if not first_user:
@@ -231,7 +256,12 @@ async def register(
                 _record_fail(ip_key)
                 raise HTTPException(403, "邀请码不正确")
 
-    user = User(username=username, password_hash=hash_password(req.password))
+    # 注册进来的一律 member：管理员是系统预置的账号，不靠注册顺序决定
+    user = User(
+        username=username,
+        password_hash=hash_password(req.password),
+        role=ROLE_MEMBER,
+    )
     db.add(user)
     await db.flush()  # 拿到 user.id，先不提交（认领要和注册同事务）
 
@@ -245,7 +275,7 @@ async def register(
         logger.info("首用户认领存量数据: %s", claimed)
     return TokenOut(
         token=create_token(user.id),
-        user=UserOut(id=user.id, username=user.username, created_at=user.created_at),
+        user=_user_out(user),
         claimed=claimed,
     )
 
@@ -271,18 +301,20 @@ async def login(req: LoginIn, request: Request, db: AsyncSession = Depends(get_d
         _record_fail(ip_key)
         raise HTTPException(401, "用户名或密码错误")
 
+    # 密码对了才判停用，且文案必须和上面区分开：共用一句的话，被停用的人
+    # 会一直以为是自己记错了密码，反复重试（还白白吃掉限流配额）。
+    if not user.is_active:
+        raise HTTPException(401, "账号已被停用，请联系管理员")
+
     # 登录成功只清当前用户名这一档：IP 那档要留着，
     # 否则「撞库成功一次」就能把整个 IP 的配额洗白
     _ATTEMPTS.pop(user_key, None)
     user.last_login_at = int(time.time())
     await db.commit()
-    return TokenOut(
-        token=create_token(user.id),
-        user=UserOut(id=user.id, username=user.username, created_at=user.created_at),
-    )
+    return TokenOut(token=create_token(user.id), user=_user_out(user))
 
 
 @router.get("/me", response_model=UserOut)
 async def me(user: User = Depends(current_user)):
     """当前登录用户。前端启动时用它验证本地 token 是否还有效。"""
-    return UserOut(id=user.id, username=user.username, created_at=user.created_at)
+    return _user_out(user)
