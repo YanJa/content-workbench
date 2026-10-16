@@ -1,0 +1,69 @@
+"""组件库占位符替换（作者信息 + 公众号账号）。
+
+背景（2026-10-16）：
+    公众号主题组件库的签名区/关注卡写的是占位符，例如
+        `我是 {{作者名}}，{{一句话简介，如：热衷于分享 AI 观察与干货}}`
+        `{{号名}}` / `{{slogan}}`
+    模型照抄组件库装配后，产出的 body_html 里就带着这些占位符 ——
+    以前要靠用户复制进公众号后手动替换。现在在排版阶段直接换成真实值。
+
+设计：白名单键
+------------
+组件库里有 40+ 种槽位（`{{顶部标签}}` `{{简介段落}}` `{{作者身份}}`
+`{{LOGO占位}}` …），模型可能把没填的槽位原样留在 HTML 里 ——
+**宽匹配会误伤它们**。所以这里维护一张**显式白名单** `_KEYS`：
+只有登记在此的键才会被替换，其余一律不动。
+
+当前白名单（4 个）：
+    - 作者维度：`作者名` / `一句话简介`
+    - 账号维度：`号名` / `slogan`
+
+**刻意不纳入**：
+    - `{{简介}}`：与「一句话简介」疑似别名，贸然纳入可能双替换；
+    - `{{LOGO占位}}`：是 olive-journal 主题的 partner logo 墙，与关注无关。
+"""
+from __future__ import annotations
+
+import re
+
+# 显式白名单：只有登记在此的键会被替换（单一事实源）。
+_KEYS = ("作者名", "一句话简介", "号名", "slogan")
+
+# 键名后允许紧跟（中文/英文）逗号 + 说明文字，直到 }}。
+# 说明段用 [^{}] 限定不含花括号，避免贪婪跨键误匹配（如连续两个占位符时）。
+_RX_CACHE: dict[str, re.Pattern[str]] = {}
+
+
+def _rx(key: str) -> re.Pattern[str]:
+    """取（并缓存）某个键的正则：`{{键名}}` 或 `{{键名，说明}}`。"""
+    rx = _RX_CACHE.get(key)
+    if rx is None:
+        rx = re.compile(r"\{\{\s*" + re.escape(key) + r"\s*(?:[，,][^{}]*)?\}\}")
+        _RX_CACHE[key] = rx
+    return rx
+
+
+def apply_placeholders(text: str, mapping: dict[str, str]) -> str:
+    """按白名单替换占位符。
+
+    - `mapping` 里**值为空**（未配置 / 面板没填）的键 → **保持占位符原样**，
+      让用户一眼看到「这里还没填」，而不是留下一个空白。
+    - 不在 `_KEYS` 白名单里的键 → **完全忽略**（防止误伤组件库的其它槽位）。
+    - 覆盖带说明的变体：`{{作者名，未知则删整行}}`、`{{一句话简介，如：…}}`
+      都能被正确吃掉整段说明。
+    """
+    if not text:
+        return text
+    for key in _KEYS:
+        val = mapping.get(key, "")
+        if val:
+            text = _rx(key).sub(val, text)
+    return text
+
+
+def apply_author_placeholders(text: str, author_name: str, intro: str) -> str:
+    """兼容旧签名：只替换作者维度的两个键。
+
+    保留此薄封装，避免既有调用方（layout.py）与测试大改。
+    """
+    return apply_placeholders(text, {"作者名": author_name, "一句话简介": intro})

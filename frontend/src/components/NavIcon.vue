@@ -1,0 +1,79 @@
+<script lang="ts">
+/**
+ * 导航图标。
+ *
+ * 统一用 stroke 线性图标（约 1.8 描边），而不是 emoji 或几何符号——
+ * 后者在不同系统上渲染差异大、视觉重量也不统一。
+ *
+ * 用法：
+ *   <NavIcon name="chat" />
+ *   // 或在需要渲染函数的场合（如 NMenu 的 icon）
+ *   icon: () => h(NavIcon, { name: 'chat' })
+ */
+import { defineComponent, h } from 'vue'
+
+type Node = [string, Record<string, string | number>]
+
+const NODES: Record<string, Node[]> = {
+  // 对话气泡
+  chat: [['path', { d: 'M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z' }]],
+  // 队列列表（三条横线 + 左侧节点）
+  queue: [
+    ['line', { x1: '8', y1: '6', x2: '21', y2: '6' }],
+    ['line', { x1: '8', y1: '12', x2: '21', y2: '12' }],
+    ['line', { x1: '8', y1: '18', x2: '21', y2: '18' }],
+    ['line', { x1: '3', y1: '6', x2: '3.01', y2: '6' }],
+    ['line', { x1: '3', y1: '12', x2: '3.01', y2: '12' }],
+    ['line', { x1: '3', y1: '18', x2: '3.01', y2: '18' }],
+  ],
+  // 视频：矩形 + 播放三角
+  video: [
+    ['rect', { x: '2', y: '5', width: '14', height: '14', rx: '2', ry: '2' }],
+    ['polygon', { points: '23 7 16 12 23 17 23 7' }],
+  ],
+  // 活动脉冲：表达「健康/状态」比齿轮更贴切这个页面
+  activity: [['polyline', { points: '22 12 18 12 15 21 9 3 6 12 2 12' }]],
+  // 用量柱状：三根高低不同的柱子，一眼是「统计/消耗」
+  usage: [
+    ['line', { x1: '3', y1: '21', x2: '21', y2: '21' }],
+    ['rect', { x: '5', y: '12', width: '4', height: '9', rx: '1' }],
+    ['rect', { x: '11', y: '7', width: '4', height: '14', rx: '1' }],
+    ['rect', { x: '17', y: '10', width: '2.5', height: '11', rx: '1' }],
+  ],
+}
+
+export default defineComponent({
+  name: 'NavIcon',
+  props: {
+    name: { type: String, required: true },
+    size: { type: [Number, String], default: 18 },
+  },
+  setup(props) {
+    return () =>
+      h(
+        'svg',
+        {
+          class: 'nav-icon-svg',
+          width: props.size,
+          height: props.size,
+          viewBox: '0 0 24 24',
+          fill: 'none',
+          stroke: 'currentColor',
+          'stroke-width': '1.8',
+          'stroke-linecap': 'round',
+          'stroke-linejoin': 'round',
+          'aria-hidden': 'true',
+        },
+        (NODES[props.name] ?? []).map(([tag, attrs]) => h(tag, attrs)),
+      )
+  },
+})
+</script>
+
+<style scoped>
+/* SVG 本身是 currentColor 描边，跟随父级文字色；不额外加样式，
+   避免 scoped 属性选择器意外影响 SVG 内部图形元素 */
+.nav-icon-svg {
+  display: block;
+}
+</style>

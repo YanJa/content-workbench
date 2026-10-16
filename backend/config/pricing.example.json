@@ -1,0 +1,60 @@
+{
+  "_说明": [
+    "把本文件复制为 pricing.json 即可生效（或设置 PRICING_FILE 指向别处）。",
+    "键 = 模型名（要和调用时传的一模一样，别名请在 Python 侧 ALIASES 里配）。",
+    "改完后不用重启：POST /api/usage/pricing/reload",
+    "单位统一为「元 / 百万 tokens」。",
+    "下面这些非 DeepSeek 的条目只是演示格式，价格是占位值，请按厂商最新价校准。"
+  ],
+
+  "qwen-max": {
+    "label": "通义千问 Max",
+    "vendor": "aliyun",
+    "in": 20.0,
+    "out": 60.0,
+    "in_cached": 2.0,
+    "context_window": 262144,
+    "reasoning": false,
+    "peak_multiplier": 1.0
+  },
+
+  "glm-4.6": {
+    "label": "智谱 GLM-4.6",
+    "vendor": "zhipu",
+    "in": 4.0,
+    "out": 16.0,
+    "in_cached": 0.4,
+    "context_window": 200000,
+    "reasoning": true,
+    "peak_multiplier": 1.0
+  },
+
+  "claude-sonnet-4.5": {
+    "label": "Claude Sonnet 4.5",
+    "vendor": "anthropic",
+    "in": 21.0,
+    "out": 105.0,
+    "in_cached": 2.1,
+    "context_window": 200000,
+    "reasoning": true,
+    "peak_multiplier": 1.0,
+    "tiers": [
+      {
+        "above": 200000,
+        "in": 42.0,
+        "out": 157.5
+      }
+    ]
+  },
+
+  "gpt-5": {
+    "label": "GPT-5",
+    "vendor": "openai",
+    "in": 8.75,
+    "out": 70.0,
+    "in_cached": 0.875,
+    "context_window": 400000,
+    "reasoning": true,
+    "peak_multiplier": 1.0
+  }
+}

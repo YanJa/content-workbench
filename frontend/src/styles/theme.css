@@ -1,0 +1,137 @@
+/* ============================================================
+   主题变量体系（深浅双主题）
+
+   用法：样式里一律用 var(--app-*)，不要写死颜色。
+   主题切换由 stores/theme.ts 在 <html> 上切 data-theme 属性。
+
+   为什么不用 Naive UI 的 --n-* 变量：那些变量是各组件 cssr 样式
+   自己定义的（挂在组件根元素上），我们自己的 scoped 样式不一定
+   处在能继承到它们的 DOM 位置里，不可靠。自己定义一套最稳。
+
+   配色延续 demo 期定下的暗色视觉（#0F1117 底 / #4F7CFF 主色），
+   亮色主题按同一套语义变量给出对应值。
+   ============================================================ */
+
+/* 默认（暗色）：与 data-theme="dark" 等价，保证首屏不闪 */
+:root {
+  /* 表面 */
+  --app-bg: #0f1117;            /* 页面底 */
+  --app-sider-bg: #14161e;      /* 侧栏 / 顶栏 */
+  --app-tabbar-bg: rgba(20, 22, 30, 0.96); /* 移动端底栏（毛玻璃） */
+  --app-surface: #171a23;       /* 卡片 */
+  --app-surface-2: #1e222d;     /* 浮层 / 二级表面 */
+  --app-surface-3: #22262f;     /* 嵌套块 / 表格线 */
+  --app-surface-4: #252a38;     /* 悬停 / 选中 */
+  --app-sunken: #12151d;        /* 凹陷区（代码块 / 轨迹） */
+
+  /* 边框与文本 */
+  --app-border: #282d3a;
+  --app-border-50: rgba(40, 45, 58, 0.5);
+  --app-border-60: rgba(40, 45, 58, 0.6);
+  --app-text: #e6e9f0;
+  --app-text-2: #9ba3b4;
+  --app-text-3: #6b7385;
+
+  /* 主色阶 */
+  --app-primary: #4f7cff;
+  --app-primary-hover: #3d6bff;
+  --app-primary-pressed: #2f5ae8;
+  --app-primary-soft: #7ea0ff;  /* 主色上的浅阶文字 */
+  --app-primary-a06: rgba(79, 124, 255, 0.06);
+  --app-primary-a08: rgba(79, 124, 255, 0.08);
+  --app-primary-a10: rgba(79, 124, 255, 0.1);
+  --app-primary-a14: rgba(79, 124, 255, 0.14);
+  --app-primary-a16: rgba(79, 124, 255, 0.16);
+  --app-primary-a18: rgba(79, 124, 255, 0.18);
+  --app-primary-soft-a06: rgba(126, 160, 255, 0.06);
+  --app-primary-soft-a35: rgba(126, 160, 255, 0.35);
+  --app-primary-border-soft: #3a4a7a;
+
+  /* 功能色 */
+  --app-purple: #8b5cf6;
+  --app-purple-soft: #a78bfa;
+  --app-teal: #2dd4bf;
+  --app-amber: #f5a524;
+  --app-amber-text: #b7791f;
+  --app-red: #e85d5d;
+  --app-green: #4f9d7a;
+  --app-success-text: #63e2b7;
+
+  /* 滚动条 */
+  --app-scrollbar: #2c3240;
+  --app-scrollbar-hover: #3a4152;
+
+  color-scheme: dark;
+}
+
+/* 亮色 */
+:root[data-theme='light'] {
+  --app-bg: #f5f6f8;
+  --app-sider-bg: #ffffff;
+  --app-tabbar-bg: rgba(255, 255, 255, 0.96);
+  --app-surface: #ffffff;
+  --app-surface-2: #ffffff;
+  --app-surface-3: #f0f1f5;
+  --app-surface-4: #e9ebf1;
+  --app-sunken: #eceef3;
+
+  --app-border: #e3e6ec;
+  --app-border-50: rgba(227, 230, 236, 0.5);
+  --app-border-60: rgba(227, 230, 236, 0.6);
+  --app-text: #1a1d26;
+  --app-text-2: #5c6373;
+  --app-text-3: #8b93a7;
+
+  --app-primary: #3b6bff;
+  --app-primary-hover: #2f5ae8;
+  --app-primary-pressed: #2448c7;
+  --app-primary-soft: #5b83ff;
+  --app-primary-a06: rgba(59, 107, 255, 0.06);
+  --app-primary-a08: rgba(59, 107, 255, 0.08);
+  --app-primary-a10: rgba(59, 107, 255, 0.1);
+  --app-primary-a14: rgba(59, 107, 255, 0.14);
+  --app-primary-a16: rgba(59, 107, 255, 0.16);
+  --app-primary-a18: rgba(59, 107, 255, 0.18);
+  --app-primary-soft-a06: rgba(91, 131, 255, 0.06);
+  --app-primary-soft-a35: rgba(91, 131, 255, 0.35);
+  --app-primary-border-soft: #b9ccff;
+
+  --app-purple: #7c3aed;
+  --app-purple-soft: #8b5cf6;
+  --app-teal: #0d9488;
+  --app-amber: #d97706;
+  --app-amber-text: #b45309;
+  --app-red: #e5484d;
+  --app-green: #2f9e6e;
+  --app-success-text: #18a058;
+
+  --app-scrollbar: #d3d7e0;
+  --app-scrollbar-hover: #b9bfcc;
+
+  color-scheme: light;
+}
+
+/* 切换主题时给外壳一个短过渡，避免整页「跳变」。
+   只挂外壳元素：组件内部有自己的过渡，全局挂会互相覆盖。 */
+body,
+.app-sider,
+.app-header,
+.app-content,
+.mobile-tabbar,
+.brand {
+  transition:
+    background-color 0.25s ease,
+    border-color 0.25s ease,
+    color 0.25s ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body,
+  .app-sider,
+  .app-header,
+  .app-content,
+  .mobile-tabbar,
+  .brand {
+    transition: none;
+  }
+}

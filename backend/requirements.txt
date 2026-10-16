@@ -1,0 +1,57 @@
+# ---- Web 框架 ----
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+
+# ---- 配置与校验 ----
+pydantic==2.10.4
+pydantic-settings==2.7.0
+
+# ---- 数据库（异步） ----
+sqlalchemy==2.0.36
+aiosqlite==0.20.0
+# 切换 PostgreSQL 时启用：
+# asyncpg==0.30.0
+
+# ---- 缓存（可选，未配置 REDIS_URL 时自动降级为内存） ----
+redis==5.2.1
+
+# ---- 大模型（DeepSeek 兼容 OpenAI 接口） ----
+openai==1.59.6
+
+# ---- HTTP（微信接口调用） ----
+httpx==0.28.1
+# SOCKS5 支持：微信请求走固定出口代理时必需（httpx[socks]，见 deploy/proxy-guard.sh）
+socksio==1.0.0
+
+# ---- 视频渲染（真实管线，必需） ----
+# 配音走 edge-tts（免费），字幕轴直接用它的 SentenceBoundary（不再装 faster-whisper），
+# 合成走 ffmpeg 子进程（不再装 moviepy），画面用 PIL 绘制。
+# 系统依赖：ffmpeg（编码/拼接）+ 任意 CJK 字体（如 fonts-noto-cjk，否则中文变方块）
+edge-tts==7.3.1
+pillow==12.1.0
+python-pptx==1.0.2
+
+# ---- 声音复刻（可选，默认不装）----
+# 主程序（对话 / 内容生产 / 视频渲染）完全不需要这一组：
+#   * 默认 VC_PROVIDER=edge，配音走 edge-tts 官方音色，零额外依赖；
+#   * 想「用自己的声音配音」时才装，装完把 .env 的 VC_PROVIDER 改成 xtts。
+#
+# ⚠️ 故意写成注释而不是依赖项，原因有两个：
+#   1) torch 三件套必须从 PyTorch 官方 CPU 源装（PyPI 上默认是 CUDA 版，多 2GB+）；
+#   2) transformers / numpy 的版本上限（<5、<2.3）只是 TTS 的需求，
+#      钉进这里会无谓地卡住主程序将来升级。 
+#
+# 完整安装步骤与每条版本约束的成因见 docs/开发指南.md 的
+# 「声音复刻：本地零成本路线」章节，命令摘录如下：
+#
+#   cd backend
+#   uv pip install --system torch==2.9.1 torchaudio==2.9.1 torchvision==0.24.1 \
+#       --index-url https://download.pytorch.org/whl/cpu
+#   uv pip install --system coqui-tts==0.27.5 "transformers==4.57.6" \
+#       "numpy==2.2.6" soundfile==0.13.1 pypinyin==0.55.0 jieba==0.42.1 torchcodec==0.17.0
+#
+# 装完首次合成会自动下 ~1.8GB 模型；国内网络注意镜像与限流，见同一章节。
+
+# ---- 开发工具 ----
+pytest==8.3.4
+pytest-asyncio==0.25.0

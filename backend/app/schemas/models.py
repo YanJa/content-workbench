@@ -1,0 +1,334 @@
+"""Pydantic 请求/响应模型。"""
+from __future__ import annotations
+
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field
+
+
+# ---------------------------------------------------------------- 会话
+class ConversationCreate(BaseModel):
+    title: str = Field(default="新对话", max_length=200)
+    scene: Literal["chat", "gzh", "xiaohongshu", "douyin"] = "chat"
+
+
+class ConversationOut(BaseModel):
+    id: str
+    title: str
+    scene: str
+    summary: str = ""
+    created_at: int
+    updated_at: int
+
+    model_config = {"from_attributes": True}
+
+
+class ConversationRename(BaseModel):
+    """重命名会话。留空或纯空白由服务层回落到「新对话」。"""
+
+    title: str = Field(default="", max_length=200)
+
+
+class MessageOut(BaseModel):
+    id: str
+    role: str
+    content: str
+    tool_name: str | None = None
+    created_at: int
+    # token 用量：前端打开历史会话时能还原当条消息的用量展示
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    # 推理模型的思维链（历史回显「思考过程」折叠块用）
+    reasoning: str = ""
+    # 展示型工具痕迹：{"calls": [{id, name, arguments, result, status}]}
+    # 前端直接映射成 toolCalls，无需解析 OpenAI 格式
+    tool_calls: dict[str, Any] | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class ConversationDetail(ConversationOut):
+    messages: list[MessageOut] = []
+
+
+# ---------------------------------------------------------------- 对话
+class ChatRequest(BaseModel):
+    conversation_id: str | None = None
+    message: str
+    platform: Literal["gzh", "xiaohongshu", "douyin"] | None = None
+    topic: str = ""
+    audience: str = ""
+    # 是否允许模型调用工具
+    enable_tools: bool = True
+    # 前端为这条回复预生成的消息 id，落库时直接当主键。
+    # 于是「保存到队列」上报的 msg_id 与历史消息 id 一致，队列页才能反跳定位。
+    assistant_msg_id: str | None = None
+
+
+class ToolConfirmRequest(BaseModel):
+    # 可选：对话页确认时传真实会话 id（结果回写消息流）；队列页 / 加工面板的
+    # 「推送草稿」不来自任何对话，不传即可。
+    conversation_id: str | None = None
+    tool_call_id: str
+    tool_name: str
+    arguments: dict[str, Any]
+
+
+# ---------------------------------------------------------------- 内容
+class ContentOut(BaseModel):
+    id: str
+    platform: str
+    kind: str
+    title: str
+    body: str
+    summary: str = ""
+    meta: dict[str, Any] | None = None
+    conversation_id: str | None = None
+    # ---- 排版产物（队列加工后才有值） ----
+    body_html: str = ""
+    theme: str | None = None
+    layouts: dict[str, Any] | None = None
+    images: list[dict[str, Any]] | None = None
+    layout_status: str = "none"
+    # 加工中标记："" 空闲 / "layout" 排版中 / "image" 生图中
+    processing: str = ""
+    created_at: int
+    updated_at: int = 0
+
+    model_config = {"from_attributes": True}
+
+
+# ---------------------------------------------------------------- 入队 / 排版 / 配图
+class ContentCreateRequest(BaseModel):
+    """用户点「保存到队列」时提交（对话产出的显式入库动作）。"""
+
+    platform: Literal["gzh", "xiaohongshu", "douyin"]
+    title: str
+    body: str
+    summary: str = ""
+    kind: Literal["text", "video"] = "text"
+    conversation_id: str | None = None
+    # 前端消息 id，便于回溯是哪条 AI 回复存下来的
+    msg_id: str | None = None
+
+
+class ContentUpdateRequest(BaseModel):
+    """部分更新内容（加工排版面板里改 Markdown 正文 / 排版 HTML / 标题）。
+
+    全字段可选，None = 不改 —— 区别于「传空串 = 清空」。这样前端可以只传
+    真的要改的字段，不会被漏传的字段覆盖成空。
+    """
+
+    title: str | None = None
+    body: str | None = None
+    summary: str | None = None
+    body_html: str | None = None
+
+
+class LayoutRequest(BaseModel):
+    theme: str = "moyu-green"
+    platform: Literal["gzh", "xiaohongshu"] = "gzh"
+    # 排版前是否自动按正文生成一张封面（默认开）。cover 通道不可用时静默跳过。
+    auto_cover: bool = True
+    # 作者信息（面板临时覆盖用）。留空 = 排版时不替换 {{作者名}}/{{一句话简介}} 占位。
+    author_name: str = ""
+    author_intro: str = ""
+    # 公众号账号（关注卡用）：留空 = 用默认号。用它替换 {{号名}}/{{slogan}} 并注入二维码。
+    account_id: str = ""
+
+
+class AuthorSettingRequest(BaseModel):
+    """作者默认信息（系统设置里配一次，排版时自动替换占位符）。"""
+
+    author_name: str = ""
+    author_intro: str = ""
+
+
+class CoverGenRequest(BaseModel):
+    """生成封面（模板化，非 AI 生图）。
+
+    全部可省：留空则从正文自动解析标题/副标题，风格/尺寸取 .env 默认值。
+    """
+
+    title: str = ""
+    sub: str = ""
+    tag: str = ""
+    style: str = ""  # gradient / dark / light，留空用 COVER_STYLE
+    size: str = ""  # wide / square / og，留空用 COVER_SIZE
+    date: str = ""
+
+
+class ImageGenRequest(BaseModel):
+    prompt: str
+    size: str = ""  # 留空则用 settings.IMAGE_SIZE
+    count: int = Field(default=1, ge=1, le=4)
+    # 插入正文的位置（0=文首，-1=文末，n=第 n 段后）；默认文末
+    position: int = -1
+
+
+class ImageUpdateRequest(BaseModel):
+    alt: str | None = None
+    position: int | None = None
+
+
+class QueueItemOut(BaseModel):
+    id: str
+    content_id: str
+    platform: str
+    title: str
+    status: str
+    checklist: dict[str, Any] | None = None
+    wechat_media_id: str | None = None
+    # 关联内容的加工中标记，透传给队列页（队列行显示「排版中/生图中」）
+    processing: str = ""
+    # 来源会话与消息（从 Content join 出来）：队列页据此「回到对话」并定位到那条回复
+    conversation_id: str | None = None
+    msg_id: str | None = None
+    created_at: int
+    published_at: int | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class QueueStatusUpdate(BaseModel):
+    status: Literal["draft", "ready", "published", "archived"]
+
+
+class ChecklistUpdate(BaseModel):
+    checklist: dict[str, bool]
+
+
+# ---------------------------------------------------------------- 公众号账号
+class WeChatAccountCreate(BaseModel):
+    name: str = Field(default="", max_length=120)
+    appid: str = Field(min_length=1, max_length=64)
+    secret: str = Field(min_length=1, max_length=256)
+    homepage: str = Field(default="", max_length=300)
+    gzh_name: str = Field(default="", max_length=120)  # 对外号名（{{号名}}）
+    slogan: str = Field(default="", max_length=200)  # 关注卡副标（{{slogan}}）
+    is_default: bool = False
+
+
+class WeChatAccountUpdate(BaseModel):
+    """部分更新。secret 留空 = 不改（避免用户改名称时被迫回填密钥）。"""
+
+    name: str | None = None
+    appid: str | None = None
+    secret: str | None = None
+    homepage: str | None = None
+    gzh_name: str | None = None
+    slogan: str | None = None
+
+
+class WeChatAccountOut(BaseModel):
+    id: str
+    name: str
+    appid: str
+    # 脱敏后的占位，前端只用于判断「有没有配」
+    secret_set: bool = False
+    homepage: str = ""
+    gzh_name: str = ""
+    slogan: str = ""
+    # 二维码：qrcode_url 可直接用于 <img src>；qrcode_set 供前端判断是否已配
+    qrcode_url: str = ""
+    qrcode_set: bool = False
+    is_default: bool = False
+    verified_at: int | None = None
+    created_at: int
+    updated_at: int = 0
+
+    model_config = {"from_attributes": True}
+
+
+# ---------------------------------------------------------------- 视频
+class VisualScene(BaseModel):
+    """PPT 模式的单页画面：narration 进配音，slide_image/title/body 上屏。"""
+
+    narration: str = ""
+    title: str = ""
+    body: list[str] = Field(default_factory=list)
+    # LibreOffice 渲染的真实幻灯片图（相对 OUTPUT_DIR），空串表示没有、退回文字卡片
+    slide_image: str = ""
+
+
+class VideoRenderRequest(BaseModel):
+    script: str
+    ratio: Literal["9:16", "16:9", "1:1"] = "9:16"
+    voice: str = ""
+    subtitle: bool = True
+    title: str = Field(default="", max_length=100)
+    # PPT 模式：每页标题+要点，随任务存库，渲染时映射到镜头
+    visual_scenes: list[VisualScene] | None = None
+
+
+class JobPatch(BaseModel):
+    """历史任务的可改字段：全部可选，传啥改啥。"""
+
+    title: str | None = Field(default=None, max_length=100)
+    script: str | None = None
+    visual_scenes: list[VisualScene] | None = None
+    # 换音色（含换成自己克隆的音色 voice_id），改完点「重新渲染」生效
+    voice: str | None = None
+
+
+class JobOut(BaseModel):
+    id: str
+    status: str
+    progress: int
+    stage: str
+    output_path: str = ""
+    error: str = ""
+    title: str = ""
+    source: str = "text"
+    ratio: str = ""
+    voice: str = ""
+    output_url: str = ""
+    duration_sec: float = 0
+    width: int = 0
+    height: int = 0
+    size_bytes: int = 0
+    # 回显用：口播稿与 PPT 每页结构（点击历史任务时回填到编辑区）
+    script: str = ""
+    visual_scenes: list[VisualScene] | None = None
+    created_at: int = 0
+    finished_at: int | None = None
+
+
+class JobProgress(BaseModel):
+    """轮询专用的精简返回。
+
+    完整 JobOut 里有 script(约 4KB) 和 visual_scenes(可达 8KB+)，合计十几 KB，
+    但轮询只需要「跑到哪了」。拿完整包轮询意味着每 2 秒跨境传十几 KB 无用数据，
+    实测经 Cloudflare Tunnel 单次 1.7~2.9 秒，纯浪费。这里只回进度必需字段，
+    响应从 22KB 降到约 200 字节。
+
+    前端在结束时再调一次完整 GET /jobs/{id} 拿 script / visual_scenes 回填。
+    """
+
+    id: str
+    status: str
+    progress: int
+    stage: str = ""
+    error: str = ""
+    output_url: str = ""
+    output_path: str = ""
+    duration_sec: float = 0
+    size_bytes: int = 0
+    finished_at: int | None = None
+
+
+class JobPage(BaseModel):
+    """任务列表分页结果（分页语义统一用 page / pageSize）。"""
+
+    items: list[JobOut] = Field(default_factory=list)
+    total: int = 0
+    page: int = 1
+    page_size: int = 10
+    pages: int = 1
+
+
+# ---------------------------------------------------------------- 工具
+class ToolOut(BaseModel):
+    name: str
+    description: str
+    requires_confirm: bool

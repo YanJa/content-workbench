@@ -1,0 +1,46 @@
+[Unit]
+Description=Content Workbench Backend (FastAPI)
+Documentation=https://github.com/your-org/content-workbench
+After=network-online.target redis.service
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=www-data
+Group=www-data
+
+# 按你的实际部署路径改这两行
+WorkingDirectory=/opt/content-workbench/backend
+Environment="PATH=/opt/content-workbench/backend/.venv/bin:/usr/local/bin:/usr/bin:/bin"
+
+# 环境变量从 .env 读（pydantic-settings 会自动加载同目录的 .env）
+# 如需在这里显式覆盖，用多行 Environment= 或 EnvironmentFile=
+# EnvironmentFile=/opt/content-workbench/backend/.env
+
+ExecStart=/opt/content-workbench/backend/.venv/bin/python -m uvicorn \
+          app.main:app \
+          --host 127.0.0.1 \
+          --port 8000 \
+          --workers 2 \
+          --proxy-headers \
+          --forwarded-allow-ips='127.0.0.1'
+
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+KillSignal=SIGINT
+
+# 日志进 journald，用 journalctl -u cwb-backend -f 看
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cwb-backend
+
+# ---- 安全加固（按需放宽）----
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/content-workbench/backend/data
+
+[Install]
+WantedBy=multi-user.target
