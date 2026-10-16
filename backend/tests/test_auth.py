@@ -59,7 +59,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "OUTPUT_DIR", str(tmp_path / "outputs"))
     monkeypatch.setattr(settings, "AUTH_REGISTER_MODE", "invite")
     monkeypatch.setattr(settings, "INVITE_CODE", "test-invite")
-    auth_mod._LOGIN_ATTEMPTS.clear()
+    auth_mod._ATTEMPTS.clear()
 
     yield SimpleNamespace(tmp=tmp_path, Maker=Maker)
 
@@ -185,12 +185,56 @@ def test_login_success_failure_and_rate_limit(env):
     # 限流期间正确密码也进不来
     assert _login(client).status_code == 429
 
-    # 换个用户名不受旧计数影响（计数按用户名维度）
-    auth_mod._LOGIN_ATTEMPTS.clear()
+    # 换用户名之前是「新配额」，现在 IP 维度会一并累计（见下面的
+    # test_login_ip_rate_limit_blocks_rotation）——所以这里先清计数器再验登录本身
+    auth_mod._ATTEMPTS.clear()
     assert _register(client, "carol", invite="test-invite").status_code == 200
     ok = _login(client, "carol")
     assert ok.status_code == 200, ok.text
     assert ok.json()["user"]["username"] == "carol"
+
+
+def test_login_ip_rate_limit_blocks_rotation(env):
+    """换着用户名撞库也要挡得住。
+
+    只按用户名限流时，攻击者每换一个名字就拿到新配额，等于没限 ——
+    这条锁的是 IP 维度（nginx basic auth 摘掉后登录接口直接暴露，靠这档补位）。
+    每个用户名只错 1 次（用户名档要 5 次才触发），只有 IP 会累计。
+    """
+    client = TestClient(app)
+    auth_mod._ATTEMPTS.clear()
+    assert _register(client).status_code == 200  # 首用户，注册不限流
+
+    blocked_at = None
+    for i in range(auth_mod._MAX_PER_IP + 5):
+        r = _login(client, username=f"ghost{i}", password="wrong")
+        if r.status_code == 429:
+            blocked_at = i + 1
+            break
+        assert r.status_code == 401, f"第 {i + 1} 次意外返回 {r.status_code}"
+    assert blocked_at == auth_mod._MAX_PER_IP + 1, (
+        f"IP 维度限流没生效（第 {blocked_at} 次才拦下，期望 {auth_mod._MAX_PER_IP + 1}）"
+    )
+
+
+def test_register_rate_limit_on_bad_invite_code(env):
+    """撞邀请码会被按 IP 限流；首用户注册豁免（不能被挡在系统门外）。"""
+    client = TestClient(app)
+    auth_mod._ATTEMPTS.clear()
+    # 首用户：免码且不限流
+    assert _register(client, "alice").status_code == 200
+
+    auth_mod._ATTEMPTS.clear()
+    blocked_at = None
+    for i in range(auth_mod._MAX_PER_IP + 5):
+        r = _register(client, f"mallory{i}", invite="wrong-code")
+        if r.status_code == 429:
+            blocked_at = i + 1
+            break
+        assert r.status_code == 403, f"第 {i + 1} 次意外返回 {r.status_code}"
+    assert blocked_at == auth_mod._MAX_PER_IP + 1, (
+        f"撞邀请码未被限流（第 {blocked_at} 次才拦下）"
+    )
 
 
 # ---------------------------------------------------------------- me / 401

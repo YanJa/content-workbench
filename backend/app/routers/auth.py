@@ -20,7 +20,7 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -68,9 +68,18 @@ class TokenOut(BaseModel):
 # ---------------------------------------------------------------- 校验与限流
 _USERNAME_RE = re.compile(r"[A-Za-z0-9_-]{3,32}")
 
-_LOGIN_ATTEMPTS: dict[str, list[float]] = defaultdict(list)
-_MAX_ATTEMPTS = 5
+_ATTEMPTS: dict[str, list[float]] = defaultdict(list)
 _WINDOW_SEC = 15 * 60
+# 单用户名：5 次就锁（挡「盯着一个账号撞库」）
+_MAX_PER_USER = 5
+# 单 IP：20 次（挡「换着用户名遍历」。nginx 那层 basic auth 摘掉后，
+# 登录接口是直接暴露在公网的，这一档是补位；定 20 是因为同一出口 IP
+# 后面可能是好几个人，太紧会误伤）
+_MAX_PER_IP = 20
+
+# 内网/回源地址不算「客户端」：cloudflared 从本机连 nginx，XFF 链里会带 127.0.0.1
+_PRIVATE_PREFIX = ("10.", "192.168.", "172.16.", "172.17.", "172.18.", "172.19.",
+                   "172.2", "172.30.", "172.31.", "127.", "::1", "fc00:", "fd00:")
 
 
 def _validate_username(raw: str) -> str:
@@ -80,16 +89,30 @@ def _validate_username(raw: str) -> str:
     return v
 
 
-def _check_rate(username: str) -> None:
+def _client_ip(request: Request) -> str:
+    """真实客户端 IP：取 X-Forwarded-For 里第一个非内网地址。
+
+    链路是 浏览器 → Cloudflare → cloudflared(本机) → nginx → 18080 → 后端，
+    所以 $remote_addr 恒为 127.0.0.1，只有 XFF 里有真东西。XFF 可被伪造，
+    但它只用来兜「按用户名限流」的缺口，伪造了也仍受用户名那档约束。
+    """
+    for part in (request.headers.get("x-forwarded-for") or "").split(","):
+        ip = part.strip()
+        if ip and not ip.startswith(_PRIVATE_PREFIX):
+            return ip
+    return request.client.host if request.client else "unknown"
+
+
+def _check_rate(key: str, limit: int) -> None:
     now = time.time()
-    attempts = [t for t in _LOGIN_ATTEMPTS[username] if now - t < _WINDOW_SEC]
-    _LOGIN_ATTEMPTS[username] = attempts
-    if len(attempts) >= _MAX_ATTEMPTS:
-        raise HTTPException(429, "登录失败次数过多，请 15 分钟后再试")
+    attempts = [t for t in _ATTEMPTS[key] if now - t < _WINDOW_SEC]
+    _ATTEMPTS[key] = attempts
+    if len(attempts) >= limit:
+        raise HTTPException(429, "尝试次数过多，请 15 分钟后再试")
 
 
-def _record_fail(username: str) -> None:
-    _LOGIN_ATTEMPTS[username].append(time.time())
+def _record_fail(key: str) -> None:
+    _ATTEMPTS[key].append(time.time())
 
 
 # ---------------------------------------------------------------- 存量认领
@@ -173,17 +196,26 @@ async def _claim_legacy_data(db: AsyncSession, uid: str) -> dict:
 
 # ---------------------------------------------------------------- 端点
 @router.post("/register", response_model=TokenOut)
-async def register(req: RegisterIn, db: AsyncSession = Depends(get_db)):
+async def register(
+    req: RegisterIn,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
     """注册。
 
     - 首用户永远放行（并触发存量认领）；
-    - 之后按 AUTH_REGISTER_MODE：invite 校验邀请码 / open 放行 / closed 拒绝。
+    - 之后按 AUTH_REGISTER_MODE：invite 校验邀请码 / open 放行 / closed 拒绝；
+    - 按客户端 IP 限流，防「撞邀请码」（邀请码填错也计数）。
+      首用户注册豁免 —— 那是把系统交给第一个人的一次性动作，不能被限流挡在门外。
     """
     username = _validate_username(req.username)
     if len(req.password) < 8:
         raise HTTPException(422, "密码至少 8 位")
 
     first_user = (await db.execute(select(User.id).limit(1))).first() is None
+    ip_key = f"reg:{_client_ip(request)}"
+    if not first_user:
+        _check_rate(ip_key, _MAX_PER_IP)
 
     taken = (await db.execute(select(User.id).where(User.username == username))).first()
     if taken:
@@ -196,6 +228,7 @@ async def register(req: RegisterIn, db: AsyncSession = Depends(get_db)):
         if mode == "invite":
             expected = settings.INVITE_CODE
             if not expected or req.invite_code.strip() != expected:
+                _record_fail(ip_key)
                 raise HTTPException(403, "邀请码不正确")
 
     user = User(username=username, password_hash=hash_password(req.password))
@@ -218,17 +251,29 @@ async def register(req: RegisterIn, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/login", response_model=TokenOut)
-async def login(req: LoginIn, db: AsyncSession = Depends(get_db)):
-    """登录。按用户名限流：5 次 / 15 分钟。"""
+async def login(req: LoginIn, request: Request, db: AsyncSession = Depends(get_db)):
+    """登录。**双维度限流**：
+
+    - 按用户名 5 次 / 15 分钟 —— 挡盯着一个账号撞库；
+    - 按客户端 IP 20 次 / 15 分钟 —— 挡换着用户名遍历。
+
+    只按用户名限流是不够的：攻击者每试一个新名字就重置配额，等于没限。
+    """
     username = (req.username or "").strip()
-    _check_rate(username)
+    user_key = f"login:{username}"
+    ip_key = f"login-ip:{_client_ip(request)}"
+    _check_rate(user_key, _MAX_PER_USER)
+    _check_rate(ip_key, _MAX_PER_IP)
 
     user = (await db.execute(select(User).where(User.username == username))).scalar_one_or_none()
     if user is None or not verify_password(req.password, user.password_hash):
-        _record_fail(username)
+        _record_fail(user_key)
+        _record_fail(ip_key)
         raise HTTPException(401, "用户名或密码错误")
 
-    _LOGIN_ATTEMPTS.pop(username, None)
+    # 登录成功只清当前用户名这一档：IP 那档要留着，
+    # 否则「撞库成功一次」就能把整个 IP 的配额洗白
+    _ATTEMPTS.pop(user_key, None)
     user.last_login_at = int(time.time())
     await db.commit()
     return TokenOut(

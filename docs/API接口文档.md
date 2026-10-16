@@ -371,7 +371,8 @@ assistant 的 `tool_calls[i].result`）。思维链只给人看，`build_context
 >
 > 完整 `/jobs/{id}` 响应约 **22KB**，其中 `script`(约 4KB) 和 `visual_scenes`(可达 8KB+)
 > 是回填编辑区才需要的，轮询时完全用不到。经 Cloudflare Tunnel 访问单次实测
-> **1.7~2.9 秒**（跨境 + 反向隧道 + basic auth），每 2 秒传一次 22KB 纯浪费。
+> **1.7~2.9 秒**（跨境 + 反向隧道，当时还叠了 nginx basic auth，现已摘除），
+> 每 2 秒传一次 22KB 纯浪费。
 >
 > `/jobs/{id}/progress` 只回进度必需字段（`id/status/progress/stage/error/
 > output_url/output_path/duration_sec/size_bytes/finished_at`），实测

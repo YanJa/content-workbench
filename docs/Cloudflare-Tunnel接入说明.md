@@ -240,17 +240,20 @@ nginx 收到的是 IP 直连请求，匹配不到 `server_name cwb.draftpaper.lt
 | | 直连 18080（已弃用） | 走 nginx 443（当前） |
 |---|---|---|
 | 回源路径 | 隧道 → 18080 → 沙箱 | 隧道 → nginx 443 → 18080 → 沙箱 |
-| basic auth | ❌ 失效，站点公开 | ✅ 生效（用户名 `cwb`） |
+| 站点认证 | ❌ 失效，站点公开 | ✅ 由应用内用户系统接管（/login，见 5.5） |
 | SSE 调优 | 靠 cloudflared 默认 | ✅ nginx 的 `proxy_buffering off` 生效 |
 | 跳数 | 少一跳 | 多一跳（实测无感，1.2~1.7s） |
 | 证书 | 无（明文 HTTP） | ✅ 端到端加密 |
 
-验证方式（401 + 认证头 = nginx 生效）：
+验证方式（HTTP 200 + 跳登录页 = nginx 生效）：
 
 ```bash
-curl -sI https://cwb.draftpaper.ltd/ | grep -i "www-authenticate"
-# www-authenticate: Basic realm="Content Workbench - Authorized Only"
+curl -s -o /dev/null -w "%{http_code}\n" https://cwb.draftpaper.ltd/   # 期望 200
+curl -s https://cwb.draftpaper.ltd/ | grep -o "<title>[^<]*</title>"    # 期望「登录 · 内容运营工作台」
 ```
+
+> 站点已**不再**用 nginx `auth_basic`（见 5.5），所以不要再用
+> `www-authenticate` 头判断是否走了 nginx —— 那个头现在是 200 且不存在。
 
 > 判断回源是否真的走了 nginx：看服务器 `cwb-access.log`，
 > 客户端 IP 会显示为 `127.0.0.1`（cloudflared 从本机连入）。
@@ -265,42 +268,55 @@ curl -sI https://cwb.draftpaper.ltd/ | grep -i "www-authenticate"
 cloudflared 本身也**不缓冲**流式响应、**透传 WebSocket Upgrade**，
 两层都不阻塞，所以对话页的流式输出和 HMR 都正常。
 
-### 5.5 修改 basic auth 密码
+### 5.5 站点认证：已改为应用内登录（不再用 nginx basic auth）
 
-站点用 nginx `auth_basic` 保护，账号 `cwb`，密码存在 `/etc/nginx/.htpasswd`。
-改密码**不要试图装 `apache2-utils`**——腾讯云服务器上 `mirrors.tencentyun.com`
-经常解析失败，装了白折腾。直接用 Python 的 `passlib` 生成哈希：
+站点原来靠 nginx `auth_basic`（账号 `cwb` + `/etc/nginx/.htpasswd`）保护。
+用户模块上线后这一层**已摘除**，认证交给应用自己：`/login` 登录页 + JWT +
+邀请码注册（首账号免码并接管存量数据）。
+
+> **为什么必须摘，而不是「多一层更保险」**：两套认证抢同一个 `Authorization`
+> 头。前端登录后每个 XHR 都带 `Authorization: Bearer <jwt>`，而 nginx 的
+> basic auth 期望的是 `Authorization: Basic <base64>` —— 请求里没有 Basic
+> 凭证，nginx 直接回 401。**结果是能打开登录页、能登录，登录进去之后所有
+> 接口全 401，工作台完全不可用**。两层认证不是叠加关系，是互斥关系。
+
+在服务器上执行一次即可：
 
 ```bash
-python3 -c "
-from passlib.hash import apr_md5_crypt
-print('cwb:' + apr_md5_crypt.using(salt='wbCwb26').hash('新密码'))
-"
+sudo cp /etc/nginx/sites-available/cwb /etc/nginx/sites-available/cwb.bak-$(date +%Y%m%d-%H%M%S)
+# 删掉 location / 里的这两行：
+#   auth_basic            "Content Workbench - Authorized Only";
+#   auth_basic_user_file  /etc/nginx/.htpasswd;
+sudo nginx -t && sudo systemctl reload nginx
 ```
 
-把输出整行写进 `/etc/nginx/.htpasswd`：
-
-```bash
-sudo cp /etc/nginx/.htpasswd /etc/nginx/.htpasswd.bak-$(date +%Y%m%d-%H%M%S)
-echo 'cwb:$apr1$wbCwb26$Qf7Sm/YbRikKmiSwpgYFg1' | sudo tee /etc/nginx/.htpasswd >/dev/null
-sudo chown root:www-data /etc/nginx/.htpasswd
-sudo chmod 640 /etc/nginx/.htpasswd
-```
-
-`.htpasswd` 是**每次请求实时读取**的，**不需要 reload nginx**。
+（本机这份 `deploy/nginx-cwb-https.conf` 已经改好了，直接拷过去覆盖即可。）
 
 验证：
 
 ```bash
-curl -s -o /dev/null -w "%{http_code}\n" -u "cwb:新密码" https://cwb.draftpaper.ltd/   # 期望 200
-curl -s -o /dev/null -w "%{http_code}\n" -u "cwb:错密码" https://cwb.draftpaper.ltd/   # 期望 401
+curl -s -o /dev/null -w "%{http_code}\n" https://cwb.draftpaper.ltd/                       # 期望 200（不再 401）
+curl -s -o /dev/null -w "%{http_code}\n" https://cwb.draftpaper.ltd/api/queue/items         # 期望 401（应用内鉴权生效）
+curl -sI https://cwb.draftpaper.ltd/ | grep -ci "www-authenticate"                          # 期望 0
 ```
 
-> **踩坑记录**：apr1（`$apr1$`）的 salt **最多 8 个字符**。
-> 一开始用了 10 字符的 salt（`wbCwb2026`），哈希写进去后正确密码也返回 401，
-> nginx 报 `user "cwb": password mismatch`。换成 8 字符（`wbCwb26`）后立即正常。
-> 另外 `$1$`（标准 MD5-crypt）和 `$apr1$` 虽然算法主体相同，但 magic 字符串不同，
-> nginx **只认 `$apr1$`**，别用 `crypt.crypt()` 生成。
+`.htpasswd` 可以留着当备份，也可以删：
+
+```bash
+sudo rm -f /etc/nginx/.htpasswd
+```
+
+**摘掉之后的防暴力破解**：由应用层接管，登录接口按「用户名 5 次 + 客户端
+IP 20 次 / 15 分钟」双维度限流，注册接口按 IP 限流（防撞邀请码，首账号注册
+豁免）。注意**不要**改用 nginx 的 `limit_req` 做这件事 —— 本架构下
+cloudflared 从本机回源，`$remote_addr` 恒为 `127.0.0.1`，按 IP 限流会把所有
+访客算成同一个 IP，正常用户会被误伤。
+
+> **历史踩坑（basic auth 时期）**：改密码不要试图装 `apache2-utils`——
+> 腾讯云服务器上 `mirrors.tencentyun.com` 经常解析失败。要用 Python
+> `passlib` 生成 `$apr1$` 哈希，且 salt **最多 8 个字符**（10 字符的 salt
+> 会让正确密码也返回 401，nginx 报 `user "cwb": password mismatch`）。
+> `$1$` 与 `$apr1$` magic 不同，nginx 只认 `$apr1$`。
 
 ### 5.6 如需改回直连（不推荐）
 
