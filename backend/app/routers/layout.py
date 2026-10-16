@@ -55,8 +55,12 @@ def _image_url(content_id: str, filename: str, owner: str = "default") -> str:
 
 # ---------------------------------------------------------------- 排版
 @router.get("/items/{content_id}/theme-options")
-async def theme_options(content_id: str):
-    """可选排版主题（供前端选主题）+ 生图/封面能力可用性。"""
+async def theme_options(content_id: str, owner: str = Depends(current_owner_id)):
+    """可选排版主题（供前端选主题）+ 生图/封面能力可用性。
+
+    返回的是全局静态配置，但路径带 content_id，所以要求登录 ——
+    免得将来有人往函数体里加一句按 id 查库，就变成越权读。
+    """
     return {
         "themes": list_themes(),
         "default": "moyu-green",

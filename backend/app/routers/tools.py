@@ -167,11 +167,16 @@ async def job_delete(job_id: str, owner: str = Depends(current_owner_id)):
 
 
 @video_router.post("/ppt/parse")
-async def ppt_parse(file: UploadFile = File(...)):
+async def ppt_parse(
+    file: UploadFile = File(...),
+    owner: str = Depends(current_owner_id),
+):
     """上传 pptx，解析出可朗读的口播稿（文字 + 备注），不渲染。
 
     前端拿到文本后让用户确认/改一改，再调 /render 走同一管线 —
     否则生成什么内容对用户是黑盒。
+
+    必须登录：不鉴权的话任何人都能往磁盘写幻灯片截图目录。
     """
     if not (file.filename or "").lower().endswith((".pptx", ".ppt")):
         raise HTTPException(400, "请上传 .pptx 或 .ppt 文件")

@@ -10,12 +10,13 @@ from __future__ import annotations
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.cache import close_cache, get_cache
 from app.core.config import settings
 from app.core.logging import logger
+from app.core.tenant import current_owner_id
 from app.db.session import init_db
 from app.routers import auth, chat, layout, queue, settings as settings_router, tools, usage, voice_clone
 
@@ -128,11 +129,13 @@ async def health_under_prefix():
 
 
 @app.get(f"{settings.API_PREFIX}/whoami", tags=["系统"])
-async def whoami(request: Request):
+async def whoami(request: Request, owner: str = Depends(current_owner_id)):
     """链路自检探针：把网关转过来的请求原样回声。
 
     用于排查反向代理链路（本机隧道 → 云端网关 → 沙箱）到底改写了什么：
     原始 Host、真实来源 IP、有没有转发头、请求路径有没有被剥前缀。
+
+    要求登录：公网暴露等于送人一个「请求回声器」，能看到转发头与来源 IP。
     """
     forwarded = {
         k: v

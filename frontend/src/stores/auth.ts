@@ -9,10 +9,16 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 
-import { getMe, login as apiLogin, register as apiRegister, type AuthUser } from '@/api/auth'
+import {
+  getMe,
+  login as apiLogin,
+  register as apiRegister,
+  type AuthUser,
+  type ClaimedSummary,
+} from '@/api/auth'
 import { clearToken, getToken, setToken } from '@/api/token'
 
-export type { AuthUser }
+export type { AuthUser, ClaimedSummary }
 
 export const useAuthStore = defineStore('auth', () => {
   const user = ref<AuthUser | null>(null)
@@ -42,10 +48,19 @@ export const useAuthStore = defineStore('auth', () => {
     user.value = res.user
   }
 
-  async function register(username: string, password: string, inviteCode = ''): Promise<void> {
+  /**
+   * 注册。返回首用户的存量认领摘要（非首用户恒为 null），
+   * 由调用方决定是否提示 —— store 不碰 UI。
+   */
+  async function register(
+    username: string,
+    password: string,
+    inviteCode = '',
+  ): Promise<ClaimedSummary | null> {
     const res = await apiRegister(username, password, inviteCode)
     setToken(res.token)
     user.value = res.user
+    return res.claimed ?? null
   }
 
   function logout(): void {

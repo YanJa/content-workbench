@@ -7,7 +7,7 @@ import { ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { NAlert, NButton, NCard, NForm, NFormItem, NInput } from 'naive-ui'
 
-import { useAuthStore } from '@/stores/auth'
+import { useAuthStore, type ClaimedSummary } from '@/stores/auth'
 
 const auth = useAuthStore()
 const route = useRoute()
@@ -19,6 +19,13 @@ const confirmPassword = ref('')
 const inviteCode = ref('')
 const err = ref('')
 const loading = ref(false)
+/** 首用户注册后的接管摘要：非空时先展示「接管了什么」，点了确认才进工作台 */
+const claimed = ref<ClaimedSummary | null>(null)
+
+function enter() {
+  const redirect = (route.query.redirect as string) || '/chat'
+  void router.replace(redirect)
+}
 
 async function onSubmit() {
   err.value = ''
@@ -28,9 +35,17 @@ async function onSubmit() {
   }
   loading.value = true
   try {
-    await auth.register(username.value.trim(), password.value, inviteCode.value.trim())
-    const redirect = (route.query.redirect as string) || '/chat'
-    void router.replace(redirect)
+    const summary = await auth.register(
+      username.value.trim(),
+      password.value,
+      inviteCode.value.trim(),
+    )
+    // 认领是不可撤销的重动作，停一拍让用户看清接管了什么
+    if (summary && (summary.rows || summary.urls || summary.voice_dir_moved)) {
+      claimed.value = summary
+    } else {
+      enter()
+    }
   } catch (e) {
     err.value = (e as Error).message
   } finally {
@@ -42,6 +57,32 @@ async function onSubmit() {
 <template>
   <div class="auth-page">
     <NCard class="auth-card" :bordered="false">
+      <template v-if="claimed">
+        <div class="auth-brand">
+          <div class="auth-logo">✓</div>
+          <div class="auth-title">注册成功</div>
+          <div class="auth-sub">你是第一个账号，已接管以下存量数据</div>
+        </div>
+
+        <div class="claim-list">
+          <div v-if="claimed.rows" class="claim-row">
+            <span>历史数据</span>
+            <b>{{ claimed.rows }} 条</b>
+          </div>
+          <div v-if="claimed.urls" class="claim-row">
+            <span>图片 / 成片直链重签</span>
+            <b>{{ claimed.urls }} 个</b>
+          </div>
+          <div v-if="claimed.voice_dir_moved" class="claim-row">
+            <span>复刻音色</span>
+            <b>已迁移到你的账号下</b>
+          </div>
+        </div>
+
+        <NButton type="primary" block @click="enter">进入工作台</NButton>
+      </template>
+
+      <template v-else>
       <div class="auth-brand">
         <div class="auth-logo">✦</div>
         <div class="auth-title">注册账号</div>
@@ -95,6 +136,7 @@ async function onSubmit() {
       <div class="auth-foot">
         已有账号？<RouterLink to="/login">直接登录</RouterLink>
       </div>
+      </template>
     </NCard>
   </div>
 </template>
@@ -159,5 +201,30 @@ async function onSubmit() {
 
 .auth-foot a:hover {
   text-decoration: underline;
+}
+
+.claim-list {
+  margin-bottom: 16px;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.claim-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 12px;
+  font-size: 12px;
+  color: var(--app-text-2);
+}
+
+.claim-row + .claim-row {
+  border-top: 1px solid var(--app-border);
+}
+
+.claim-row b {
+  color: var(--app-text);
+  font-weight: 600;
 }
 </style>

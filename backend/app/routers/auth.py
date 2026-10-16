@@ -61,6 +61,8 @@ class UserOut(BaseModel):
 class TokenOut(BaseModel):
     token: str
     user: UserOut
+    # 仅首用户注册时非空：告知用户本次接管了多少存量数据
+    claimed: dict | None = None
 
 
 # ---------------------------------------------------------------- 校验与限流
@@ -211,6 +213,7 @@ async def register(req: RegisterIn, db: AsyncSession = Depends(get_db)):
     return TokenOut(
         token=create_token(user.id),
         user=UserOut(id=user.id, username=user.username, created_at=user.created_at),
+        claimed=claimed,
     )
 
 

@@ -349,3 +349,56 @@ def test_layout_job_status_owner(env, monkeypatch):
     assert client.get(url, headers=_auth(alice["token"])).status_code == 200
     # bob 看 alice 的内容任务：归属校验先拦 → 404（不泄露存在性）
     assert client.get(url, headers=_auth(bob["token"])).status_code == 404
+
+
+# ---------------------------------------------------------------- 端点鉴权回归
+# 新增端点时如果忘了挂 owner 依赖，这个测试会失败 —— 白名单要显式写理由。
+PUBLIC_ENDPOINTS = {
+    ("/api/auth/register", "POST"): "注册，认证自身",
+    ("/api/auth/login", "POST"): "登录，认证自身",
+    ("/api/health", "GET"): "健康检查，部署探活用",
+    ("/api/video/voices", "GET"): "edge-tts 全局预置音色清单，无用户数据",
+    ("/api/video/voices/provider", "GET"): "复刻后端状态，全局配置",
+    ("/api/tools", "GET"): "内置工具清单，全局静态",
+    ("/api/usage/pricing", "GET"): "模型单价表，全局静态",
+    ("/api/usage/estimate", "GET"): "成本估算，纯计算不落库",
+}
+
+_AUTH_DEPS = ("current_owner", "current_owner_id", "current_user", "link_auth")
+
+
+def test_every_api_endpoint_is_guarded():
+    """扫全部 /api 端点：要么带鉴权依赖，要么在公开白名单里。"""
+    import ast
+    import inspect
+
+    import app.main as main_mod
+
+    # 从 app.routes 拿真实注册的路径，比 AST 扫源码更可靠
+    unguarded = []
+    for route in main_mod.app.routes:
+        methods = getattr(route, "methods", None)
+        path = getattr(route, "path", "")
+        if not methods or not path.startswith("/api"):
+            continue
+        endpoint = getattr(route, "endpoint", None)
+        if endpoint is None:
+            continue
+        try:
+            src = inspect.getsource(endpoint)
+        except (OSError, TypeError):
+            continue
+        for m in sorted(methods - {"HEAD", "OPTIONS"}):
+            if (path, m) in PUBLIC_ENDPOINTS:
+                continue
+            if any(d in src for d in _AUTH_DEPS):
+                continue
+            unguarded.append(f"{m:6} {path}  ({endpoint.__module__}.{endpoint.__name__})")
+
+    # 公开白名单里的端点必须真的存在，免得白名单留着僵尸条目
+    live = {(r.path, m) for r in main_mod.app.routes
+            for m in (getattr(r, "methods", None) or set())}
+    stale = [f"{p} {m}" for (p, m) in PUBLIC_ENDPOINTS if (p, m) not in live]
+
+    assert not unguarded, "以下端点缺少鉴权依赖（补 Depends(current_owner_id) 或加进白名单）：\n" + "\n".join(unguarded)
+    assert not stale, f"白名单里有不存在的端点：{stale}"

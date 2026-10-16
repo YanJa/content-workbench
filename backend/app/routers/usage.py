@@ -98,11 +98,13 @@ async def estimate(
 
 
 @router.post("/pricing/reload", tags=["AI用量"])
-async def reload_prices():
+async def reload_prices(owner: str = Depends(current_owner_id)):
     """热加载单价表。
 
     往 config/pricing.json 里加了个新模型后不用重启后端：
     改完文件调一下这个接口即可。
+
+    要求登录：这是会改进程内状态的管理动作，不能裸奔。
     """
     state = reload_pricing()
     logger.info("单价表已重新加载: %s", state)
