@@ -5,8 +5,8 @@
 - **第一个用户（users 表为空）永远放行**，并在同一事务里「认领」存量数据
   （owner='default' → 该用户 id）—— 这是单租户 Demo 期平滑过渡的关键一步，
   否则老数据会挂在已废弃的 default 租户下，新用户什么都看不到。
-- 之后按模式：`invite` = 校验 INVITE_CODE（未配置邀请码时禁止注册）；
-  `open` = 开放；`closed` = 禁止。
+- 之后按模式：`invite` = 校验邀请码（invite_codes 表，管理员生成，见
+  core/invite.py）；`open` = 开放；`closed` = 禁止。
 
 登录限流：按用户名计数，5 次 / 15 分钟。内存实现、重启清零 —— 对这个
 量级的工作台够用；真被打爆了再挂 Redis（项目已有 cache 层）。
@@ -34,6 +34,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core import invite as invite_mod
 from app.core.logging import logger
 from app.core.rbac import ROLE_MEMBER
 from app.core.security import create_token, hash_password, link_url, verify_password
@@ -68,6 +69,16 @@ class UserOut(BaseModel):
     # 角色与停用状态：前端据此决定菜单显隐（role）与是否踢回登录页
     role: str = ROLE_MEMBER
     is_active: bool = True
+    # 细粒度权限与用量快照（按钮级权限上线后新增）。三个都带默认空值：
+    # 老调用方（内部构造 UserOut 的地方）不必改，缺了就只是前端少渲染一点。
+    # - permissions：生效的权限点 key 列表，前端按钮显隐/置灰的唯一依据；
+    # - quotas：生效的配额配置 {feature: {period, limit}}，limit=None 表示不限；
+    # - usage：本周期已用量，left=0 就是「今天/本月用完」。
+    permissions: list[str] = Field(default_factory=list)
+    quotas: dict = Field(default_factory=dict)
+    usage: dict = Field(default_factory=dict)
+    # 注册时用的邀请码（渠道统计）。空 = 首用户 / 代建 / 预置 admin。
+    invite_code: str | None = None
 
 
 class TokenOut(BaseModel):
@@ -77,14 +88,31 @@ class TokenOut(BaseModel):
     claimed: dict | None = None
 
 
-def _user_out(user: User) -> UserOut:
-    return UserOut(
+async def _user_out(user: User, db: AsyncSession | None = None) -> UserOut:
+    """用户信息出参。
+
+    `db` 传了才附带权限/配额/用量快照 —— 注册、登录、me 三个端点都有会话，
+    一律传上，让前端拿到 token 的同时就知道「能用什么、还剩多少」，
+    省掉一次额外的 /me 往返（也避免首屏按钮先全亮再灰掉的闪烁）。
+    """
+    out = UserOut(
         id=user.id,
         username=user.username,
         created_at=user.created_at,
         role=user.role,
         is_active=user.is_active,
+        invite_code=user.invite_code,
     )
+    if db is not None:
+        from app.core import quota as quota_mod
+        from app.core.rbac import load_permissions
+
+        perms, quotas = await load_permissions(db, user)
+        out.permissions = perms
+        out.quotas = quotas
+        # 只读快照，不写库：复用请求内的会话，不额外开连接
+        out.usage = await quota_mod.usage_of(user.id, quotas, db=db)
+    return out
 
 
 # ---------------------------------------------------------------- 校验与限流
@@ -251,16 +279,28 @@ async def register(
         if mode == "closed":
             raise HTTPException(403, "注册通道已关闭")
         if mode == "invite":
-            expected = settings.INVITE_CODE
-            if not expected or req.invite_code.strip() != expected:
+            # 新邀请码体系：注册只认 invite_codes 表里的码（管理员在用户管理页
+            # 生成）。旧的 .env 全局码在启动时已被 import_legacy_code() 导入为
+            # 一条不限次的记录，这里不再单独读 settings.INVITE_CODE。
+            try:
+                inv = await invite_mod.consume(req.invite_code)
+            except HTTPException:
+                # 撞码也算一次失败：防「遍历邀请码」（邀请码比密码熵低，
+                # 且这里没有用户名维度兜底，只能靠 IP 限流挡撞码）。
                 _record_fail(ip_key)
-                raise HTTPException(403, "邀请码不正确")
+                raise
+            invite_code = inv.code
+        else:
+            invite_code = None
+    else:
+        invite_code = None
 
     # 注册进来的一律 member：管理员是系统预置的账号，不靠注册顺序决定
     user = User(
         username=username,
         password_hash=hash_password(req.password),
         role=ROLE_MEMBER,
+        invite_code=invite_code,
     )
     db.add(user)
     await db.flush()  # 拿到 user.id，先不提交（认领要和注册同事务）
@@ -275,7 +315,7 @@ async def register(
         logger.info("首用户认领存量数据: %s", claimed)
     return TokenOut(
         token=create_token(user.id),
-        user=_user_out(user),
+        user=await _user_out(user, db),
         claimed=claimed,
     )
 
@@ -311,10 +351,18 @@ async def login(req: LoginIn, request: Request, db: AsyncSession = Depends(get_d
     _ATTEMPTS.pop(user_key, None)
     user.last_login_at = int(time.time())
     await db.commit()
-    return TokenOut(token=create_token(user.id), user=_user_out(user))
+    return TokenOut(token=create_token(user.id), user=await _user_out(user, db))
 
 
 @router.get("/me", response_model=UserOut)
-async def me(user: User = Depends(current_user)):
-    """当前登录用户。前端启动时用它验证本地 token 是否还有效。"""
-    return _user_out(user)
+async def me(user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    """当前登录用户。前端启动时用它验证本地 token 是否还有效。
+
+    同时是**权限与用量的权威快照**：管理员刚改了某个人的权限或配额，
+    前端在下一个 /me（页面加载、路由切换、60 秒静默刷新）就能拿到新值 ——
+    权限点不进 JWT，本来就得每次现算（见 core/rbac.py 的设计口径）。
+
+    `db` 与 `current_user` 里那个是同一个会话（FastAPI 按请求缓存依赖），
+    不会多开一条连接。
+    """
+    return await _user_out(user, db)

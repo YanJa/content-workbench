@@ -35,6 +35,19 @@ engine = create_async_engine(
     connect_args={"check_same_thread": False} if "sqlite" in settings.DATABASE_URL else {},
 )
 
+
+if "sqlite" in settings.DATABASE_URL:
+    # WAL + busy_timeout：配额计数是「多请求并发写同一行」，默认的 rollback
+    # journal 模式下写锁会直接抛 database is locked，而不是排队等一下。
+    from sqlalchemy import event
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _sqlite_pragmas(dbapi_conn, _record):  # noqa: ANN001, ANN202
+        cur = dbapi_conn.cursor()
+        cur.execute("PRAGMA journal_mode=WAL")
+        cur.execute("PRAGMA busy_timeout=5000")
+        cur.close()
+
 SessionLocal = async_sessionmaker(
     engine, class_=AsyncSession, expire_on_commit=False, autoflush=False
 )
@@ -72,6 +85,13 @@ _SQLITE_COLUMN_PATCHES: dict[str, dict[str, str]] = {
     "users": {
         "role": "VARCHAR(16) DEFAULT 'member'",
         "is_active": "BOOLEAN DEFAULT 1",
+        # ⚠️ 这两列**刻意不带 DEFAULT** —— 语义是「非 NULL 即覆盖角色」，
+        # 带了 DEFAULT 就变成每个老用户都被一份空权限覆盖，全站功能锁死。
+        # 可空列不需要 DEFAULT，老行自然是 NULL（= 继承角色）。
+        "perm_override": "JSON",
+        "quota_override": "JSON",
+        # 邀请码来源（渠道统计）。可空，老用户 / 代建 / 预置 admin 都是 NULL。
+        "invite_code": "VARCHAR(64)",
     },
 }
 

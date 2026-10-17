@@ -17,7 +17,7 @@ from __future__ import annotations
 import time
 import uuid
 
-from sqlalchemy import Boolean, String
+from sqlalchemy import Boolean, JSON, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.session import Base
@@ -44,6 +44,21 @@ class User(Base):
     # 停用：保留这个人的一切数据，只收回门禁（登录 + 所有 Bearer 请求）。
     # 刻意不删行 —— 存量直链签名绑 `o=<uid>`，删了用户的配图会集体 404。
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    # 权限覆盖：{"grant": [...], "deny": [...]}，NULL = 完全继承角色模板。
+    # **用增量而不是全量快照**：快照会把用户钉死在「管理员改他那一刻」的角色
+    # 状态上，之后角色模板新增功能他永远收不到（冻结陷阱）。
+    # ⚠️ 这一列的语义是「非 NULL 即生效」，补列 DDL 绝不能带 DEFAULT。
+    perm_override: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    # 配额覆盖：{"layout.run": {"period": "day", "limit": 10}}，逐功能覆盖，
+    # 没提到的功能继续用角色模板的。NULL = 全部继承。
+    quota_override: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+
+    # 注册时使用的邀请码（渠道统计锚点）。存码本体（去重后），
+    # 渠道备注 / 停用态从 invite_codes 表实时反查 —— 不冗余存备注，
+    # 管理员改了备注，用户列表立刻跟着变。
+    # 可空：管理员代建、系统预置 admin、旧码迁移前的存量用户都没有。
+    invite_code: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None, index=True)
 
     created_at: Mapped[int] = mapped_column(default=_now)
     last_login_at: Mapped[int | None] = mapped_column(nullable=True)

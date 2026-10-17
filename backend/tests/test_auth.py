@@ -42,6 +42,14 @@ def env(tmp_path, monkeypatch):
     async def _init():
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+        # 注册现在只认 invite_codes 表（旧 .env 全局码在启动时被
+        # import_legacy_code() 导入为一条不限次记录）。测试里模拟这一步：
+        # 往临时库插一条不限次的 test-invite，等价于生产环境启动导入。
+        async with Maker() as s:
+            from app.models.invite import InviteCode
+
+            s.add(InviteCode(code="test-invite", note="测试码", max_uses=None))
+            await s.commit()
 
     asyncio.run(_init())
 
@@ -66,6 +74,11 @@ def env(tmp_path, monkeypatch):
     # ensure_admin_exists() 走的是模块级 SessionLocal（lifespan 里没有请求
     # 上下文，拿不到 get_db 依赖）；测试里换成临时库的 maker，否则会碰开发库。
     monkeypatch.setattr(rbac_mod, "SessionLocal", Maker)
+    # 邀请码内核同样走模块级 SessionLocal（consume/create/resolve），必须一起
+    # 换成临时库，否则注册扣减会写到开发库的 invite_codes 表。
+    from app.core import invite as invite_mod
+
+    monkeypatch.setattr(invite_mod, "SessionLocal", Maker)
     auth_mod._ATTEMPTS.clear()
 
     yield SimpleNamespace(tmp=tmp_path, Maker=Maker)

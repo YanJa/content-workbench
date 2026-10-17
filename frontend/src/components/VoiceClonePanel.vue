@@ -30,12 +30,18 @@ import {
 } from '@/api/tools'
 import type { CloneVoice, VoiceProviderStatus } from '@/api/tools'
 import { getApiBase } from '@/api/config'
+import { useAuthStore } from '@/stores/auth'
+import { usePermGate } from '@/composables/usePermGate'
 
 /** 复刻出来的音色列表，双向绑定给父组件拼进音色选择器 */
 const voices = defineModel<CloneVoice[]>('voices', { required: true })
 const emit = defineEmits<{ refresh: [] }>()
 
 const message = useMessage()
+const auth = useAuthStore()
+
+/** 声音复刻的门控：权限 voice.clone + 配额 voice_clone */
+const cloneGate = usePermGate({ perm: 'voice.clone', quota: 'voice_clone' })
 
 const status = ref<VoiceProviderStatus | null>(null)
 const files = ref<UploadFileInfo[]>([])
@@ -74,11 +80,17 @@ async function onUpload(options: { file: UploadFileInfo; fileList: UploadFileInf
   // 无论成败都清空列表：NUpload max=1，不清掉下次点不动（踩过一次的坑）
   files.value = []
   if (!raw) return
+  if (cloneGate.blocked.value) {
+    message.warning(cloneGate.reason.value)
+    return
+  }
   uploading.value = true
   try {
     const res = await cloneVoice(raw, nameInput.value)
     nameInput.value = ''
     message.success('录音已上传，开始复刻音色')
+    // 乐观置灰：复刻是异步任务，提交即预扣
+    auth.markUsed('voice_clone')
     running.value = { id: res.id, name: res.name, progress: 0, stage: '排队中' }
     pollClone(res.id)
   } catch (e) {
@@ -214,11 +226,25 @@ onBeforeUnmount(stopPoll)
             :disabled="!!running"
             @change="onUpload"
           >
-            <NButton size="small" type="primary" :loading="uploading" :disabled="!!running">
-              {{ uploading ? '上传中…' : '上传录音，开始复刻' }}
+            <NButton
+              size="small"
+              type="primary"
+              :loading="uploading"
+              :disabled="!!running || cloneGate.blocked.value"
+            >
+              {{
+                uploading
+                  ? '上传中…'
+                  : cloneGate.blocked.value
+                    ? '无法复刻'
+                    : cloneGate.left.value === null
+                      ? '上传录音，开始复刻'
+                      : `上传录音，开始复刻（剩 ${cloneGate.left.value}）`
+              }}
             </NButton>
           </NUpload>
         </div>
+        <div v-if="cloneGate.reason" class="hint gate-tip">⚠ {{ cloneGate.reason }}</div>
 
         <div v-if="running" class="rec-progress">
           <div class="rec-stage">
@@ -367,5 +393,11 @@ onBeforeUnmount(stopPoll)
 .hint {
   font-size: 11.5px;
   color: var(--app-text-3);
+}
+
+/* 权限/配额挡住时的常驻说明 */
+.gate-tip {
+  color: #d03050;
+  margin-top: 6px;
 }
 </style>

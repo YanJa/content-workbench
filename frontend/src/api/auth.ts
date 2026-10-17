@@ -15,6 +15,26 @@ import { http } from './http'
  */
 export type Role = 'admin' | 'member'
 
+/** 配额周期。按**北京时间**切分，不是 UTC —— 否则早上 8 点前「今日用量」对不上。 */
+export type QuotaPeriod = 'day' | 'month'
+
+/** 一条生效的配额配置。limit 为 null 表示「不限」（缺失 / 0 / 负数都归一成它）。 */
+export interface QuotaConf {
+  period: QuotaPeriod
+  limit: number | null
+}
+
+/** 某个功能在本周期的用量快照（来自 /auth/me 的 usage） */
+export interface QuotaUsage extends QuotaConf {
+  label: string
+  used: number
+  unlimited: boolean
+  /** 剩余次数；不限时为 null */
+  left: number | null
+  /** 下次重置的时间戳（秒） */
+  reset_at: number
+}
+
 export interface AuthUser {
   id: string
   username: string
@@ -23,6 +43,16 @@ export interface AuthUser {
   role: Role
   /** 停用后所有 Bearer 请求当场 401，不等令牌过期 */
   is_active: boolean
+  /**
+   * 生效的权限点 key 列表（如 'video.render'）。**按钮显隐/置灰的唯一依据**。
+   *
+   * 这是后端每次请求现算的结果，不进 token：管理员刚改完，下一个 /me 就是新值。
+   */
+  permissions: string[]
+  /** 生效的配额配置：{ feature: { period, limit } } */
+  quotas: Record<string, QuotaConf>
+  /** 各功能本周期用量：{ feature: QuotaUsage } */
+  usage: Record<string, QuotaUsage>
 }
 
 /** 首用户注册时的存量认领摘要（后端 `_claim_legacy_data` 返回） */

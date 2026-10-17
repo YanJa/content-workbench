@@ -42,22 +42,34 @@ const llmReady = ref(false)
 /** 新手引导：首次自动弹一次，之后靠侧栏/头部按钮手动重看 */
 const guideShow = ref(false)
 
-/**
- * 导航单一数据源：桌面侧栏和移动底栏都由它派生，避免两处重复定义。
- *  icon 是 NavIcon 的 name——「系统状态」用脉冲线而非齿轮，因为页面本职是健康巡检。
- *  adminOnly 的项对非管理员隐藏（后端还有一道 403，这里只是不给人看）。
- */
-const NAV = [
-  { key: 'chat', icon: 'chat', label: '对话创作' },
-  { key: 'queue', icon: 'queue', label: '发布队列' },
-  { key: 'video', icon: 'video', label: '视频生产' },
-  { key: 'usage', icon: 'usage', label: 'AI 用量' },
-  { key: 'settings', icon: 'activity', label: '系统状态' },
+interface NavItem {
+  key: string
+  icon: string
+  label: string
+  /** 仅管理员可见 */
+  adminOnly?: boolean
+  /** 菜单级权限点（见 backend/app/core/rbac.py 的 PERMISSIONS） */
+  perm?: string
+}
+
+const NAV: NavItem[] = [
+  { key: 'chat', icon: 'chat', label: '对话创作', perm: 'menu.chat' },
+  { key: 'queue', icon: 'queue', label: '发布队列', perm: 'menu.queue' },
+  { key: 'video', icon: 'video', label: '视频生产', perm: 'menu.video' },
+  { key: 'usage', icon: 'usage', label: 'AI 用量', perm: 'menu.usage' },
+  { key: 'settings', icon: 'activity', label: '系统状态', perm: 'menu.settings' },
   { key: 'admin-users', icon: 'users', label: '用户管理', adminOnly: true },
 ]
 
-/** 按角色过滤后的导航。桌面/移动两处都从这里派生，只写一遍过滤逻辑。 */
-const visibleNav = computed(() => NAV.filter((n) => !n.adminOnly || auth.isAdmin))
+/**
+ * 按角色 + 菜单权限过滤后的导航。桌面/移动两处都从这里派生，只写一遍过滤逻辑。
+ *
+ * 管理员恒通过（`can()` 对 admin 直接返回 true，与后端口径一致）；
+ * 权限快照还没回来时（bootstrapped 前）也全显示，避免侧栏先空一下再填满。
+ */
+const visibleNav = computed(() =>
+  NAV.filter((n) => (!n.adminOnly || auth.isAdmin) && (!n.perm || auth.can(n.perm))),
+)
 
 const menuOptions = computed<MenuOption[]>(() =>
   visibleNav.value.map((n) => ({
@@ -120,10 +132,17 @@ onMounted(async () => {
     llmReady.value = false
   }
   void queue.refresh()
-  // 首次访问自动跑一遍引导：延迟一拍，等首屏与懒加载页面稳定下来再弹
-  if (!onboarding.done) {
+  // 首次访问自动跑一遍引导：延迟一拍，等首屏与懒加载页面稳定下来再弹。
+  //
+  // 但**只在当前停在引导第一站（chat）时才弹**：引导的 positionStep 会
+  // router.push 到每一步所在的页面，不分青红皂白地弹，会把 deep-link /
+  // 刷新落到 /admin/users、/queue 等页面的用户直接拽回 /chat —— 他正要去
+  // 那儿，一段走查先把他劫走了。路由判断放在 setTimeout 回调里（而不是
+  // 挂载时），用户这 700ms 内自己导航走也算数。真想看引导的人，侧栏有
+  // 「新手引导」按钮手动重看。
+  if (!onboarding.done && route.name === 'chat') {
     setTimeout(() => {
-      if (!onboarding.done) guideShow.value = true
+      if (!onboarding.done && route.name === 'chat') guideShow.value = true
     }, 700)
   }
 })

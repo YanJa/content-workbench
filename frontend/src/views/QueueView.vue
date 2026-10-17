@@ -24,12 +24,24 @@ import { cancelProcessing } from '@/api/layout'
 import { getContent } from '@/api/queue'
 import type { QueueItem, QueueStatus, ContentItem } from '@/types'
 import LayoutPanel from '@/components/LayoutPanel.vue'
+import { useAuthStore } from '@/stores/auth'
+import { usePermGate } from '@/composables/usePermGate'
 
 const queue = useQueueStore()
 const message = useMessage()
 const dialog = useDialog()
 const route = useRoute()
 const router = useRouter()
+const auth = useAuthStore()
+
+/**
+ * 推送草稿的门控：权限 wechat.push + 配额 wechat_push。
+ *
+ * 与 LayoutPanel 里那个是同一个功能的两处入口（队列页 / 加工面板），
+ * 两边都接上门控，否则用户在队列页看到的是能点的按钮、在加工面板看到
+ * 的是灰的，会以为页面坏了。
+ */
+const pushGate = usePermGate({ perm: 'wechat.push', quota: 'wechat_push' })
 
 /** 从对话页跳来时带的 content_id，用于定位并高亮对应行 */
 const highlightId = ref('')
@@ -186,10 +198,18 @@ const columns = computed<DataTableColumns<QueueItem>>(() => [
                 {
                   size: 'tiny',
                   type: row.platform === 'gzh' ? 'primary' : 'default',
-                  disabled: busy,
+                  // 非公众号平台的「复制文案」不走微信接口，不受这个门控
+                  disabled: busy || (row.platform === 'gzh' && pushGate.blocked.value),
                   onClick: () => onPushDraft(row),
                 },
-                { default: () => (row.platform === 'gzh' ? '推草稿箱' : '复制文案') },
+                {
+                  default: () =>
+                    row.platform === 'gzh' && pushGate.blocked.value
+                      ? '无法推送'
+                      : row.platform === 'gzh'
+                        ? `推草稿箱${pushGate.left.value === null ? '' : `（剩 ${pushGate.left.value}）`}`
+                        : '复制文案',
+                },
               ),
           row.status !== 'published'
             ? h(
@@ -362,6 +382,10 @@ async function onPushDraft(row: QueueItem) {
     if (content) openLayoutFromContent(content)
     return
   }
+  if (pushGate.blocked.value) {
+    message.warning(pushGate.reason.value)
+    return
+  }
 
   pushing.value = true
   try {
@@ -375,8 +399,10 @@ async function onPushDraft(row: QueueItem) {
     const result = res.result as { ok?: boolean; error?: string; message?: string }
     if (result?.ok) {
       message.success(result.message ?? '已推送到草稿箱')
+      auth.markUsed('wechat_push')
       await queue.refresh()
     } else {
+      // 失败不置灰：后端对这一种有 refund（唯一同步可判成败的受控动作）
       message.error(result?.error ?? '推送失败')
     }
   } catch (e) {

@@ -2,7 +2,7 @@
 /**
  * 用户管理（仅管理员可见）。
  *
- * 三件事：建账号、改角色 / 停用、看全站用量。
+ * 四件事：建账号、改角色 / 停用、看全站用量、**配权限与配额**。
  *
  * 设计取舍：**停用而不是删除**。删除账号会让他的历史配图集体 404
  * （存量直链签名绑的是用户 id，写死在正文里了），而且不可逆。停用
@@ -10,16 +10,32 @@
  *
  * 「不能对自己动手」「不能清空最后一个管理员」这两条后端会拦（400），
  * 这里就在按钮上先禁用 + 给 tooltip 说明，别让人点了才知道不行。
+ *
+ * 权限与配额（按钮级，2026-10 上线）
+ * ---------------------------------
+ * 两层配置，界面也跟着分两层：
+ *
+ * 1. **角色模板**（member）：勾选矩阵 + 每个功能的次数上限。改一次影响所有
+ *    没被单独覆盖的 member。
+ * 2. **个人覆盖**：在「有效权限」上直接勾。保存时按角色模板反算差集
+ *    （grant = 我勾的 − 模板，deny = 模板 − 我勾的），所以这是个**增量**
+ *    覆盖而不是快照 —— 模板日后加新功能，这个人照样能收到。
+ *
+ * admin 那一层刻意只给配额不给权限勾选：管理员权限固定全开，接口层直接
+ * 400。但配额照配 —— 那是成本闸门，不是权限。
  */
 import { computed, h, onMounted, ref } from 'vue'
 import {
   NAlert,
   NButton,
   NCard,
+  NCheckbox,
+  NCheckboxGroup,
   NDataTable,
   NForm,
   NFormItem,
   NInput,
+  NInputNumber,
   NModal,
   NNumberAnimation,
   NSelect,
@@ -36,13 +52,24 @@ import {
 
 import {
   createUser,
+  createInviteCode,
+  deleteInviteCode,
+  disableInviteCode,
+  enableInviteCode,
   getAdminStats,
+  getPermissionCatalog,
+  listInviteCodes,
   listUsers,
+  putRolePermissions,
+  putUserOverrides,
+  resetUserQuota,
   updateUser,
   type AdminStats,
   type AdminUser,
+  type InviteCodeItem,
+  type PermissionCatalog,
 } from '@/api/admin'
-import type { Role } from '@/api/auth'
+import type { QuotaConf, QuotaPeriod, Role } from '@/api/auth'
 import { useAuthStore } from '@/stores/auth'
 
 const message = useMessage()
@@ -51,18 +78,67 @@ const auth = useAuthStore()
 
 const users = ref<AdminUser[]>([])
 const stats = ref<AdminStats | null>(null)
+const catalog = ref<PermissionCatalog | null>(null)
 const loading = ref(true)
 const err = ref('')
+
+// 邀请码管理
+const inviteCodes = ref<InviteCodeItem[]>([])
+const inviteLoading = ref(false)
+const inviteDraft = ref({ code: '', note: '', maxUses: null as number | null })
+const creatingInvite = ref(false)
+const inviteBusy = ref('') // 正在停用/启用/删除的码 id
 
 // 建账号弹窗
 const showCreate = ref(false)
 const creating = ref(false)
 const form = ref({ username: '', password: '', role: 'member' as Role })
 
+// 角色模板编辑
+const savingTemplate = ref(false)
+const memberPerms = ref<string[]>([])
+const memberQuotas = ref<Record<string, QuotaDraft>>({})
+const adminQuotas = ref<Record<string, QuotaDraft>>({})
+
+// 个人覆盖弹窗
+const showEdit = ref(false)
+const editing = ref<AdminUser | null>(null)
+const editPerms = ref<string[]>([])
+const editQuotas = ref<Record<string, QuotaDraft>>({})
+const savingEdit = ref(false)
+const resetting = ref(false)
+
+/** 弹窗里正在编辑的那一行（showEdit 为 false 时也是 null，模板里少写一层判空） */
+const editRow = computed<AdminUser | null>(() => (showEdit.value ? editing.value : null))
+
+/** 配额编辑草稿：period 为 'none' 表示「不限」（后端归一成 limit=null） */
+interface QuotaDraft {
+  period: QuotaPeriod | 'none'
+  limit: number | null
+}
+
 const ROLE_OPTIONS: SelectOption[] = [
   { label: '管理员', value: 'admin' },
   { label: '普通成员', value: 'member' },
 ]
+
+const PERIOD_OPTIONS: SelectOption[] = [
+  { label: '不限', value: 'none' },
+  { label: '每日', value: 'day' },
+  { label: '每月', value: 'month' },
+]
+
+/** 权限点的分组显示名。后端只给 group key，展示名放前端（它本来就只服务 UI） */
+const GROUP_LABELS: Record<string, string> = {
+  menu: '菜单可见性',
+  chat: '对话',
+  queue: '发布队列',
+  video: '视频',
+  layout: '排版',
+  voice: '声音',
+  wechat: '公众号',
+  settings: '系统',
+}
 
 const myId = computed(() => auth.user?.id ?? '')
 /** 当前活跃管理员数：只剩一个时不许把他的角色降掉 */
@@ -70,19 +146,76 @@ const activeAdminCount = computed(
   () => users.value.filter((u) => u.role === 'admin').length,
 )
 
+/** 非菜单的功能权限点 —— 勾选矩阵分两块展示，菜单单独一块并标注「控制侧栏可见性」 */
+const functionItems = computed(
+  () => (catalog.value?.permissions ?? []).filter((p) => p.group !== 'menu'),
+)
+
+const groupedFunctionItems = computed(() => {
+  const map = new Map<string, typeof functionItems.value>()
+  for (const item of functionItems.value) {
+    if (!map.has(item.group)) map.set(item.group, [])
+    map.get(item.group)!.push(item)
+  }
+  return [...map.entries()]
+})
+
+const quotaFeatures = computed(() => catalog.value?.quota_features ?? [])
+
+// ---------------------------------------------------------------- 加载
 async function load() {
   loading.value = true
   err.value = ''
   try {
-    users.value = await listUsers()
-    stats.value = await getAdminStats()
+    const [list, s, c] = await Promise.all([listUsers(), getAdminStats(), getPermissionCatalog()])
+    users.value = list
+    stats.value = s
+    catalog.value = c
+    initTemplateDrafts()
   } catch (e) {
     err.value = (e as Error).message
   } finally {
     loading.value = false
   }
+  void loadInvites()
 }
 
+function initTemplateDrafts() {
+  const c = catalog.value
+  if (!c) return
+  const member = c.roles.member
+  // 模板没配过时后端返回代码默认值（全部权限点），直接用它当前值初始化
+  memberPerms.value = member.permissions ? [...member.permissions] : []
+  memberQuotas.value = toDrafts(member.quotas)
+  adminQuotas.value = toDrafts(c.roles.admin.quotas)
+}
+
+// ---------------------------------------------------------------- 配额草稿换算
+function toDrafts(conf: Record<string, QuotaConf> | undefined): Record<string, QuotaDraft> {
+  const out: Record<string, QuotaDraft> = {}
+  for (const f of quotaFeatures.value) {
+    const c = conf?.[f.key]
+    out[f.key] = c
+      ? { period: c.limit === null ? 'none' : c.period, limit: c.limit }
+      : { period: 'none', limit: null }
+  }
+  return out
+}
+
+function fromDrafts(drafts: Record<string, QuotaDraft>): Record<string, QuotaConf> {
+  const out: Record<string, QuotaConf> = {}
+  for (const [feature, d] of Object.entries(drafts)) {
+    out[feature] = d.period === 'none' ? { period: 'day', limit: null } : { period: d.period, limit: d.limit }
+  }
+  return out
+}
+
+/** 角色模板里该功能当前的设定（个人弹窗里提示「继承自角色」用） */
+function templateQuotaOf(role: Role, feature: string): QuotaConf | undefined {
+  return catalog.value?.roles[role]?.quotas?.[feature]
+}
+
+// ---------------------------------------------------------------- 展示辅助
 function roleTag(role: Role) {
   return h(
     NTag,
@@ -98,6 +231,36 @@ function fmtTime(ts: number | null | undefined): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
+function fmtReset(ts: number): string {
+  const d = new Date(ts * 1000)
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
+/** 配额摘要：只列设了上限的功能，一眼看出谁快用完了 */
+function quotaSummary(row: AdminUser): string {
+  const parts: string[] = []
+  for (const f of quotaFeatures.value) {
+    const snap = row.usage?.[f.key]
+    if (!snap || snap.unlimited) continue
+    const left = snap.left ?? 0
+    parts.push(`${f.label} ${snap.used}/${snap.limit}${left === 0 ? ' ⛔' : ''}`)
+  }
+  return parts.length ? parts.join(' · ') : '均不限'
+}
+
+/** 最近的 reset_at：有任何一个功能设了上限就显示，告诉管理员「什么时候自动恢复」 */
+function quotaResetHint(row: AdminUser): string {
+  let soonest = 0
+  for (const f of quotaFeatures.value) {
+    const snap = row.usage?.[f.key]
+    if (!snap || snap.unlimited) continue
+    if (!soonest || snap.reset_at < soonest) soonest = snap.reset_at
+  }
+  return soonest ? `${fmtReset(soonest)} 重置` : ''
+}
+
+// ---------------------------------------------------------------- 账号操作
 async function onCreate() {
   if (!form.value.username.trim()) {
     message.warning('请填用户名')
@@ -158,6 +321,92 @@ function onToggleActive(row: AdminUser, next: boolean) {
   })
 }
 
+// ---------------------------------------------------------------- 角色模板
+async function onSaveMemberTemplate() {
+  savingTemplate.value = true
+  try {
+    await putRolePermissions('member', {
+      permissions: memberPerms.value,
+      quotas: fromDrafts(memberQuotas.value),
+    })
+    message.success('已更新成员权限模板')
+    await load()
+  } catch (e) {
+    message.error(`保存失败：${(e as Error).message}`)
+  } finally {
+    savingTemplate.value = false
+  }
+}
+
+async function onSaveAdminQuota() {
+  savingTemplate.value = true
+  try {
+    await putRolePermissions('admin', { quotas: fromDrafts(adminQuotas.value) })
+    message.success('已更新管理员配额')
+    await load()
+  } catch (e) {
+    message.error(`保存失败：${(e as Error).message}`)
+  } finally {
+    savingTemplate.value = false
+  }
+}
+
+// ---------------------------------------------------------------- 个人覆盖
+function openEdit(row: AdminUser) {
+  editing.value = row
+  showEdit.value = true
+  // 勾选矩阵按「有效权限」初始化：管理员看到的就是这个人实际能用的
+  editPerms.value = [...row.permissions]
+  editQuotas.value = toDrafts(row.quotas)
+}
+
+async function onSaveEdit() {
+  const row = editRow.value
+  if (!row) return
+  savingEdit.value = true
+  try {
+    // 按角色模板反算差集 —— 增量覆盖，不是快照
+    const template = new Set(catalog.value?.roles[row.role]?.permissions ?? [])
+    const picked = new Set(editPerms.value)
+    const grant = [...picked].filter((k) => !template.has(k))
+    const deny = [...template].filter((k) => !picked.has(k))
+
+    await putUserOverrides(row.id, {
+      perm_override: { grant, deny },
+      quota_override: fromDrafts(editQuotas.value),
+    })
+    message.success(`已更新 ${row.username} 的权限与配额`)
+    showEdit.value = false
+    await load()
+  } catch (e) {
+    message.error(`保存失败：${(e as Error).message}`)
+  } finally {
+    savingEdit.value = false
+  }
+}
+
+function onResetQuota(row: AdminUser) {
+  dialog.warning({
+    title: '重置用量',
+    content: `把 ${row.username} 的本周期计数清零（配置不动，下个周期照样从 0 开始计）。`,
+    positiveText: '重置',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      resetting.value = true
+      try {
+        await resetUserQuota(row.id)
+        message.success(`已重置 ${row.username} 的用量`)
+        await load()
+      } catch (e) {
+        message.error(`重置失败：${(e as Error).message}`)
+      } finally {
+        resetting.value = false
+      }
+    },
+  })
+}
+
+// ---------------------------------------------------------------- 表格
 const columns = computed<DataTableColumns<AdminUser>>(() => [
   {
     title: '用户名',
@@ -189,6 +438,51 @@ const columns = computed<DataTableColumns<AdminUser>>(() => [
   },
   { title: '内容数', key: 'contents', width: 90 },
   {
+    title: '配额（本周期）',
+    key: 'quota',
+    width: 260,
+    render: (row) => {
+      const hint = quotaResetHint(row)
+      return h('div', { style: 'display:flex;align-items:center;gap:8px' }, [
+        h('div', { style: 'flex:1;min-width:0' }, [
+          h(
+            NText,
+            { depth: 3, style: 'font-size:12px;line-height:1.5' },
+            { default: () => quotaSummary(row) },
+          ),
+          hint
+            ? h(
+                NText,
+                { depth: 3, style: 'font-size:11px;line-height:1.5;display:block' },
+                { default: () => hint },
+              )
+            : null,
+        ]),
+        h(
+          NButton,
+          {
+            size: 'tiny',
+            quaternary: true,
+            disabled: resetting.value,
+            onClick: () => onResetQuota(row),
+          },
+          { default: () => '重置' },
+        ),
+      ])
+    },
+  },
+  {
+    title: '权限/配额',
+    key: 'perm',
+    width: 110,
+    render: (row) =>
+      h(
+        NButton,
+        { size: 'tiny', onClick: () => openEdit(row) },
+        { default: () => row.role === 'admin' ? '配额' : '配置' },
+      ),
+  },
+  {
     title: '注册时间',
     key: 'created_at',
     width: 150,
@@ -199,6 +493,15 @@ const columns = computed<DataTableColumns<AdminUser>>(() => [
     key: 'last_login_at',
     width: 150,
     render: (row) => h(NText, { depth: 3 }, { default: () => fmtTime(row.last_login_at) }),
+  },
+  {
+    title: '来源',
+    key: 'invite',
+    width: 140,
+    render: (row) =>
+      row.invite_note
+        ? h(NText, { depth: 3 }, { default: () => row.invite_note })
+        : h(NText, { depth: 3 }, { default: () => '—' }),
   },
   {
     title: '状态',
@@ -224,6 +527,160 @@ const usageColumns: DataTableColumns<AdminStats['by_user'][number]> = [
     key: 'cost',
     width: 120,
     render: (row) => `¥${row.cost.toFixed(4)}`,
+  },
+]
+
+// ---------------------------------------------------------------- 邀请码管理
+async function loadInvites() {
+  inviteLoading.value = true
+  try {
+    inviteCodes.value = await listInviteCodes()
+  } catch (e) {
+    message.error(`加载邀请码失败：${(e as Error).message}`)
+  } finally {
+    inviteLoading.value = false
+  }
+}
+
+async function onCreateInvite() {
+  const code = inviteDraft.value.code.trim()
+  if (code && (code.length < 3 || /\s/.test(code))) {
+    message.warning('自定义码需为 3 位以上且不含空格')
+    return
+  }
+  creatingInvite.value = true
+  try {
+    await createInviteCode({
+      code: code || undefined,
+      note: inviteDraft.value.note.trim(),
+      max_uses: inviteDraft.value.maxUses,
+    })
+    message.success('已生成邀请码')
+    inviteDraft.value = { code: '', note: '', maxUses: null }
+    await loadInvites()
+  } catch (e) {
+    message.error(`生成失败：${(e as Error).message}`)
+  } finally {
+    creatingInvite.value = false
+  }
+}
+
+async function onToggleInvite(item: InviteCodeItem) {
+  inviteBusy.value = item.id
+  try {
+    if (item.disabled) {
+      await enableInviteCode(item.id)
+      message.success('已启用')
+    } else {
+      await disableInviteCode(item.id)
+      message.success('已停用，该码立即不能再注册')
+    }
+    await loadInvites()
+  } catch (e) {
+    message.error(`操作失败：${(e as Error).message}`)
+  } finally {
+    inviteBusy.value = ''
+  }
+}
+
+async function onDeleteInvite(item: InviteCodeItem) {
+  inviteBusy.value = item.id
+  try {
+    await deleteInviteCode(item.id)
+    message.success('已删除')
+    await loadInvites()
+  } catch (e) {
+    message.error(`删除失败：${(e as Error).message}`)
+  } finally {
+    inviteBusy.value = ''
+  }
+}
+
+async function onCopyInvite(code: string) {
+  try {
+    await navigator.clipboard.writeText(code)
+    message.success('已复制到剪贴板')
+  } catch {
+    // 剪贴板 API 在非 https / 权限被拒时会失败，退回提示手动复制
+    message.info(`请手动复制：${code}`)
+  }
+}
+
+/** 邀请码列表的用量文案：不限 / 3/10 / 已用完 */
+function inviteUsageText(item: InviteCodeItem): string {
+  if (item.max_uses === null) return `已用 ${item.used} · 不限`
+  if (item.exhausted) return `已用 ${item.used}/${item.max_uses} · 已用完`
+  return `已用 ${item.used}/${item.max_uses}`
+}
+
+const inviteColumns: DataTableColumns<InviteCodeItem> = [
+  {
+    title: '邀请码',
+    key: 'code',
+    render: (row) =>
+      h('div', { style: 'display:flex;align-items:center;gap:8px' }, [
+        h(NText, { code: true }, { default: () => row.code }),
+        h(
+          NButton,
+          { size: 'tiny', quaternary: true, onClick: () => onCopyInvite(row.code) },
+          { default: () => '复制' },
+        ),
+      ]),
+  },
+  {
+    title: '渠道',
+    key: 'note',
+    render: (row) => h(NText, { depth: row.note ? 1 : 3 }, { default: () => row.note || '未备注' }),
+  },
+  {
+    title: '用量',
+    key: 'usage',
+    width: 150,
+    render: (row) =>
+      h(NText, { type: row.exhausted ? 'error' : undefined }, { default: () => inviteUsageText(row) }),
+  },
+  {
+    title: '状态',
+    key: 'disabled',
+    width: 100,
+    render: (row) =>
+      row.exhausted
+        ? h(NTag, { size: 'tiny', type: 'warning', bordered: false }, { default: () => '已用完' })
+        : row.disabled
+          ? h(NTag, { size: 'tiny', type: 'error', bordered: false }, { default: () => '已停用' })
+          : h(NTag, { size: 'tiny', type: 'success', bordered: false }, { default: () => '生效中' }),
+  },
+  {
+    title: '操作',
+    key: 'op',
+    width: 160,
+    render: (row) =>
+      h('div', { style: 'display:flex;align-items:center;gap:6px' }, [
+        h(
+          NButton,
+          {
+            size: 'tiny',
+            quaternary: true,
+            loading: inviteBusy.value === row.id,
+            disabled: row.exhausted,
+            onClick: () => onToggleInvite(row),
+          },
+          { default: () => (row.disabled ? '启用' : '停用') },
+        ),
+        row.used === 0
+          ? h(
+              NButton,
+              {
+                size: 'tiny',
+                quaternary: true,
+                type: 'error',
+                loading: inviteBusy.value === row.id,
+                onClick: () => onDeleteInvite(row),
+              },
+              { default: () => '删除' },
+            )
+          : null,
+      ]),
   },
 ]
 
@@ -272,6 +729,150 @@ onMounted(load)
       </div>
     </NCard>
 
+    <!-- 角色模板：member 的权限清单 + 各功能次数上限 -->
+    <NCard v-if="catalog" size="small" title="权限模板 · 普通成员" style="margin-bottom: 16px">
+      <NSpin :show="loading">
+        <div class="perm-grid">
+          <div class="perm-group">
+            <div class="perm-group-title">菜单可见性</div>
+            <NCheckboxGroup v-model:value="memberPerms" class="perm-checks">
+              <NCheckbox
+                v-for="item in (catalog.permissions.filter((p) => p.group === 'menu'))"
+                :key="item.key"
+                :value="item.key"
+                :label="item.label"
+              />
+            </NCheckboxGroup>
+            <div class="group-hint">取消勾选后，对应菜单从侧栏消失，直接敲网址也会被弹走</div>
+          </div>
+          <div v-for="[group, items] in groupedFunctionItems" :key="group" class="perm-group">
+            <div class="perm-group-title">{{ GROUP_LABELS[group] ?? group }}</div>
+            <NCheckboxGroup v-model:value="memberPerms" class="perm-checks">
+              <NCheckbox
+                v-for="item in items"
+                :key="item.key"
+                :value="item.key"
+                :label="item.label"
+              />
+            </NCheckboxGroup>
+          </div>
+        </div>
+
+        <div class="quota-block">
+          <div class="quota-title">
+            使用次数配额
+            <NText depth="3" style="font-weight: normal; margin-left: 8px">
+              提交即预扣，失败不退还（异步任务资源已经花掉了）；推送草稿是唯一同步可判成败的，失败会退还
+            </NText>
+          </div>
+          <div class="quota-row">
+            <template v-for="f in quotaFeatures" :key="f.key">
+              <div class="quota-item">
+                <span class="quota-label">{{ f.label }}</span>
+                <NSelect
+                  v-model:value="memberQuotas[f.key].period"
+                  :options="PERIOD_OPTIONS"
+                  size="small"
+                  style="width: 84px"
+                />
+                <NInputNumber
+                  v-if="memberQuotas[f.key].period !== 'none'"
+                  v-model:value="memberQuotas[f.key].limit"
+                  :min="1"
+                  :max="99999"
+                  size="small"
+                  style="width: 96px"
+                  placeholder="次数"
+                />
+                <span v-else class="quota-unlimited">不限</span>
+              </div>
+            </template>
+          </div>
+        </div>
+
+        <div class="card-foot">
+          <NButton size="small" type="primary" :loading="savingTemplate" @click="onSaveMemberTemplate">
+            保存模板
+          </NButton>
+          <span class="foot-hint">
+            改这里会影响所有没有被单独覆盖过的成员；被单独覆盖的人按个人配置走。
+          </span>
+        </div>
+      </NSpin>
+    </NCard>
+
+    <!-- 管理员：只给配额，权限固定全开 -->
+    <NCard v-if="catalog" size="small" title="配额 · 管理员" style="margin-bottom: 16px">
+      <NAlert type="info" :show-icon="false" style="margin-bottom: 12px">
+        管理员权限固定为全部开放、不可收窄（防止把自己锁在门外）。但配额照走 ——
+        那是成本闸门，不是权限。
+      </NAlert>
+      <div class="quota-row">
+        <template v-for="f in quotaFeatures" :key="f.key">
+          <div class="quota-item">
+            <span class="quota-label">{{ f.label }}</span>
+            <NSelect
+              v-model:value="adminQuotas[f.key].period"
+              :options="PERIOD_OPTIONS"
+              size="small"
+              style="width: 84px"
+            />
+            <NInputNumber
+              v-if="adminQuotas[f.key].period !== 'none'"
+              v-model:value="adminQuotas[f.key].limit"
+              :min="1"
+              :max="99999"
+              size="small"
+              style="width: 96px"
+              placeholder="次数"
+            />
+            <span v-else class="quota-unlimited">不限</span>
+          </div>
+        </template>
+      </div>
+      <div class="card-foot">
+        <NButton size="small" type="primary" :loading="savingTemplate" @click="onSaveAdminQuota">
+          保存配额
+        </NButton>
+      </div>
+    </NCard>
+
+    <!-- 邀请码管理：生成限次/不限次的码，复制发给用户注册，渠道统计 -->
+    <NCard size="small" title="邀请码管理" style="margin-bottom: 16px">
+      <template #header-extra>
+        <NText depth="3" style="font-size: 12px">注册码 + 渠道统计</NText>
+      </template>
+      <div class="invite-create">
+        <NInput
+          v-model:value="inviteDraft.code"
+          placeholder="自定义码（留空随机生成）"
+          style="width: 200px"
+        />
+        <NInput
+          v-model:value="inviteDraft.note"
+          placeholder="渠道备注，如「小红书投放」"
+          style="width: 220px"
+        />
+        <NInputNumber
+          v-model:value="inviteDraft.maxUses"
+          :min="1"
+          :show-button="false"
+          placeholder="次数上限（空=不限）"
+          style="width: 160px"
+        />
+        <NButton size="small" type="primary" :loading="creatingInvite" @click="onCreateInvite">
+          生成邀请码
+        </NButton>
+      </div>
+      <NSpin :show="inviteLoading" style="margin-top: 12px">
+        <NDataTable :columns="inviteColumns" :data="inviteCodes" :bordered="false" size="small" />
+      </NSpin>
+      <div class="hint">
+        一个码可限制注册 N 个账号；用尽后自动失效但保留记录，方便对账。
+        用过的码不能删除（它是用户「来源」的依据），只能停用。
+      </div>
+    </NCard>
+
     <NCard v-if="stats" size="small" title="各账号用量">
       <NDataTable
         :columns="usageColumns"
@@ -307,6 +908,91 @@ onMounted(load)
         </div>
       </template>
     </NModal>
+
+    <!-- 个人权限/配额覆盖 -->
+    <NModal
+      v-model:show="showEdit"
+      preset="card"
+      :title="`权限与配额 · ${editing?.username ?? ''}`"
+      style="width: 720px"
+    >
+      <NAlert v-if="editRow?.role === 'admin'" type="info" :show-icon="false" style="margin-bottom: 12px">
+        管理员权限固定全开，这里只能调他的配额。
+      </NAlert>
+      <NAlert v-else type="info" :show-icon="false" style="margin-bottom: 12px">
+        按「实际能用什么」勾选即可，保存时自动按成员模板反算差异 ——
+        这是增量覆盖，模板以后新增的功能他照样能收到。
+      </NAlert>
+
+      <div class="perm-grid">
+        <div class="perm-group">
+          <div class="perm-group-title">菜单可见性</div>
+          <NCheckboxGroup v-model:value="editPerms" class="perm-checks">
+            <NCheckbox
+              v-for="item in (catalog?.permissions.filter((p) => p.group === 'menu') ?? [])"
+              :key="item.key"
+              :value="item.key"
+              :label="item.label"
+              :disabled="editRow?.role === 'admin'"
+            />
+          </NCheckboxGroup>
+        </div>
+        <div v-for="[group, items] in groupedFunctionItems" :key="group" class="perm-group">
+          <div class="perm-group-title">{{ GROUP_LABELS[group] ?? group }}</div>
+          <NCheckboxGroup v-model:value="editPerms" class="perm-checks">
+            <NCheckbox
+              v-for="item in items"
+              :key="item.key"
+              :value="item.key"
+              :label="item.label"
+              :disabled="editRow?.role === 'admin'"
+            />
+          </NCheckboxGroup>
+        </div>
+      </div>
+
+      <div class="quota-block">
+        <div class="quota-title">个人配额覆盖</div>
+        <div class="quota-row">
+          <template v-for="f in quotaFeatures" :key="f.key">
+            <div class="quota-item">
+              <span class="quota-label">{{ f.label }}</span>
+              <NSelect
+                v-model:value="editQuotas[f.key].period"
+                :options="PERIOD_OPTIONS"
+                size="small"
+                style="width: 84px"
+              />
+              <NInputNumber
+                v-if="editQuotas[f.key].period !== 'none'"
+                v-model:value="editQuotas[f.key].limit"
+                :min="1"
+                :max="99999"
+                size="small"
+                style="width: 96px"
+                placeholder="次数"
+              />
+              <span v-else class="quota-unlimited">
+                不限{{
+                  templateQuotaOf(editRow?.role ?? 'member', f.key)?.limit != null
+                    ? `（模板 ${templateQuotaOf(editRow?.role ?? 'member', f.key)?.limit}）`
+                    : ''
+                }}
+              </span>
+            </div>
+          </template>
+        </div>
+      </div>
+
+      <template #footer>
+        <div class="modal-foot">
+          <NButton size="small" :disabled="savingEdit" @click="showEdit = false">取消</NButton>
+          <NButton size="small" type="primary" :loading="savingEdit" @click="onSaveEdit">
+            保存
+          </NButton>
+        </div>
+      </template>
+    </NModal>
   </div>
 </template>
 
@@ -326,11 +1012,91 @@ onMounted(load)
   font-variant-numeric: tabular-nums;
 }
 
-.hint {
+.hint,
+.foot-hint {
   margin-top: 10px;
   font-size: 12px;
   color: var(--app-text-3);
   line-height: 1.6;
+}
+
+.invite-create {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.foot-hint {
+  margin-top: 0;
+  margin-left: 4px;
+}
+
+.perm-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px 20px;
+}
+
+.perm-group-title {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 6px;
+  color: var(--app-text-2);
+}
+
+.group-hint {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--app-text-3);
+  line-height: 1.5;
+}
+
+.perm-checks {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.quota-block {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--app-border, rgba(255, 255, 255, 0.08));
+}
+
+.quota-title {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 10px;
+  color: var(--app-text-2);
+}
+
+.quota-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 20px;
+}
+
+.quota-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.quota-label {
+  font-size: 13px;
+  min-width: 68px;
+}
+
+.quota-unlimited {
+  font-size: 12px;
+  color: var(--app-text-3);
+}
+
+.card-foot {
+  display: flex;
+  align-items: center;
+  margin-top: 16px;
 }
 
 .modal-foot {

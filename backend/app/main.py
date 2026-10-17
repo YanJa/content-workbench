@@ -55,6 +55,12 @@ async def lifespan(app: FastAPI):
     await ensure_admin_account()
     get_cache()
 
+    # 把 .env 里的旧全局邀请码导入为新体系记录（幂等）。放在 init_db 之后 ——
+    # 要先有 invite_codes 表才能写。
+    from app.core.invite import import_legacy_code
+
+    await import_legacy_code()
+
     # 上一次进程退出时正在渲染的任务，统一标成失败，不让它挂着假装在跑
     from app.services.render import recover_orphans
 

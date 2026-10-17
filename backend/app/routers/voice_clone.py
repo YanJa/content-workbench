@@ -13,8 +13,10 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
 from app.core.config import settings
+from app.core.rbac import require_use
 from app.core.security import link_url
 from app.core.tenant import current_owner_id, link_auth
+from app.models.user import User
 from app.services import voices as V
 
 router = APIRouter(prefix="/video/voices", tags=["声音复刻"])
@@ -50,6 +52,7 @@ async def clone(
     file: UploadFile = File(...),
     name: str = Form(""),
     owner: str = Depends(current_owner_id),
+    _perm: User = Depends(require_use("voice.clone", "voice_clone")),
 ):
     """上传一段录音，后台开始复刻。立刻返回 profile_id，进度靠 GET /clone/{id}。
 

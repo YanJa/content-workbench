@@ -54,12 +54,13 @@ Base URL：`/api`（前端 axios baseURL 同此）。交互式文档：后端启
 
 | `AUTH_REGISTER_MODE` | 行为 |
 |---|---|
-| `invite`（默认） | 首用户免码；其余账号需填对 `INVITE_CODE`（未配置 = 禁止注册） |
+| `invite`（默认） | 首用户免码；其余账号需填对**邀请码**（`invite_codes` 表，管理员生成；旧的 .env 全局码启动时自动导入为一条不限次记录） |
 | `open` | 开放注册 |
 | `closed` | 关闭注册 |
 
 - 用户名重复返回 **409**；用户名格式（3~32 位字母数字 `_-`）或密码（≥8 位）不合法返回 **422**；
-- 登录按用户名限流：5 次 / 15 分钟，超出返回 **429**。
+- 邀请码无效/已用尽/已停用返回 **403**（文案统一「邀请码无效或已用尽」，不泄露码是否存在）；
+- 登录按用户名限流：5 次 / 15 分钟，超出返回 **429**；撞邀请码按 IP 限流（防遍历）。
 
 ---
 
@@ -627,15 +628,38 @@ curl -X POST localhost:8000/api/video/render -H 'Content-Type: application/json'
 |---|---|
 | `role` | `"admin"` 或 `"member"`；前端据此决定菜单显隐 |
 | `is_active` | 停用后所有 Bearer 请求当场 401（角色/停用都不进 JWT，改完立即生效） |
+| `permissions` | 生效的权限点 key 列表（按钮级权限，前端显隐/置灰的唯一依据） |
+| `quotas` | 生效的配额配置 `{feature: {period, limit}}`，`limit=null` 表示不限 |
+| `usage` | 本周期已用量 `{feature: {used, limit, left, unlimited, reset_at}}` |
+| `invite_code` | 注册时用的邀请码（渠道统计）；空 = 首用户 / 代建 / 预置 admin |
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/admin/users` | 全部用户，含 `last_login_at` 与 `contents`（名下内容数） |
+| GET | `/api/admin/users` | 全部用户，含 `last_login_at`、`contents`、`permissions`、`quotas`、`usage`、`invite_code`、`invite_note`（渠道备注） |
 | POST | `/api/admin/users` | 代建账号 `{username, password, role?}`，**绕过邀请码**；用户名冲突 409、密码不足 8 位 422 |
 | PATCH | `/api/admin/users/{id}` | 改角色 / 停用 `{role?, is_active?}`；两条 400：动自己的账号、把最后一个管理员降级/停用；非法 role 也是 400 |
 | GET | `/api/admin/stats` | 全站聚合：用户数、内容/队列/渲染数、LLM 总调用与花费、`by_user` 每人明细 |
 
-**刻意没有 DELETE**：删除 = 停用（保留数据与可恢复性）。真删会让该用户历史配图集体 404
+**权限与配额（按钮级，2026-10 上线）**：
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/admin/permissions` | 权限点目录 + 各角色当前模板（`permissions` 为 `null` = 全部开放且固定） |
+| PUT | `/api/admin/role-permissions/{role}` | 改角色权限清单/配额；admin 传 permissions → 400（不可收窄） |
+| PUT | `/api/admin/users/{id}/overrides` | 个人增量覆盖 `{perm_override: {grant, deny}, quota_override}` |
+| POST | `/api/admin/users/{id}/quota-reset` | 重置用量计数（只清计数不清配置），`feature` 缺省 = 全部 |
+
+**邀请码管理（2026-10 上线）**：
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/admin/invite-codes` | 全部邀请码（最新在前），含 `code/note/max_uses/used/disabled/exhausted` |
+| POST | `/api/admin/invite-codes` | 生成 `{code?, note?, max_uses?}`；code 留空随机，max_uses 留空/0/负 = 不限；自定义码冲突 409 |
+| POST | `/api/admin/invite-codes/{id}/disable` | 停用（立即不能再注册） |
+| POST | `/api/admin/invite-codes/{id}/enable` | 重新启用 |
+| DELETE | `/api/admin/invite-codes/{id}` | 删除（仅 `used=0` 的码；用过的码 400，改停用） |
+
+**刻意没有 DELETE（用户）**：删除 = 停用（保留数据与可恢复性）。真删会让该用户历史配图集体 404
 （存量直链签名绑 `?o=<uid>`，已写进正文 HTML）。
 
 **管理员看不到别人的内容** —— 业务端点仍按 owner 隔离，管理面只有账号操作与聚合数字。

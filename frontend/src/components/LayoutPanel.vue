@@ -40,7 +40,16 @@ import {
 import { updateContent } from '@/api/queue'
 import { confirmTool } from '@/api/tools'
 import { getAuthorInfo, listWeChatAccounts, updateAuthorInfo } from '@/api/settings'
+import { useAuthStore } from '@/stores/auth'
+import { usePermGate } from '@/composables/usePermGate'
 import type { ContentItem, ContentImage, WeChatAccount } from '@/types'
+
+const auth = useAuthStore()
+
+/** 一键排版的门控：权限 layout.run + 配额 layout（异步任务，提交即预扣） */
+const layoutGate = usePermGate({ perm: 'layout.run', quota: 'layout' })
+/** 推送草稿的门控：权限 wechat.push + 配额 wechat_push（唯一同步可判成败的，失败会退还） */
+const pushGate = usePermGate({ perm: 'wechat.push', quota: 'wechat_push' })
 
 const props = defineProps<{
   show: boolean
@@ -227,6 +236,10 @@ function stopPoll() {
 
 async function onLayout() {
   if (!local.value || layouting.value) return
+  if (layoutGate.blocked.value) {
+    message.warning(layoutGate.reason.value)
+    return
+  }
   if (local.value.processing === 'layout') {
     message.warning('该内容正在排版中，请稍候')
     return
@@ -273,6 +286,8 @@ async function onLayout() {
     if (!task.ok || !task.task_id) {
       throw new Error(task.message || '提交失败')
     }
+    // 乐观置灰：提交即预扣，后端已经记上了
+    auth.markUsed('layout')
     // 轮询进度
     pollTimer = setInterval(() => void poll(task.task_id), 1200)
   } catch (e) {
@@ -351,6 +366,10 @@ async function onPushDraft() {
     message.warning('先点「一键排版」生成公众号正文')
     return
   }
+  if (pushGate.blocked.value) {
+    message.warning(pushGate.reason.value)
+    return
+  }
   pushing.value = true
   try {
     const res = await confirmTool({
@@ -367,8 +386,11 @@ async function onPushDraft() {
     const r = res.result as { ok?: boolean; error?: string; message?: string }
     if (r?.ok) {
       message.success(r.message ?? '已推送到草稿箱')
+      auth.markUsed('wechat_push')
       emit('done')
     } else {
+      // 失败不置灰：后端对这一种有 refund（唯一同步可判成败的受控动作），
+      // 本地要是也减一次就成了双重扣账。
       message.error(r?.error ?? '推送失败')
     }
   } catch (e) {
@@ -523,9 +545,22 @@ onBeforeUnmount(() => {
             placeholder="选择排版主题"
             :disabled="layouting"
           />
-          <NButton size="small" type="primary" :loading="layouting" @click="onLayout">
-            一键排版
+          <NButton
+            size="small"
+            type="primary"
+            :loading="layouting"
+            :disabled="layoutGate.blocked.value"
+            @click="onLayout"
+          >
+            {{
+              layoutGate.blocked.value
+                ? '无法排版'
+                : layoutGate.left.value === null
+                  ? '一键排版'
+                  : `一键排版（剩 ${layoutGate.left.value}）`
+            }}
           </NButton>
+          <div v-if="layoutGate.reason" class="gate-tip">⚠ {{ layoutGate.reason }}</div>
           <NCheckbox
             v-if="coverReady"
             v-model:checked="autoCover"
@@ -552,12 +587,19 @@ onBeforeUnmount(() => {
             size="small"
             type="primary"
             ghost
-            :disabled="!hasHtml || layouting"
+            :disabled="!hasHtml || layouting || pushGate.blocked.value"
             :loading="pushing"
             @click="onPushDraft"
           >
-            推公众号草稿箱
+            {{
+              pushGate.blocked.value
+                ? '无法推送'
+                : pushGate.left.value === null
+                  ? '推公众号草稿箱'
+                  : `推公众号草稿箱（剩 ${pushGate.left.value}）`
+            }}
           </NButton>
+          <div v-if="pushGate.reason" class="gate-tip">⚠ {{ pushGate.reason }}</div>
           <NButton
             size="small"
             :type="dirty ? 'warning' : 'default'"
@@ -706,6 +748,14 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+/* 权限/配额挡住时的常驻说明 */
+.gate-tip {
+  flex-basis: 100%;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #d03050;
 }
 .author-row {
   display: flex;

@@ -30,31 +30,31 @@ const router = createRouter({
           path: 'chat',
           name: 'chat',
           component: () => import('@/views/ChatView.vue'),
-          meta: { title: '对话创作', desc: '和 AI 一起把想法变成成品', icon: '◈' },
+          meta: { title: '对话创作', desc: '和 AI 一起把想法变成成品', icon: '◈', perm: 'menu.chat' },
         },
         {
           path: 'queue',
           name: 'queue',
           component: () => import('@/views/QueueView.vue'),
-          meta: { title: '发布队列', desc: '集中管理成品与发布状态', icon: '▤' },
+          meta: { title: '发布队列', desc: '集中管理成品与发布状态', icon: '▤', perm: 'menu.queue' },
         },
         {
           path: 'video',
           name: 'video',
           component: () => import('@/views/VideoView.vue'),
-          meta: { title: '视频生产', desc: '脚本转视频，异步渲染', icon: '🎬' },
+          meta: { title: '视频生产', desc: '脚本转视频，异步渲染', icon: '🎬', perm: 'menu.video' },
         },
         {
           path: 'usage',
           name: 'usage',
           component: () => import('@/views/UsageView.vue'),
-          meta: { title: 'AI 用量', desc: '花了多少钱、花在哪儿', icon: '▣' },
+          meta: { title: 'AI 用量', desc: '花了多少钱、花在哪儿', icon: '▣', perm: 'menu.usage' },
         },
         {
           path: 'settings',
           name: 'settings',
           component: () => import('@/views/SettingsView.vue'),
-          meta: { title: '系统状态', desc: '服务健康、工具清单、配置检查', icon: '⚙' },
+          meta: { title: '系统状态', desc: '服务健康、工具清单、配置检查', icon: '⚙', perm: 'menu.settings' },
         },
         {
           path: 'admin/users',
@@ -84,13 +84,29 @@ declare module 'vue-router' {
      * 非管理员直接调 /api/admin/* 一样是 403。
      */
     adminOnly?: boolean
+    /**
+     * 进入这个页面需要的菜单权限点（如 'menu.video'）。
+     * 管理员在用户管理里取消勾选某一项，对应菜单就从侧栏消失、直接敲
+     * 网址也会被弹到有权限的页面。同样是「提前挡一道」，页面里的按钮
+     * 还会各自校验按钮级权限。
+     */
+    perm?: string
   }
+}
+
+/** 路由名 → 菜单权限点。用于「跳去一个他有权限看的页面」。 */
+const MENU_PERM: Record<string, string> = {
+  chat: 'menu.chat',
+  queue: 'menu.queue',
+  video: 'menu.video',
+  usage: 'menu.usage',
+  settings: 'menu.settings',
 }
 
 /**
  * 全局守卫：未登录进工作台 → 登录页（带 redirect 回来）；
  * 已登录访问登录/注册页 → 回工作台；
- * 非管理员访问管理页 → 回对话页。
+ * 非管理员访问管理页 / 没有对应菜单权限 → 弹到有权限的页面。
  * bootstrapped 为 false 只可能是挂载前的极短窗口（main.ts 保证
  * bootstrap 先于 mount 完成），放行即可。
  */
@@ -104,10 +120,29 @@ router.beforeEach((to) => {
     return { path: '/login', query: { redirect: to.fullPath } }
   }
   if (to.meta?.adminOnly && !auth.isAdmin) {
-    return { name: 'chat' }
+    return redirectToPermitted(auth, to.name as string)
+  }
+  const perm = to.meta?.perm ?? MENU_PERM[to.name as string]
+  if (perm && !auth.can(perm)) {
+    return redirectToPermitted(auth, to.name as string)
   }
   return true
 })
+
+/**
+ * 找一个用户有权限看的页面跳过去。
+ *
+ * 刻意**不在「全都没权限」时强行回 /chat**：那会和上面的 perm 校验打起
+ * 来（回 /chat → 又没 menu.chat → 再回 /chat，无限循环）。全都没权限时
+ * 就放行让人进去 —— 侧栏是空的很难看，但页面里的按钮会各自校验，
+ * 而且至少还能退出登录。
+ */
+function redirectToPermitted(auth: ReturnType<typeof useAuthStore>, from: string) {
+  for (const [name, perm] of Object.entries(MENU_PERM)) {
+    if (name !== from && auth.can(perm)) return { name }
+  }
+  return true
+}
 
 router.afterEach((to) => {
   const t = to.meta?.title as string | undefined

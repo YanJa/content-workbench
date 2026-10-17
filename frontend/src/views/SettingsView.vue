@@ -81,6 +81,45 @@ const createdAtText = computed(() => {
   return new Date(ts * 1000).toLocaleString('zh-CN', { hour12: false })
 })
 
+interface QuotaRow {
+  feature: string
+  label: string
+  used: number
+  limit: number | null
+  unlimited: boolean
+  left: number | null
+  periodLabel: string
+  resetText: string
+}
+
+/**
+ * 我的配额。只列**设了上限**的功能 —— 五个全列出来大半是「不限」，
+ * 反而把真正有用的信息淹了。
+ */
+const quotaRows = computed<QuotaRow[]>(() => {
+  const out: QuotaRow[] = []
+  for (const [feature, snap] of Object.entries(auth.usage)) {
+    if (!snap || snap.unlimited) continue
+    out.push({
+      feature,
+      label: snap.label,
+      used: snap.used,
+      limit: snap.limit,
+      unlimited: false,
+      left: snap.left,
+      periodLabel: snap.period === 'month' ? '每月' : '每日',
+      resetText: fmtReset(snap.reset_at),
+    })
+  }
+  return out
+})
+
+function fmtReset(ts: number): string {
+  const d = new Date(ts * 1000)
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
 function onLogout() {
   auth.logout()
   void router.replace('/login')
@@ -504,6 +543,24 @@ const envColumns: DataTableColumns<EnvRow> = [
           用量、复刻音色都按登录身份隔离，互相不可见。
           <NButton size="tiny" style="margin-left: 8px" @click="onLogout">退出登录</NButton>
         </div>
+
+        <!-- 我的配额：按钮级权限管控的几个花钱功能，还剩多少一眼可见 -->
+        <div v-if="quotaRows.length" class="quota-list">
+          <div class="quota-list-title">我的使用配额</div>
+          <div v-for="q in quotaRows" :key="q.feature" class="quota-line">
+            <span class="quota-name">{{ q.label }}</span>
+            <span v-if="q.unlimited" class="quota-val muted">不限</span>
+            <span v-else class="quota-val" :class="{ danger: q.left === 0 }">
+              {{ q.used }} / {{ q.limit }}
+              <span class="quota-period">（{{ q.periodLabel }}，{{ q.resetText }} 重置）</span>
+            </span>
+          </div>
+          <div class="quota-note">
+            超额会被直接拦下（HTTP 429）。次数按北京时间计算，提交即预扣 ——
+            异步任务（渲染/排版/复刻）资源在提交时就已经花出去了，失败不退还；
+            只有推送草稿能同步判成败，失败会自动退还。
+          </div>
+        </div>
       </NCard>
 
       <!-- 作者信息：排版时自动替换正文里的 {{作者名}} / {{一句话简介}} 占位符 -->
@@ -779,6 +836,58 @@ const envColumns: DataTableColumns<EnvRow> = [
 
 .cost-list b {
   color: var(--app-text);
+}
+
+/* 我的配额 */
+.quota-list {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--app-border-60);
+}
+
+.quota-list-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--app-text-2);
+  margin-bottom: 8px;
+}
+
+.quota-line {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 13px;
+  line-height: 1.9;
+}
+
+.quota-name {
+  min-width: 72px;
+  color: var(--app-text-2);
+}
+
+.quota-val {
+  font-variant-numeric: tabular-nums;
+}
+
+.quota-val.danger {
+  color: #d03050;
+  font-weight: 600;
+}
+
+.quota-val.muted {
+  color: var(--app-text-3);
+}
+
+.quota-period {
+  font-size: 12px;
+  color: var(--app-text-3);
+}
+
+.quota-note {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--app-text-3);
+  line-height: 1.7;
 }
 
 @media (max-width: 900px) {

@@ -29,7 +29,18 @@ import {
   updateImage,
   uploadImage,
 } from '@/api/layout'
+import { usePermGate } from '@/composables/usePermGate'
 import type { ContentImage } from '@/types'
+
+/**
+ * 生图与封面的门控：**只受权限管控，不计次**。
+ *
+ * 刻意不给它们配配额：这两个动作走的是本机脚本/无头浏览器，不烧 LLM token、
+ * 不占渲染队列，成本与「对话/视频/排版」不在一个量级。给它们计次只会让
+ * 用户在面对一个免费功能时也被拦，权限不够另说。
+ */
+const imageGenGate = usePermGate({ perm: 'layout.image_gen' })
+const coverGate = usePermGate({ perm: 'layout.cover' })
 
 const props = defineProps<{
   contentId: string
@@ -243,7 +254,15 @@ async function saveAlt(img: ContentImage, alt: string) {
 
       <!-- 无封面：直接展开表单（只读时不显示生成入口） -->
       <div v-else-if="coverReady && !isReadonly" class="cover-empty">
-        <NButton size="small" type="primary" ghost @click="openCoverForm">＋ 生成封面</NButton>
+        <NButton
+          size="small"
+          type="primary"
+          ghost
+          :disabled="coverGate.blocked.value"
+          @click="openCoverForm"
+        >
+          {{ coverGate.blocked.value ? '无权限' : '＋ 生成封面' }}
+        </NButton>
         <span class="hint-inline">或上传图片后点「设为封面」</span>
       </div>
       <div v-else-if="!coverReady && !isReadonly" class="hint warn">
@@ -284,13 +303,17 @@ async function saveAlt(img: ContentImage, alt: string) {
               size="small"
               type="primary"
               :loading="coverGen"
+              :disabled="coverGate.blocked.value"
               @click="onGenerateCover"
             >
-              {{ coverImg ? '重新生成' : '生成' }}
+              {{ coverGate.blocked.value ? '无权限' : coverImg ? '重新生成' : '生成' }}
             </NButton>
             <NButton size="small" quaternary :disabled="coverGen" @click="showCoverForm = false">
               收起
             </NButton>
+          </div>
+          <div v-if="coverGate.reason" class="hint warn gate-tip">
+            {{ coverGate.reason }}
           </div>
         </div>
       </div>
@@ -325,11 +348,14 @@ async function saveAlt(img: ContentImage, alt: string) {
           size="small"
           type="primary"
           :loading="generating"
-          :disabled="!genReady"
+          :disabled="!genReady || imageGenGate.blocked.value"
           @click="onGenerate"
         >
-          生成配图
+          {{ imageGenGate.blocked.value ? '无权限' : '生成配图' }}
         </NButton>
+        <div v-if="imageGenGate.reason" class="hint warn gate-tip">
+          {{ imageGenGate.reason }}
+        </div>
         <NUpload
           :show-file-list="false"
           :custom-request="onUpload as never"
@@ -515,6 +541,12 @@ async function saveAlt(img: ContentImage, alt: string) {
   background: rgba(250, 200, 100, 0.12);
   padding: 8px 12px;
   border-radius: 6px;
+}
+
+/* 权限挡住时的常驻说明：比 warn 更扎眼，用红色 */
+.gate-tip {
+  color: #d03050;
+  background: rgba(208, 48, 80, 0.1);
 }
 .grid {
   display: grid;

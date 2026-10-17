@@ -45,8 +45,16 @@ import type { JobStatus, RenderJob } from '@/types'
 import VoiceClonePanel from '@/components/VoiceClonePanel.vue'
 import { listCloneVoices } from '@/api/tools'
 import type { CloneVoice } from '@/api/tools'
+import { useAuthStore } from '@/stores/auth'
+import { usePermGate } from '@/composables/usePermGate'
 
 const message = useMessage()
+const auth = useAuthStore()
+
+/** 提交渲染的门控：权限 video.render + 配额 video（重试也走同一条，后端同样扣） */
+const renderGate = usePermGate({ perm: 'video.render', quota: 'video' })
+/** PPT 解析的门控：只受权限管控，不计次（它只是个本地转换，不烧 GPU） */
+const pptGate = usePermGate({ perm: 'video.ppt_parse' })
 
 /* ---------------------------------------------------------------- 表单 */
 const plainScript = ref('') // 纯文案模式的手稿
@@ -254,6 +262,10 @@ async function onSubmit() {
     message.warning('先写上口播稿，或者去对话创作页让 AI 生成一版')
     return
   }
+  if (renderGate.blocked.value) {
+    message.warning(renderGate.reason.value)
+    return
+  }
   submitting.value = true
   try {
     const res = await submitRender({
@@ -266,6 +278,8 @@ async function onSubmit() {
     })
     if (res.ok) {
       message.success('任务已提交，正在渲染')
+      // 乐观置灰：提交即预扣（后端 require_use 里已经记上了）
+      auth.markUsed('video')
       await refreshList()
       await poll(res.job_id)
     } else {
@@ -456,6 +470,9 @@ async function onRetry(j: RenderJob) {
     }
     const nj = await retryRenderJob(j.id)
     message.success('已重新提交')
+    // 重试也要记一次：后端 job_retry 上挂着同一个配额依赖，漏了这里
+    // 前端显示的数字就会比后端少，用户以为还能跑结果被 429。
+    auth.markUsed('video')
     // 重试沿用的同一个任务 id，清掉提示标记让新结果能正常弹出
     toastedJobs.delete(nj.id)
     job.value = nj
@@ -656,14 +673,27 @@ onBeforeUnmount(stopPoll)
             </NFormItem>
 
             <NSpace>
-              <NButton type="primary" :loading="submitting" @click="onSubmit">
-                提交渲染
+              <NButton
+                type="primary"
+                :loading="submitting"
+                :disabled="renderGate.blocked.value"
+                @click="onSubmit"
+              >
+                {{
+                  renderGate.blocked.value
+                    ? '无法渲染'
+                    : renderGate.left.value === null
+                      ? '提交渲染'
+                      : `提交渲染（剩 ${renderGate.left.value}）`
+                }}
               </NButton>
               <NButton :disabled="!script.trim()" @click="plainScript = ''">清空</NButton>
               <NButton v-if="pptVisualScenes?.length" quaternary @click="pptVisualScenes = null">
                 退出分页模式
               </NButton>
             </NSpace>
+            <!-- 常驻说明而不是 tooltip：禁用按钮的 hover 提示多数浏览器不触发 -->
+            <div v-if="renderGate.reason" class="hint gate-tip">⚠ {{ renderGate.reason }}</div>
           </NForm>
         </NCard>
 
@@ -676,10 +706,11 @@ onBeforeUnmount(stopPoll)
             :custom-request="() => {}"
             @change="onPptUpload"
           >
-            <NButton size="small" :loading="pptParsing">
+            <NButton size="small" :loading="pptParsing" :disabled="pptGate.blocked.value">
               {{ pptParsing ? '解析中…' : '上传 PPT，解析成口播稿' }}
             </NButton>
           </NUpload>
+          <div v-if="pptGate.reason" class="hint gate-tip">⚠ {{ pptGate.reason }}</div>
           <div class="hint" style="margin-top: 10px">
             优先取每页<b>演讲者备注</b>（那才是要念的话），没有备注时拼接页面文字。
             解析后<b>每页的口播稿单独一块</b>显示在上方，改哪页算哪页，不是黑盒。
@@ -932,6 +963,12 @@ onBeforeUnmount(stopPoll)
 }
 .hint b {
   color: var(--app-text-2);
+}
+
+/* 权限/配额挡住时的常驻说明（红色，跟普通 hint 区分开） */
+.gate-tip {
+  color: #d03050;
+  margin-top: 8px;
 }
 .empty-tip {
   font-size: 13px;

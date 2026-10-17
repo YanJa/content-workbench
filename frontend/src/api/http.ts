@@ -38,6 +38,29 @@ async function handleUnauthorized(): Promise<void> {
   void router.replace(`/login?redirect=${redirect}`)
 }
 
+/** 403 权限不足 / 429 配额用尽：拉一次 /auth/me 把前端的权限与用量纠正到
+ * 服务端的真实值。动态 import store 同理是为了打断循环依赖。
+ *
+ * 为什么必须刷：管理员可能刚把这个人的权限收了、或者额度改了，前端
+ * /auth/me 还是一分钟前的快照。不刷新的话按钮会继续亮着，用户点了还是
+ * 403，来回几次就成了「这站点是不是坏了」。
+ *
+ * 只刷一次就够：连续失败（比如狂点发送）不会打出请求风暴，60 秒的静默
+ * 定时刷新会兜住后续。 */
+let permRefreshPending = false
+async function refreshPermSnapshot(): Promise<void> {
+  if (permRefreshPending) return
+  permRefreshPending = true
+  try {
+    const { useAuthStore } = await import('@/stores/auth')
+    await useAuthStore().refreshMe()
+  } catch {
+    /* 刷新失败无所谓：真正的拦截已经在服务端发生了 */
+  } finally {
+    permRefreshPending = false
+  }
+}
+
 http.interceptors.response.use(
   (resp) => resp,
   (error) => {
@@ -48,6 +71,9 @@ http.interceptors.response.use(
       error?.message ||
       '请求失败'
     if (status === 401) void handleUnauthorized()
+    // 403 有两种：角色不够（管理面）和功能权限不够（按钮级）。文案后端都给了，
+    // 这里不区分，只负责把快照刷成服务端的真相。
+    if (status === 403 || status === 429) void refreshPermSnapshot()
     console.error('[API]', detail, error?.config?.url)
     return Promise.reject(new Error(detail))
   },

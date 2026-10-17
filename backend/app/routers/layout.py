@@ -13,11 +13,13 @@ from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.rbac import require_use
 from app.core.security import link_url
 from app.core.tenant import current_owner_id, link_auth
 from app.core.logging import logger
 from app.db.session import get_db
 from app.models.content import Content
+from app.models.user import User
 from app.schemas.models import (
     CoverGenRequest,
     ImageGenRequest,
@@ -79,6 +81,7 @@ async def do_layout(
     req: LayoutRequest,
     db: AsyncSession = Depends(get_db),
     owner: str = Depends(current_owner_id),
+    _perm: User = Depends(require_use("layout.run", "layout")),
 ):
     """提交排版任务（**秒回**）。
 
@@ -152,6 +155,8 @@ async def generate_images(
     req: ImageGenRequest,
     db: AsyncSession = Depends(get_db),
     owner: str = Depends(current_owner_id),
+    # 生图只受权限管控，不计次（用户明确没把它纳入配额）
+    _perm: User = Depends(require_use("layout.image_gen")),
 ):
     """调本地生图脚本生成配图，追加到内容里。"""
     c = await _get_content(db, content_id, owner)
@@ -294,6 +299,7 @@ async def generate_cover(
     req: CoverGenRequest,
     db: AsyncSession = Depends(get_db),
     owner: str = Depends(current_owner_id),
+    _perm: User = Depends(require_use("layout.cover")),
 ):
     """生成封面并**插到配图首位**（index 1），使 `<!--IMG:1-->` 指向封面。
 

@@ -9,9 +9,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.rbac import require_use
 from app.core.tenant import current_owner_id, link_auth
 from app.db.session import get_db
 from app.models.slide import PptSlideClaim
+from app.models.user import User
 from app.schemas.models import (
     JobOut,
     JobPage,
@@ -56,7 +58,11 @@ def _job_out(job: dict) -> JobOut:
 
 
 @video_router.post("/render")
-async def render(req: VideoRenderRequest, owner: str = Depends(current_owner_id)):
+async def render(
+    req: VideoRenderRequest,
+    owner: str = Depends(current_owner_id),
+    _perm: User = Depends(require_use("video.render", "video")),
+):
     """提交视频渲染任务（异步）。"""
     if not req.script.strip():
         raise HTTPException(400, "口播稿不能为空")
@@ -150,7 +156,12 @@ async def job_update(job_id: str, patch: JobPatch, owner: str = Depends(current_
 
 
 @video_router.post("/jobs/{job_id}/retry", response_model=JobOut)
-async def job_retry(job_id: str, owner: str = Depends(current_owner_id)):
+async def job_retry(
+    job_id: str,
+    owner: str = Depends(current_owner_id),
+    # retry 必须也记账：漏了它就能靠反复重跑无限消耗渲染资源
+    _perm: User = Depends(require_use("video.render", "video")),
+):
     """失败的任务沿原参数重跑。"""
     job = await retry_job(job_id, owner)
     if not job:
@@ -170,6 +181,7 @@ async def job_delete(job_id: str, owner: str = Depends(current_owner_id)):
 async def ppt_parse(
     file: UploadFile = File(...),
     owner: str = Depends(current_owner_id),
+    _perm: User = Depends(require_use("video.ppt_parse")),
 ):
     """上传 pptx，解析出可朗读的口播稿（文字 + 备注），不渲染。
 

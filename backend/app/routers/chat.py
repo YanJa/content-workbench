@@ -10,8 +10,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.logging import logger
-from app.core.tenant import current_owner_id
-from app.db.session import get_db
+from app.core import quota as quota_mod
+from app.core.rbac import TOOL_PERM, load_permissions, require_use
+from app.core.tenant import current_owner_id, current_user
+from app.db.session import SessionLocal, get_db
+from app.models.user import User
 from app.prompts.platforms import build_system_prompt
 from app.schemas.models import (
     ChatRequest,
@@ -40,10 +43,15 @@ async def chat_stream(
     req: ChatRequest,
     db: AsyncSession = Depends(get_db),
     owner: str = Depends(current_owner_id),
+    _perm: User = Depends(require_use("chat.send", "chat")),
 ):
     """流式对话（SSE）。
 
     前端用 fetch + ReadableStream 接收。事件格式见 docs/API.md。
+
+    权限与配额挂成依赖而不是写在函数体里：**SSE 一旦返回 200 就改不了状态
+    码了**，配额超限必须在 StreamingResponse 之前拦下来。放在依赖里由
+    FastAPI 保证它在函数体执行前跑完。
     """
 
     # 取或建会话
@@ -205,6 +213,7 @@ async def confirm_tool(
     req: ToolConfirmRequest,
     db: AsyncSession = Depends(get_db),
     owner: str = Depends(current_owner_id),
+    user: User = Depends(current_user),
 ):
     """用户确认后执行危险工具。
 
@@ -221,10 +230,24 @@ async def confirm_tool(
     if not registry.needs_confirm(req.tool_name):
         raise HTTPException(400, "该工具无需确认，请直接通过对话触发")
 
+    # 权限与配额**按工具名映射**，而不是给这个端点设一个「确认工具」权限点：
+    # 一个端点承载 save_content / render_video / push_wechat_draft 三个工具，
+    # 设统一的点会造成「有 video.render 却点不了确认」的死锁。
+    perm, feature = TOOL_PERM.get(req.tool_name, (None, None))
+    if perm:
+        await require_use(perm, feature)(user)  # 复用同一个校验+扣减逻辑
+
     # 无会话时 conversation_id 置 None：下游（usage 统计 / Content 落库）都用
     # `.get()` 取值且列可空，无会话的推送不计入任何会话，属预期。
     ctx = {"db": db, "owner": owner, "conversation_id": conv.id if conv else None}
     result = await execute_confirmed_tool(db, ctx, req.tool_name, req.arguments)
+
+    # 推送失败退还配额：这是唯一「同步可判成败」的受控动作，其余（渲染/排版/
+    # 复刻）都是异步任务，资源已真实消耗，不退还。
+    if feature == "wechat_push" and result.get("error"):
+        async with SessionLocal() as qdb:
+            _, quotas = await load_permissions(qdb, user)
+        await quota_mod.refund(user.id, "wechat_push", quotas.get("wechat_push"))
 
     if conv:
         # 结果回填到「发起这次调用」的那条 assistant 消息里，而不是另起一行

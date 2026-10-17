@@ -27,6 +27,8 @@ import {
 
 import { useChatStore } from '@/stores/chat'
 import { useQueueStore } from '@/stores/queue'
+import { useAuthStore } from '@/stores/auth'
+import { usePermGate } from '@/composables/usePermGate'
 import { estimateUsage } from '@/api/usage'
 import { saveToQueue } from '@/api/queue'
 import type { UsageBreakdown } from '@/api/usage'
@@ -37,7 +39,16 @@ import QuestionNav from '@/components/QuestionNav.vue'
 
 const chat = useChatStore()
 const queue = useQueueStore()
+const auth = useAuthStore()
 const message = useMessage()
+
+/**
+ * 发送消息的门控：按钮级权限 `chat.send` + 配额 `chat`。
+ *
+ * 配额超限时后端会在 SSE **开流之前**返回 429（状态码改不了才是真麻烦），
+ * 所以这里提前把按钮灰掉，用户不用等一个必然失败的请求。
+ */
+const sendGate = usePermGate({ perm: 'chat.send', quota: 'chat' })
 const router = useRouter()
 const route = useRoute()
 
@@ -224,7 +235,17 @@ function onMsgScroll() {
 watch(() => chat.messages.length, () => nextTick(onMsgScroll))
 watch(() => chat.currentId, () => nextTick(onMsgScroll))
 
-const canSend = computed(() => input.value.trim().length > 0 && !chat.streaming)
+const canSend = computed(
+  () =>
+    input.value.trim().length > 0 &&
+    !chat.streaming &&
+    // 权限不够 / 配额用尽都不给发。禁用态下 tooltip 说明原因，
+    // 别让人点了个灰按钮还不知道为什么。
+    !sendGate.blocked.value,
+)
+
+/** 发送按钮的禁用提示：空串 = 不禁用 */
+const sendBlockTip = computed(() => (canSend.value ? '' : sendGate.reason.value))
 
 /**
  * 快捷指令：降低上手成本。
@@ -255,9 +276,12 @@ const quickPrompts = computed(() => {
 
 async function onSend() {
   const text = input.value.trim()
-  if (!text || chat.streaming) return
+  if (!text || chat.streaming || sendGate.blocked.value) return
   input.value = ''
   chat.platform = (scene.value || null) as Platform | null
+  // 乐观置灰：配额是「提交时预扣」，请求发出去就已经记上了。
+  // 万一后端其实拒了（429），http 拦截器会刷新 /auth/me 把数字纠正回来。
+  auth.markUsed('chat')
   void chat.send(text, (scene.value || null) as Platform | null)
 }
 
@@ -680,9 +704,13 @@ async function restoreFromQueue() {
             :loading="chat.streaming"
             @click="onSend"
           >
-            发送
+            {{ sendGate.left.value === null ? '发送' : `发送（剩 ${sendGate.left.value}）` }}
           </NButton>
         </div>
+        <!-- 被权限/配额挡住时说清楚为什么。刻意用常驻文字而不是 tooltip：
+             禁用按钮上的 hover 提示在多数浏览器里根本不触发，用户会以为
+             按钮坏了而不是自己没权限。 -->
+        <div v-if="sendBlockTip" class="send-blocked-tip">⚠ {{ sendBlockTip }}</div>
       </NCard>
     </div>
 
@@ -1139,6 +1167,13 @@ async function restoreFromQueue() {
 .send-btn {
   flex-shrink: 0;
   height: 40px;
+}
+
+.send-blocked-tip {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #d03050;
 }
 
 @media (max-width: 768px) {
