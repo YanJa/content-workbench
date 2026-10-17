@@ -18,6 +18,7 @@ import {
   NMenu,
   NBadge,
   NButton,
+  useDialog,
   type MenuOption,
 } from 'naive-ui'
 
@@ -35,6 +36,7 @@ const queue = useQueueStore()
 const onboarding = useOnboardingStore()
 const auth = useAuthStore()
 const theme = useThemeStore()
+const dialog = useDialog()
 
 const collapsed = ref(false)
 const isMobile = ref(false)
@@ -111,10 +113,23 @@ function onMenuSelect(key: string) {
   void router.push({ name: key })
 }
 
-/** 退出登录：清令牌回登录页（守卫会把后续工作台访问都挡在登录页外）。 */
+/**
+ * 退出登录：先弹确认框再清令牌回登录页。
+ *
+ * 退出是不可撤销操作（未提交的对话输入、页面上正在编辑的内容都会丢），
+ * 误触代价不小，不能一点就直接退。
+ */
 function onLogout() {
-  auth.logout()
-  void router.replace('/login')
+  dialog.warning({
+    title: '退出登录',
+    content: '确定要退出当前账号吗？',
+    positiveText: '退出',
+    negativeText: '取消',
+    onPositiveClick: () => {
+      auth.logout()
+      void router.replace('/login')
+    },
+  })
 }
 
 /** 手动重看引导：清掉「已看过」标记再打开。 */
