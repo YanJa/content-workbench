@@ -144,6 +144,8 @@ const followCardHint = computed(() => {
 const progress = ref(0)
 const stage = ref('')
 let pollTimer: ReturnType<typeof setInterval> | null = null
+// 同一排版任务只弹一次完成提示（防止极端情况下多个轮询重复弹「完成」）
+let announcedTaskId: string | null = null
 
 // 预览宽度三档
 type PreviewMode = 'mobile' | 'tablet' | 'desktop'
@@ -272,12 +274,17 @@ function stopPoll() {
 
 async function onLayout() {
   if (!local.value || layouting.value) return
+  // 立即置真：下面有若干 await（存正文、确认弹窗），窗口期内重复点击会绕过下面的守卫、
+  // 生成多个排版任务，进而出现「多个完成弹框」。这里先把开关锁死，从源头杜绝重入。
+  layouting.value = true
   if (layoutGate.blocked.value) {
     message.warning(layoutGate.reason.value)
+    layouting.value = false
     return
   }
   if (local.value.processing === 'layout') {
     message.warning('该内容正在排版中，请稍候')
+    layouting.value = false
     return
   }
   // 排版读的是库里的 body —— 左栏改了 Markdown 必须先存回去，否则排的是旧内容
@@ -286,6 +293,7 @@ async function onLayout() {
       await updateContent(local.value.id, { body: local.value.body })
     } catch (e) {
       message.error(`保存正文失败，已中止排版：${(e as Error).message}`)
+      layouting.value = false
       return
     }
   }
@@ -302,15 +310,21 @@ async function onLayout() {
         onClose: () => resolve(false),
       })
     })
-    if (!go) return
+    if (!go) {
+      layouting.value = false
+      return
+    }
   }
-  layouting.value = true
+    // 此时已确认要排版：清掉任何残留轮询，避免旧 interval 与新 interval 并存导致重复弹完成
+  stopPoll()
+  announcedTaskId = null
   errors.value = []
   warnings.value = []
   progress.value = 2
   stage.value = '提交排版任务…'
+  let task: Awaited<ReturnType<typeof layoutContent>> | null = null
   try {
-    const task = await layoutContent(
+    task = await layoutContent(
       local.value.id,
       theme.value,
       'gzh',
@@ -325,8 +339,9 @@ async function onLayout() {
     }
     // 乐观置灰：提交即预扣，后端已经记上了
     auth.markUsed('layout')
-    // 轮询进度
-    pollTimer = setInterval(() => void poll(task.task_id), 1200)
+    // 轮询进度（stopPoll 已确保同一时刻只有一个 interval）
+    const tid = task.task_id
+    pollTimer = setInterval(() => void poll(tid), 1200)
   } catch (e) {
     layouting.value = false
     progress.value = 0
@@ -343,6 +358,8 @@ async function poll(taskId: string) {
     stage.value = job.stage || ''
     if (job.status === 'done') {
       stopPoll()
+      if (announcedTaskId === taskId) return // 同一任务已完成并提示过，避免重复弹框
+      announcedTaskId = taskId
       const res = job.result
       if (res) {
         errors.value = res.errors || []

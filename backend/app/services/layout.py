@@ -646,8 +646,14 @@ async def submit_layout_job(
     }
 
 
-async def _ensure_cover(db: AsyncSession, content: Content) -> None:
+async def _ensure_cover(db: AsyncSession, content: Content, theme: str = "") -> None:
     """排版前确保有封面：没有就按正文自动生成一张，插到配图首位。
+
+    封面跟随「本次排版主题」theme：
+      - 用本次排版的 theme_id 生成，而不是 content.theme（后者在排版执行后才更新，
+        此时仍是旧主题/空，会导致封面配色与正文主题不一致）；
+      - 已存在自动封面且生成主题与本次主题不同 → 换掉（换主题时封面跟着换）；
+      - 手动上传的封面没有 theme 字段 → 保留，尊重用户选择。
 
     失败只记日志——封面是锦上添花，绝不能因为它把排版带崩。
     """
@@ -656,15 +662,28 @@ async def _ensure_cover(db: AsyncSession, content: Content) -> None:
     if not covers.available():
         return
     imgs = list(content.images or [])
-    if any(im.get("source") == "cover" for im in imgs):
-        return  # 用户已有封面（含手动上传后标记的），尊重之
+    cover_idx = next((i for i, im in enumerate(imgs) if im.get("source") == "cover"), None)
+    if cover_idx is not None:
+        old = imgs[cover_idx]
+        # 自动封面且主题不一致 → 删旧文件、重新生成；手动上传（无 theme）则保留
+        if theme and old.get("theme") and old["theme"] != theme:
+            try:
+                f = Path(settings.UPLOAD_DIR) / (old.get("path") or "")
+                if old.get("path") and f.exists():
+                    f.unlink()
+            except Exception:  # noqa: BLE001
+                pass
+            imgs.pop(cover_idx)
+        else:
+            return
 
     title, sub = covers.derive_cover_text(content.body or "")
     if not title:
         return
     try:
         out_dir = Path(settings.UPLOAD_DIR) / "gen" / content.id
-        path = await covers.generate_cover(title, out_dir, sub=sub, theme=content.theme)
+        # 关键：用本次排版主题生成封面
+        path = await covers.generate_cover(title, out_dir, sub=sub, theme=theme or content.theme)
     except Exception as exc:  # noqa: BLE001
         logger.warning("自动生成封面失败（跳过，不影响排版）: %s", exc)
         return
@@ -681,11 +700,13 @@ async def _ensure_cover(db: AsyncSession, content: Content) -> None:
             "source": "cover",
             "prompt": f"{title} / {sub}".strip(" /"),
             "position": 0,
+            # 记录生成主题，便于下次换主题时识别并重新生成
+            "theme": theme or content.theme or "",
         },
     )
     content.images = imgs
     await db.commit()
-    logger.info("排版前自动生成封面 content=%s -> %s", content.id, path.name)
+    logger.info("排版前自动生成封面 content=%s theme=%s -> %s", content.id, theme, path.name)
 
 
 async def _run_layout_job(
@@ -721,7 +742,7 @@ async def _run_layout_job(
                     # 是否在文首留 <!--IMG:1--> 占位
                     if auto_cover:
                         _set_job(task_id, progress=8, stage="生成封面…")
-                        await _ensure_cover(db, c)
+                        await _ensure_cover(db, c, theme_id)
                     result = await layout_content(
                         db,
                         c,
