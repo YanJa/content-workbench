@@ -855,6 +855,14 @@ onMounted(load)
           </div>
         </NStatistic>
       </NCard>
+      <NCard size="small" class="stat-card">
+        <NStatistic label="内容总数">
+          <div class="stat-link-inner">
+            <NNumberAnimation :from="0" :to="stats.contents" />
+          </div>
+        </NStatistic>
+        <div class="stat-link-hint">AI 产出的全部内容</div>
+      </NCard>
       <NCard size="small" class="stat-card stat-card-link">
         <div
           class="stat-link"
@@ -863,9 +871,9 @@ onMounted(load)
           @click="goQueue"
           @keydown.enter="goQueue"
         >
-          <NStatistic label="内容总数">
+          <NStatistic label="队列中">
             <div class="stat-link-inner">
-              <NNumberAnimation :from="0" :to="stats.contents" />
+              <NNumberAnimation :from="0" :to="stats.queue_items" />
               <svg class="stat-link-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                 <polyline points="9 18 15 12 9 6" />
               </svg>
