@@ -467,6 +467,26 @@ onMounted(async () => {
   .header-desc {
     display: none;
   }
+  /* 窄屏头部空间紧张：标题允许截断省略，右侧按钮收紧间距，
+     否则「对话创作」和「AI 已就绪」会互相挤压重叠 */
+  .header-left {
+    gap: 8px;
+    flex: 1;
+  }
+  .header-left h1 {
+    font-size: 15px;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex-shrink: 1;
+  }
+  .header-right {
+    gap: 2px;
+  }
+  .status-text {
+    padding: 2px 2px;
+    white-space: nowrap;
+  }
   .app-content {
     padding: 12px 10px calc(76px + env(safe-area-inset-bottom));
   }

@@ -1203,7 +1203,10 @@ async function restoreFromQueue() {
 @media (max-width: 768px) {
   .chat-page {
     grid-template-columns: 1fr;
+    /* 100vh 在手机上包含地址栏高度（比可视区高），发送按钮会被顶出屏幕外；
+       dvh 才是真实可视高度，不支持的旧浏览器回落到上一行的 vh */
     height: calc(100vh - 140px);
+    height: calc(100dvh - 140px);
   }
   /* 窄屏桌面侧栏不占列 —— 实际由 v-if="!isMobile" 移除，这里只是兜底 */
   .conv-panel {
