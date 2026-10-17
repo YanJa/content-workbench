@@ -751,9 +751,19 @@ const inviteColumns: DataTableColumns<InviteCodeItem> = [
   {
     title: '邀请码',
     key: 'code',
+    width: 200,
     render: (row) =>
-      h('div', { style: 'display:flex;align-items:center;gap:6px' }, [
-        h(NText, { code: true }, { default: () => row.code }),
+      h('div', { style: 'display:flex;align-items:center;gap:6px;min-width:0' }, [
+        h(
+          NText,
+          {
+            code: true,
+            title: row.code,
+            style:
+              'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0',
+          },
+          { default: () => row.code },
+        ),
         actionBtn('copy', '复制邀请码', () => onCopyInvite(row.code)),
       ]),
   },
@@ -1131,7 +1141,13 @@ onMounted(load)
           </NButton>
         </div>
         <NSpin :show="inviteLoading" style="margin-top: 12px">
-          <NDataTable :columns="inviteColumns" :data="inviteCodes" :bordered="false" size="small" />
+          <NDataTable
+            :columns="inviteColumns"
+            :data="inviteCodes"
+            :bordered="false"
+            size="small"
+            :scroll-x="900"
+          />
         </NSpin>
         <div class="hint">
           一个码可限制注册 N 个账号；用尽后自动失效但保留记录，方便对账。
