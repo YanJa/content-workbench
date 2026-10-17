@@ -98,12 +98,17 @@ def _inject_images(html: str, images: list[dict[str, Any]] | None) -> str:
     """把模型留的 `<!--IMG:n-->` 占位替换成真实 <img>。
 
     公众号要求 img 居中自适应：max-width:100%;height:auto;display:block;margin:0 auto。
+
+    注意：模型偶尔会把占位符塞进某个 <img> 标签内部（如 `<img src="<!--IMG:1-->" />`）。
+    若直接把占位符原地替换成 `<img>`，会把 HTML 插进 src 属性值里，破坏外层标签、
+    图片裂掉、残留的 style 属性变成可见文字。所以先整体替换「携带占位符的 <img> 标签」，
+    再做常规占位符替换。
     """
     if not images:
         # 没有配图就把占位标记清掉，不留脏注释
         return re.sub(r"<!--\s*IMG:\d+\s*-->", "", html)
 
-    def repl(m: re.Match[str]) -> str:
+    def make_img(m: re.Match[str]) -> str:
         try:
             n = int(m.group(1))
         except (IndexError, ValueError):
@@ -123,7 +128,10 @@ def _inject_images(html: str, images: list[dict[str, Any]] | None) -> str:
             "</p>"
         )
 
-    out = re.sub(r"<!--\s*IMG:(\d+)\s*-->", repl, html)
+    # 第 1 遍：占位符嵌在 <img> 标签内（如 src="<!--IMG:1-->"），整体替换该 img 标签
+    out = re.sub(r"<img\b[^>]*?<!--\s*IMG:(\d+)\s*-->[^>]*>", make_img, html)
+    # 第 2 遍：常规独立占位符
+    out = re.sub(r"<!--\s*IMG:(\d+)\s*-->", make_img, out)
     return out
 
 
