@@ -218,30 +218,40 @@ class WeChatClient:
         必须先上传到微信素材库换成它自己的 url。
 
         `images` 来自 content.images（[{url, path, alt}]）。本地 url 形如
-        `/api/content/images/{cid}/{file}`，我们按其文件名在 html 里找到并替换。
+        `/api/content/images/{cid}/{file}`，我们**按文件名**在 html 里定位并替换。
 
-        转存失败的图片保持原样（不阻断整体推送），由调用方决定是否提示。
+        ⚠️ 为什么用文件名而非完整 URL 子串匹配：
+        body_html 里 `<img src>` 的 `&` 会被 HTML 转义成 `&amp;`，而 content.images[].url
+        是原始 `&`；两者签名（HMAC+时效）相同，但 `&amp;` 差异导致 `local_url in html`
+        恒为 False，图片永远不转存 —— 微信抓不到图就报 40007 invalid media_id。
+        文件名部分不受 `&amp;` 和签名时效影响，最稳妥。
         """
         if not images:
             return html
         from pathlib import Path
+        import re
 
         out = html
         for img in images:
-            local_url = img.get("url") or ""
             path = img.get("path") or ""
-            if not local_url or not path:
+            if not path:
                 continue
-            if local_url not in out:
-                continue
+            fname = Path(path).name
             full = Path(settings.UPLOAD_DIR) / path
             if not full.exists():
                 continue
+            # 按文件名定位 <img src="...fname...">，兼容 src 里 & 与 &amp; 两种写法
+            pat = re.compile(r'src="([^"]*' + re.escape(fname) + r')"')
+            m = pat.search(out)
+            if not m:
+                continue
             try:
                 new_url = await self.upload_image(str(full))
-                out = out.replace(local_url, new_url)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("正文图片转存失败（保留原地址）: %s", exc)
+                continue
+            # 只替换 src 内部（保留外层 src="..."），新 url 不带查询串
+            out = out[: m.start(1)] + new_url + out[m.end(1) :]
         return out
 
     async def add_draft(
