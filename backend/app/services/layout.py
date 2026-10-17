@@ -424,6 +424,9 @@ async def layout_content(
     # 作者占位符替换（在写库前，与排版同一次落库；放在校验之后不影响合规性）
     if author_name or author_intro:
         html = apply_author_placeholders(html, author_name, author_intro)
+    # 头部日期徽标 `{{日期}}` 由系统填入当天日期（YYYY.MM.DD），
+    # 避免模型照抄主题组件库里的示例旧值（如 2026.07）。无论是否配作者信息都执行。
+    html = apply_placeholders(html, {"日期": time.strftime("%Y.%m.%d")})
 
     # 文末自动补话题标签（仅公众号）：让 LLM 按正文主题生成 2-3 个精准 #话题#，
     # 追加到文末（关注卡/二维码之后）。微信发布时会把 #话题# 自动识别成可点的话题入口，
