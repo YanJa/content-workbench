@@ -26,7 +26,7 @@ router = APIRouter(prefix="/queue", tags=["发布队列"])
 
 @router.get("/items")
 async def list_items(
-    status: str = Query("all"),
+    status: str = Query("all", description="状态筛选，逗号分隔可多选；all=全部"),
     platform: str = Query("all"),
     q: str = Query("", description="模糊搜索：匹配标题或正文（不区分大小写）"),
     page: int = Query(1, ge=1),
@@ -37,11 +37,14 @@ async def list_items(
     """分页返回发布队列。
 
     返回 `{items, total, page, page_size}`。筛选（status/platform/q）在**后端**做，
-    前端不能再本地过滤（否则每页条数对不上）。数据量增长后靠分页控制单次查询与渲染量。
+    前端不能再本地过滤（否则每页条数对不上）。各筛选之间是 **AND** 关系：
+    状态多选 + 标题/正文搜索同时生效。数据量增长后靠分页控制单次查询与渲染量。
     """
     conds = [QueueItem.owner == owner]
-    if status != "all":
-        conds.append(QueueItem.status == status)
+    if status and status != "all":
+        statuses = [s for s in status.split(",") if s]
+        if statuses:
+            conds.append(QueueItem.status.in_(statuses))
     if platform != "all":
         conds.append(QueueItem.platform == platform)
 

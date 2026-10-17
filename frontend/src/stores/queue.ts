@@ -14,7 +14,8 @@ export const useQueueStore = defineStore('queue', () => {
   const items = ref<QueueItem[]>([])
   const stats = ref<QueueStats>({ total: 0, by_status: {}, by_platform: {} })
   const loading = ref(false)
-  const filterStatus = ref<'all' | QueueStatus>('all')
+  // 状态多选筛选（空数组 = 全部）；与关键词搜索是 AND 关系
+  const filterStatuses = ref<QueueStatus[]>([])
   // 模糊搜索关键词（标题或正文，后端匹配）
   const keyword = ref('')
   // 分页状态
@@ -32,7 +33,7 @@ export const useQueueStore = defineStore('queue', () => {
     try {
       const [res, st] = await Promise.all([
         queueApi.listQueue({
-          status: filterStatus.value,
+          status: filterStatuses.value.length ? filterStatuses.value.join(',') : 'all',
           q: keyword.value.trim(),
           page: page.value,
           pageSize: pageSize.value,
@@ -47,9 +48,9 @@ export const useQueueStore = defineStore('queue', () => {
     }
   }
 
-  /** 切换状态筛选：重置到第 1 页并重新请求（筛选在后端）。 */
-  async function setFilter(status: 'all' | QueueStatus) {
-    filterStatus.value = status
+  /** 切换状态多选筛选：重置到第 1 页并重新请求（筛选在后端，与搜索 AND）。 */
+  async function setStatuses(statuses: QueueStatus[]) {
+    filterStatuses.value = statuses
     page.value = 1
     await refresh()
   }
@@ -81,7 +82,7 @@ export const useQueueStore = defineStore('queue', () => {
   async function refreshProcessingRows() {
     try {
       const res = await queueApi.listQueue({
-        status: filterStatus.value,
+        status: filterStatuses.value.length ? filterStatuses.value.join(',') : 'all',
         page: page.value,
         pageSize: pageSize.value,
       })
@@ -120,7 +121,7 @@ export const useQueueStore = defineStore('queue', () => {
     items,
     stats,
     loading,
-    filterStatus,
+    filterStatuses,
     keyword,
     page,
     pageSize,
@@ -128,7 +129,7 @@ export const useQueueStore = defineStore('queue', () => {
     pendingCount,
     hasProcessing,
     refresh,
-    setFilter,
+    setStatuses,
     setKeyword,
     setPage,
     setPageSize,

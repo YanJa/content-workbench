@@ -9,6 +9,7 @@ import {
   NInput,
   NModal,
   NCheckbox,
+  NSelect,
   NPagination,
   NSpace,
   NTag,
@@ -190,7 +191,7 @@ const columns = computed<DataTableColumns<QueueItem>>(() => [
         ),
         // 发布检查
         actionBtn('search', '发布检查', () => openCheck(row), { disabled: busy }),
-        // 推草稿箱（公众号）/ 复制文案（其它平台）：额度耗尽时禁用并说明
+        // 推微信草稿箱（公众号）/ 复制文案（其它平台）：额度耗尽时禁用并说明
         row.wechat_media_id
           ? null
           : isGzh && pushGate.blocked.value
@@ -201,7 +202,7 @@ const columns = computed<DataTableColumns<QueueItem>>(() => [
             : actionBtn(
                 isGzh ? 'send' : 'copy',
                 isGzh
-                  ? `推草稿箱${pushGate.left.value === null ? '' : `（剩 ${pushGate.left.value}）`}`
+                  ? `推微信草稿箱${pushGate.left.value === null ? '' : `（剩 ${pushGate.left.value}）`}`
                   : '复制文案',
                 () => onPushDraft(row),
                 {
@@ -209,9 +210,17 @@ const columns = computed<DataTableColumns<QueueItem>>(() => [
                   disabled: busy || (isGzh && pushGate.blocked.value),
                 },
               ),
-        // 标记已发
+        // 标记已发：公众号必须先推到微信草稿箱（wechat_media_id 非空）才能标记，
+        // 否则推完草稿箱前就标记完成，等于绕过合规发布流程
         row.status !== 'published'
-          ? actionBtn('check-circle', '标记为已发布', () => markPublished(row), { disabled: busy })
+          ? actionBtn(
+              'check-circle',
+              isGzh && !row.wechat_media_id
+                ? '请先推送到微信草稿箱，再标记完成'
+                : '标记为已发布',
+              () => markPublished(row),
+              { disabled: busy || (isGzh && !row.wechat_media_id) },
+            )
           : null,
         // 删除
         actionBtn('trash', '删除该内容', () => onDelete(row), { type: 'error', disabled: busy }),
@@ -475,11 +484,12 @@ watch(layoutShow, (v) => {
 })
 onBeforeUnmount(stopPolling)
 
-const filters: { label: string; value: 'all' | QueueStatus }[] = [
-  { label: '全部', value: 'all' },
-  { label: '待发布', value: 'ready' },
+/** 状态多选筛选：空数组 = 全部；与关键词搜索是 AND 关系。 */
+const statusOptions: { label: string; value: QueueStatus }[] = [
   { label: '待加工', value: 'draft' },
+  { label: '待发布', value: 'ready' },
   { label: '已发布', value: 'published' },
+  { label: '已归档', value: 'archived' },
 ]
 
 /** 标题/正文模糊搜索：本地输入做 300ms 防抖，再交给 store（后端匹配）。 */
@@ -524,17 +534,16 @@ function onSearchClear() {
       <template #header>
         <div class="queue-header">
           <div class="queue-header-left">
-            <NSpace :size="8">
-              <NButton
-                v-for="f in filters"
-                :key="f.value"
-                size="small"
-                :type="queue.filterStatus === f.value ? 'primary' : 'default'"
-                @click="queue.setFilter(f.value)"
-              >
-                {{ f.label }}
-              </NButton>
-            </NSpace>
+            <NSelect
+              multiple
+              collapse-tags
+              :value="queue.filterStatuses"
+              :options="statusOptions"
+              size="small"
+              placeholder="按状态筛选（可多选）"
+              style="width: 200px"
+              @update:value="(v: QueueStatus[]) => queue.setStatuses(v)"
+            />
             <NInput
               v-model:value="searchKw"
               size="small"
