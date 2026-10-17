@@ -276,10 +276,13 @@ def render(html, out_path, w, h, scale=2):
     tmp = os.path.join(BASE, "_tmp_cover.html")
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(html)
+    # 窗口高度多给 200px：headless 新模式的视口比窗口矮约 88px（scale 后翻倍），
+    # 按窗口高度铺会底部缺一截白边；多给缓冲保证视口 >= 目标高度，截图后裁掉。
+    EXTRA = 200
     proc = subprocess.run([CHROME, "--headless=new", "--disable-gpu", "--no-sandbox",
                            "--hide-scrollbars",
                            f"--force-device-scale-factor={scale}",
-                           f"--window-size={w},{h}",
+                           f"--window-size={w},{h + EXTRA}",
                            f"--screenshot={out_path}", tmp],
                           capture_output=True)
     if os.path.exists(tmp):
@@ -287,7 +290,19 @@ def render(html, out_path, w, h, scale=2):
     if not os.path.exists(out_path):
         err = (proc.stderr or b"").decode("utf-8", "replace")[:400]
         raise RuntimeError(f"封面渲染失败（Chrome 退出码 {proc.returncode}）：{err}")
+    _crop_to(out_path, w * scale, h * scale)
     return out_path
+
+
+def _crop_to(path, w, h):
+    """把截图裁剪到精确的 w×h（去掉窗口缓冲产生的多余高度）。"""
+    try:
+        from PIL import Image
+    except ImportError:
+        raise RuntimeError("需要 Pillow 库做尺寸裁剪：pip install pillow")
+    im = Image.open(path)
+    if im.size != (w, h):
+        im.crop((0, 0, w, h)).save(path)
 
 def make_cover(title, sub="", tag="", date="", style="gradient", size="wide", out=None, scale=2, brand=None):
     global STYLES
