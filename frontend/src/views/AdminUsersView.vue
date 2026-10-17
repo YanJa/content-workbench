@@ -298,6 +298,33 @@ function icon(name: string, size = 16) {
     key: [
       ['path', { d: 'M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4' }],
     ],
+    // 配置（齿轮）
+    gear: [
+      ['circle', { cx: '12', cy: '12', r: '3' }],
+      ['path', { d: 'M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z' }],
+    ],
+    // 重置（逆时针刷新）
+    reset: [
+      ['polyline', { points: '1 4 1 10 7 10' }],
+      ['path', { d: 'M3.51 15a9 9 0 1 0 2.13-9.36L1 10' }],
+    ],
+    // 复制
+    copy: [
+      ['rect', { x: '9', y: '9', width: '13', height: '13', rx: '2', ry: '2' }],
+      ['path', { d: 'M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1' }],
+    ],
+    // 保存（对勾）
+    check: [['polyline', { points: '20 6 9 17 4 12' }]],
+    // 取消（叉）
+    close: [
+      ['line', { x1: '18', y1: '6', x2: '6', y2: '18' }],
+      ['line', { x1: '6', y1: '6', x2: '18', y2: '18' }],
+    ],
+    // 停用/启用（电源）
+    power: [
+      ['path', { d: 'M18.36 6.64a9 9 0 1 1-12.73 0' }],
+      ['line', { x1: '12', y1: '2', x2: '12', y2: '12' }],
+    ],
   }
   return h(
     'svg',
@@ -314,6 +341,39 @@ function icon(name: string, size = 16) {
       style: 'display:block',
     },
     (nodes[name] ?? []).map(([tag, attrs]) => h(tag, attrs)),
+  )
+}
+
+/**
+ * 统一的图标操作按钮：circle 图标按钮 + hover tooltip。
+ * 让账号表 / 邀请码表里所有行内操作视觉一致（不再图标文字混用）。
+ */
+function actionBtn(
+  name: string,
+  tip: string,
+  onClick: () => void,
+  opts: { type?: 'default' | 'error' | 'primary'; loading?: boolean; disabled?: boolean } = {},
+) {
+  return h(
+    NTooltip,
+    { trigger: 'hover' },
+    {
+      trigger: () =>
+        h(
+          NButton,
+          {
+            size: 'tiny',
+            quaternary: true,
+            circle: true,
+            type: opts.type ?? 'default',
+            loading: opts.loading ?? false,
+            disabled: opts.disabled ?? false,
+            onClick,
+          },
+          { icon: () => icon(name) },
+        ),
+      default: () => tip,
+    },
   )
 }
 
@@ -608,14 +668,23 @@ const columns = computed<DataTableColumns<AdminUser>>(() => [
             : null,
         ]),
         h(
-          NButton,
+          NTooltip,
+          { trigger: 'hover' },
           {
-            size: 'tiny',
-            quaternary: true,
-            disabled: resetting.value,
-            onClick: () => onResetQuota(row),
+            trigger: () =>
+              h(
+                NButton,
+                {
+                  size: 'tiny',
+                  quaternary: true,
+                  circle: true,
+                  disabled: resetting.value,
+                  onClick: () => onResetQuota(row),
+                },
+                { icon: () => icon('reset') },
+              ),
+            default: () => '重置用量',
           },
-          { default: () => '重置' },
         ),
       ])
     },
@@ -623,51 +692,15 @@ const columns = computed<DataTableColumns<AdminUser>>(() => [
   {
     title: '操作',
     key: 'perm',
-    width: 150,
+    width: 120,
     render: (row) =>
       h('div', { style: 'display:flex;align-items:center;gap:2px' }, [
-        h(
-          NButton,
-          { size: 'tiny', onClick: () => openEdit(row) },
-          { default: () => (row.role === 'admin' ? '配额' : '配置') },
-        ),
+        actionBtn('gear', row.role === 'admin' ? '配置配额' : '配置权限与配额', () => openEdit(row)),
         // 重置密码：只对普通用户开放（管理员账号的密码不走重置旁路）
-        row.role === 'member'
-          ? h(
-              NTooltip,
-              { trigger: 'hover' },
-              {
-                trigger: () =>
-                  h(
-                    NButton,
-                    { size: 'tiny', quaternary: true, circle: true, onClick: () => openResetPwd(row) },
-                    { icon: () => icon('key') },
-                  ),
-                default: () => '重置密码',
-              },
-            )
-          : null,
+        row.role === 'member' ? actionBtn('key', '重置密码', () => openResetPwd(row)) : null,
         // 删除：仅非自己、非管理员（空账号才能删，后端会拦有数据的）
         row.id !== myId.value && row.role !== 'admin'
-          ? h(
-              NTooltip,
-              { trigger: 'hover' },
-              {
-                trigger: () =>
-                  h(
-                    NButton,
-                    {
-                      size: 'tiny',
-                      quaternary: true,
-                      circle: true,
-                      type: 'error',
-                      onClick: () => onDeleteUser(row),
-                    },
-                    { icon: () => icon('trash') },
-                  ),
-                default: () => '删除（仅限空账号）',
-              },
-            )
+          ? actionBtn('trash', '删除（仅限空账号）', () => onDeleteUser(row), { type: 'error' })
           : null,
       ]),
   },
@@ -824,13 +857,9 @@ const inviteColumns: DataTableColumns<InviteCodeItem> = [
     title: '邀请码',
     key: 'code',
     render: (row) =>
-      h('div', { style: 'display:flex;align-items:center;gap:8px' }, [
+      h('div', { style: 'display:flex;align-items:center;gap:6px' }, [
         h(NText, { code: true }, { default: () => row.code }),
-        h(
-          NButton,
-          { size: 'tiny', quaternary: true, onClick: () => onCopyInvite(row.code) },
-          { default: () => '复制' },
-        ),
+        actionBtn('copy', '复制邀请码', () => onCopyInvite(row.code)),
       ]),
   },
   {
@@ -838,7 +867,7 @@ const inviteColumns: DataTableColumns<InviteCodeItem> = [
     key: 'note',
     width: 220,
     render: (row) => {
-      // 正在编辑这行 → 输入框 + 保存/取消
+      // 正在编辑这行 → 输入框 + 保存/取消图标
       if (editingNoteId.value === row.id) {
         return h('div', { style: 'display:flex;align-items:center;gap:6px' }, [
           h(NInput, {
@@ -848,16 +877,8 @@ const inviteColumns: DataTableColumns<InviteCodeItem> = [
             style: 'flex:1;min-width:0',
             onUpdateValue: (v: string) => (editingNoteValue.value = v),
           }),
-          h(
-            NButton,
-            { size: 'tiny', type: 'primary', onClick: () => saveNote(row) },
-            { default: () => '保存' },
-          ),
-          h(
-            NButton,
-            { size: 'tiny', quaternary: true, onClick: cancelEditNote },
-            { default: () => '取消' },
-          ),
+          actionBtn('check', '保存', () => saveNote(row), { type: 'primary' }),
+          actionBtn('close', '取消', cancelEditNote),
         ])
       }
       // 非编辑态：渠道名 + 铅笔图标（点一下进入编辑）
@@ -867,24 +888,7 @@ const inviteColumns: DataTableColumns<InviteCodeItem> = [
           { depth: row.note ? 1 : 3, style: 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' },
           { default: () => row.note || '未备注' },
         ),
-        h(
-          NTooltip,
-          { trigger: 'hover' },
-          {
-            trigger: () =>
-              h(
-                NButton,
-                {
-                  size: 'tiny',
-                  quaternary: true,
-                  circle: true,
-                  onClick: () => startEditNote(row),
-                },
-                { icon: () => icon('edit') },
-              ),
-            default: () => '修改渠道名',
-          },
-        ),
+        actionBtn('edit', '修改渠道名', () => startEditNote(row)),
       ])
     },
   },
@@ -909,32 +913,19 @@ const inviteColumns: DataTableColumns<InviteCodeItem> = [
   {
     title: '操作',
     key: 'op',
-    width: 160,
+    width: 90,
     render: (row) =>
-      h('div', { style: 'display:flex;align-items:center;gap:6px' }, [
-        h(
-          NButton,
-          {
-            size: 'tiny',
-            quaternary: true,
-            loading: inviteBusy.value === row.id,
-            disabled: row.exhausted,
-            onClick: () => onToggleInvite(row),
-          },
-          { default: () => (row.disabled ? '启用' : '停用') },
-        ),
+      h('div', { style: 'display:flex;align-items:center;gap:2px' }, [
+        actionBtn('power', row.disabled ? '启用' : '停用', () => onToggleInvite(row), {
+          loading: inviteBusy.value === row.id,
+          disabled: row.exhausted,
+        }),
+        // 用过的码不能删（渠道统计要保留），只有 used === 0 的码显示删除
         row.used === 0
-          ? h(
-              NButton,
-              {
-                size: 'tiny',
-                quaternary: true,
-                type: 'error',
-                loading: inviteBusy.value === row.id,
-                onClick: () => onDeleteInvite(row),
-              },
-              { default: () => '删除' },
-            )
+          ? actionBtn('trash', '删除', () => onDeleteInvite(row), {
+              type: 'error',
+              loading: inviteBusy.value === row.id,
+            })
           : null,
       ]),
   },
