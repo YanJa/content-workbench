@@ -503,6 +503,10 @@ async function restoreFromQueue() {
     activeTurnId.value = msgId
     await scrollToMessage(msgId)
   }
+  // 显式恢复「已保存到队列」状态。**不能只靠 watch(currentId)**：chat 是全局
+  // store，从队列 SPA 跳回时 currentId 早已是这个值，openConversation 前后相等，
+  // watch 不会触发，savedMap 就一直是空的——这正是「回到对话后去队列查看消失」的根因。
+  void refreshSavedMap()
   // 清掉 query：刷新不再重复定位，但保留「返回发布队列」所需的内容 id
   void router.replace({ name: 'chat' })
 }
