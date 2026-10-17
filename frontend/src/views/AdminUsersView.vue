@@ -62,7 +62,9 @@ import {
   listUsers,
   putRolePermissions,
   putUserOverrides,
+  resetUserPassword,
   resetUserQuota,
+  updateInviteCode,
   updateUser,
   type AdminStats,
   type AdminUser,
@@ -89,10 +91,57 @@ const inviteDraft = ref({ code: '', note: '', maxUses: null as number | null })
 const creatingInvite = ref(false)
 const inviteBusy = ref('') // 正在停用/启用/删除的码 id
 
+/** 新建账号弹窗里的「来源邀请码」选项：码 + 渠道名（有备注就带上，方便辨认） */
+const inviteSourceOptions = computed<SelectOption[]>(() =>
+  inviteCodes.value.map((c) => ({
+    label: c.note ? `${c.code}（${c.note}）` : c.code,
+    value: c.code,
+  })),
+)
+
 // 建账号弹窗
 const showCreate = ref(false)
 const creating = ref(false)
-const form = ref({ username: '', password: '', role: 'member' as Role })
+const form = ref({ username: '', password: '', role: 'member' as Role, invite_code: '' })
+
+// 卡片折叠状态（卡片越来越多，默认折叠次要卡片，只展开「账号」主卡）
+const collapsedCards = ref<Record<string, boolean>>({
+  accounts: false, // 账号（主卡，默认展开）
+  memberTemplate: true, // 权限模板 · 普通成员
+  adminQuota: true, // 配额 · 管理员
+  invite: false, // 邀请码管理
+})
+
+/** 折叠开关的切换；用一个响应式对象让模板里 v-model 直接绑到字段上 */
+function toggleCard(key: string) {
+  collapsedCards.value[key] = !collapsedCards.value[key]
+}
+
+// 累计花费详情弹框（点「详情」看每个账号的用量明细）
+const showUsageDetail = ref(false)
+const usageDetailColumns: DataTableColumns<AdminStats['by_user'][number]> = [
+  { title: '用户', key: 'username', width: 140 },
+  { title: '角色', key: 'role', width: 90, render: (row) => (row.role === 'admin' ? '管理员' : '成员') },
+  { title: '内容', key: 'contents', width: 80 },
+  { title: '调用次数', key: 'llm_calls', width: 100 },
+  { title: 'Token', key: 'total_tokens', width: 120 },
+  {
+    title: '花费',
+    key: 'cost',
+    width: 120,
+    render: (row) => `¥${row.cost.toFixed(4)}`,
+  },
+]
+
+// 重置密码弹窗
+const showResetPwd = ref(false)
+const resettingPwd = ref(false)
+const resetPwdTarget = ref<AdminUser | null>(null)
+const resetPwdValue = ref('')
+
+// 渠道名编辑：正在编辑的行 + 草稿值
+const editingNoteId = ref('')
+const editingNoteValue = ref('')
 
 // 角色模板编辑
 const savingTemplate = ref(false)
@@ -276,15 +325,43 @@ async function onCreate() {
       username: form.value.username.trim(),
       password: form.value.password,
       role: form.value.role,
+      invite_code: form.value.invite_code.trim() || undefined,
     })
     message.success(`已创建账号 ${u.username}`)
     showCreate.value = false
-    form.value = { username: '', password: '', role: 'member' }
+    form.value = { username: '', password: '', role: 'member', invite_code: '' }
     await load()
   } catch (e) {
     message.error(`创建失败：${(e as Error).message}`)
   } finally {
     creating.value = false
+  }
+}
+
+/** 打开重置密码弹窗（只对普通用户开放，admin 行不显示该按钮） */
+function openResetPwd(row: AdminUser) {
+  resetPwdTarget.value = row
+  resetPwdValue.value = ''
+  showResetPwd.value = true
+}
+
+async function onResetPwd() {
+  const row = resetPwdTarget.value
+  if (!row) return
+  if (resetPwdValue.value.length < 8) {
+    message.warning('密码至少 8 位')
+    return
+  }
+  resettingPwd.value = true
+  try {
+    await resetUserPassword(row.id, resetPwdValue.value)
+    message.success(`已重置 ${row.username} 的密码`)
+    showResetPwd.value = false
+    resetPwdTarget.value = null
+  } catch (e) {
+    message.error(`重置失败：${(e as Error).message}`)
+  } finally {
+    resettingPwd.value = false
   }
 }
 
@@ -474,13 +551,23 @@ const columns = computed<DataTableColumns<AdminUser>>(() => [
   {
     title: '权限/配额',
     key: 'perm',
-    width: 110,
+    width: 170,
     render: (row) =>
-      h(
-        NButton,
-        { size: 'tiny', onClick: () => openEdit(row) },
-        { default: () => row.role === 'admin' ? '配额' : '配置' },
-      ),
+      h('div', { style: 'display:flex;align-items:center;gap:6px' }, [
+        h(
+          NButton,
+          { size: 'tiny', onClick: () => openEdit(row) },
+          { default: () => (row.role === 'admin' ? '配额' : '配置') },
+        ),
+        // 重置密码：只对普通用户开放（管理员账号的密码不走重置旁路）
+        row.role === 'member'
+          ? h(
+              NButton,
+              { size: 'tiny', quaternary: true, onClick: () => openResetPwd(row) },
+              { default: () => '重置密码' },
+            )
+          : null,
+      ]),
   },
   {
     title: '注册时间',
@@ -517,18 +604,8 @@ const columns = computed<DataTableColumns<AdminUser>>(() => [
   },
 ])
 
-const usageColumns: DataTableColumns<AdminStats['by_user'][number]> = [
-  { title: '用户', key: 'username', width: 140 },
-  { title: '内容', key: 'contents', width: 80 },
-  { title: '调用次数', key: 'llm_calls', width: 100 },
-  { title: 'Token', key: 'total_tokens', width: 120 },
-  {
-    title: '花费',
-    key: 'cost',
-    width: 120,
-    render: (row) => `¥${row.cost.toFixed(4)}`,
-  },
-]
+// 「各账号用量」已合并进「累计花费 → 详情」弹框（usageDetailColumns 见上方），
+// 不再单独占一张卡片，页面更清爽。
 
 // ---------------------------------------------------------------- 邀请码管理
 async function loadInvites() {
@@ -606,6 +683,33 @@ async function onCopyInvite(code: string) {
   }
 }
 
+/** 开始编辑某条邀请码的渠道名 */
+function startEditNote(item: InviteCodeItem) {
+  editingNoteId.value = item.id
+  editingNoteValue.value = item.note
+}
+
+/** 取消编辑渠道名 */
+function cancelEditNote() {
+  editingNoteId.value = ''
+  editingNoteValue.value = ''
+}
+
+/** 保存渠道名 */
+async function saveNote(item: InviteCodeItem) {
+  const val = editingNoteValue.value.trim()
+  try {
+    await updateInviteCode(item.id, val)
+    message.success('渠道名已更新')
+    cancelEditNote()
+    await loadInvites()
+    // 渠道名变了，用户列表的「来源」列也要跟着刷新
+    await load()
+  } catch (e) {
+    message.error(`更新失败：${(e as Error).message}`)
+  }
+}
+
 /** 邀请码列表的用量文案：不限 / 3/10 / 已用完 */
 function inviteUsageText(item: InviteCodeItem): string {
   if (item.max_uses === null) return `已用 ${item.used} · 不限`
@@ -630,7 +734,44 @@ const inviteColumns: DataTableColumns<InviteCodeItem> = [
   {
     title: '渠道',
     key: 'note',
-    render: (row) => h(NText, { depth: row.note ? 1 : 3 }, { default: () => row.note || '未备注' }),
+    width: 220,
+    render: (row) => {
+      // 正在编辑这行 → 输入框 + 保存/取消
+      if (editingNoteId.value === row.id) {
+        return h('div', { style: 'display:flex;align-items:center;gap:6px' }, [
+          h(NInput, {
+            size: 'small',
+            value: editingNoteValue.value,
+            placeholder: '渠道备注',
+            style: 'flex:1;min-width:0',
+            onUpdateValue: (v: string) => (editingNoteValue.value = v),
+          }),
+          h(
+            NButton,
+            { size: 'tiny', type: 'primary', onClick: () => saveNote(row) },
+            { default: () => '保存' },
+          ),
+          h(
+            NButton,
+            { size: 'tiny', quaternary: true, onClick: cancelEditNote },
+            { default: () => '取消' },
+          ),
+        ])
+      }
+      // 非编辑态：渠道名 + 「改」按钮（点一下进入编辑）
+      return h('div', { style: 'display:flex;align-items:center;gap:6px' }, [
+        h(
+          NText,
+          { depth: row.note ? 1 : 3, style: 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' },
+          { default: () => row.note || '未备注' },
+        ),
+        h(
+          NButton,
+          { size: 'tiny', quaternary: true, onClick: () => startEditNote(row) },
+          { default: () => '改' },
+        ),
+      ])
+    },
   },
   {
     title: '用量',
@@ -713,25 +854,45 @@ onMounted(load)
         <NStatistic label="累计花费">
           <span class="cost">¥{{ stats.llm.cost.toFixed(4) }}</span>
         </NStatistic>
+        <NButton
+          size="tiny"
+          quaternary
+          style="margin-top: 6px"
+          @click="showUsageDetail = true"
+        >
+          详情
+        </NButton>
       </NCard>
     </div>
 
     <NCard size="small" title="账号" style="margin-bottom: 16px">
       <template #header-extra>
-        <NButton size="small" type="primary" @click="showCreate = true">新建账号</NButton>
+        <div class="card-extra">
+          <NButton size="tiny" quaternary @click="toggleCard('accounts')">
+            {{ collapsedCards.accounts ? '展开' : '折叠' }}
+          </NButton>
+          <NButton size="small" type="primary" @click="showCreate = true">新建账号</NButton>
+        </div>
       </template>
-      <NSpin :show="loading">
-        <NDataTable :columns="columns" :data="users" :bordered="false" size="small" />
-      </NSpin>
-      <div class="hint">
-        停用即时生效：被停用的人手里那张还没过期的令牌下一次请求就会失效。
-        停用不删数据，随时可以再打开。
+      <div v-show="!collapsedCards.accounts">
+        <NSpin :show="loading">
+          <NDataTable :columns="columns" :data="users" :bordered="false" size="small" />
+        </NSpin>
+        <div class="hint">
+          停用即时生效：被停用的人手里那张还没过期的令牌下一次请求就会失效。
+          停用不删数据，随时可以再打开。
+        </div>
       </div>
     </NCard>
 
     <!-- 角色模板：member 的权限清单 + 各功能次数上限 -->
     <NCard v-if="catalog" size="small" title="权限模板 · 普通成员" style="margin-bottom: 16px">
-      <NSpin :show="loading">
+      <template #header-extra>
+        <NButton size="tiny" quaternary @click="toggleCard('memberTemplate')">
+          {{ collapsedCards.memberTemplate ? '展开' : '折叠' }}
+        </NButton>
+      </template>
+      <NSpin v-show="!collapsedCards.memberTemplate" :show="loading">
         <div class="perm-grid">
           <div class="perm-group">
             <div class="perm-group-title">菜单可见性</div>
@@ -803,83 +964,88 @@ onMounted(load)
 
     <!-- 管理员：只给配额，权限固定全开 -->
     <NCard v-if="catalog" size="small" title="配额 · 管理员" style="margin-bottom: 16px">
-      <NAlert type="info" :show-icon="false" style="margin-bottom: 12px">
-        管理员权限固定为全部开放、不可收窄（防止把自己锁在门外）。但配额照走 ——
-        那是成本闸门，不是权限。
-      </NAlert>
-      <div class="quota-row">
-        <template v-for="f in quotaFeatures" :key="f.key">
-          <div class="quota-item">
-            <span class="quota-label">{{ f.label }}</span>
-            <NSelect
-              v-model:value="adminQuotas[f.key].period"
-              :options="PERIOD_OPTIONS"
-              size="small"
-              style="width: 84px"
-            />
-            <NInputNumber
-              v-if="adminQuotas[f.key].period !== 'none'"
-              v-model:value="adminQuotas[f.key].limit"
-              :min="1"
-              :max="99999"
-              size="small"
-              style="width: 96px"
-              placeholder="次数"
-            />
-            <span v-else class="quota-unlimited">不限</span>
-          </div>
-        </template>
-      </div>
-      <div class="card-foot">
-        <NButton size="small" type="primary" :loading="savingTemplate" @click="onSaveAdminQuota">
-          保存配额
+      <template #header-extra>
+        <NButton size="tiny" quaternary @click="toggleCard('adminQuota')">
+          {{ collapsedCards.adminQuota ? '展开' : '折叠' }}
         </NButton>
+      </template>
+      <div v-show="!collapsedCards.adminQuota">
+        <NAlert type="info" :show-icon="false" style="margin-bottom: 12px">
+          管理员权限固定为全部开放、不可收窄（防止把自己锁在门外）。但配额照走 ——
+          那是成本闸门，不是权限。
+        </NAlert>
+        <div class="quota-row">
+          <template v-for="f in quotaFeatures" :key="f.key">
+            <div class="quota-item">
+              <span class="quota-label">{{ f.label }}</span>
+              <NSelect
+                v-model:value="adminQuotas[f.key].period"
+                :options="PERIOD_OPTIONS"
+                size="small"
+                style="width: 84px"
+              />
+              <NInputNumber
+                v-if="adminQuotas[f.key].period !== 'none'"
+                v-model:value="adminQuotas[f.key].limit"
+                :min="1"
+                :max="99999"
+                size="small"
+                style="width: 96px"
+                placeholder="次数"
+              />
+              <span v-else class="quota-unlimited">不限</span>
+            </div>
+          </template>
+        </div>
+        <div class="card-foot">
+          <NButton size="small" type="primary" :loading="savingTemplate" @click="onSaveAdminQuota">
+            保存配额
+          </NButton>
+        </div>
       </div>
     </NCard>
 
     <!-- 邀请码管理：生成限次/不限次的码，复制发给用户注册，渠道统计 -->
     <NCard size="small" title="邀请码管理" style="margin-bottom: 16px">
       <template #header-extra>
-        <NText depth="3" style="font-size: 12px">注册码 + 渠道统计</NText>
+        <div class="card-extra">
+          <NButton size="tiny" quaternary @click="toggleCard('invite')">
+            {{ collapsedCards.invite ? '展开' : '折叠' }}
+          </NButton>
+          <NText depth="3" style="font-size: 12px">注册码 + 渠道统计</NText>
+        </div>
       </template>
-      <div class="invite-create">
-        <NInput
-          v-model:value="inviteDraft.code"
-          placeholder="自定义码（留空随机生成）"
-          style="width: 200px"
-        />
-        <NInput
-          v-model:value="inviteDraft.note"
-          placeholder="渠道备注，如「小红书投放」"
-          style="width: 220px"
-        />
-        <NInputNumber
-          v-model:value="inviteDraft.maxUses"
-          :min="1"
-          :show-button="false"
-          placeholder="次数上限（空=不限）"
-          style="width: 160px"
-        />
-        <NButton size="small" type="primary" :loading="creatingInvite" @click="onCreateInvite">
-          生成邀请码
-        </NButton>
+      <div v-show="!collapsedCards.invite">
+        <div class="invite-create">
+          <NInput
+            v-model:value="inviteDraft.code"
+            placeholder="自定义码（留空随机生成）"
+            style="width: 200px"
+          />
+          <NInput
+            v-model:value="inviteDraft.note"
+            placeholder="渠道备注，如「小红书投放」"
+            style="width: 220px"
+          />
+          <NInputNumber
+            v-model:value="inviteDraft.maxUses"
+            :min="1"
+            :show-button="false"
+            placeholder="次数上限（空=不限）"
+            style="width: 160px"
+          />
+          <NButton size="small" type="primary" :loading="creatingInvite" @click="onCreateInvite">
+            生成邀请码
+          </NButton>
+        </div>
+        <NSpin :show="inviteLoading" style="margin-top: 12px">
+          <NDataTable :columns="inviteColumns" :data="inviteCodes" :bordered="false" size="small" />
+        </NSpin>
+        <div class="hint">
+          一个码可限制注册 N 个账号；用尽后自动失效但保留记录，方便对账。
+          用过的码不能删除（它是用户「来源」的依据），只能停用。
+        </div>
       </div>
-      <NSpin :show="inviteLoading" style="margin-top: 12px">
-        <NDataTable :columns="inviteColumns" :data="inviteCodes" :bordered="false" size="small" />
-      </NSpin>
-      <div class="hint">
-        一个码可限制注册 N 个账号；用尽后自动失效但保留记录，方便对账。
-        用过的码不能删除（它是用户「来源」的依据），只能停用。
-      </div>
-    </NCard>
-
-    <NCard v-if="stats" size="small" title="各账号用量">
-      <NDataTable
-        :columns="usageColumns"
-        :data="stats.by_user"
-        :bordered="false"
-        size="small"
-      />
     </NCard>
 
     <NModal v-model:show="showCreate" preset="card" title="新建账号" style="width: 420px">
@@ -897,6 +1063,15 @@ onMounted(load)
         </NFormItem>
         <NFormItem label="角色">
           <NSelect v-model:value="form.role" :options="ROLE_OPTIONS" />
+        </NFormItem>
+        <NFormItem label="来源邀请码（可选）">
+          <NSelect
+            v-model:value="form.invite_code"
+            :options="inviteSourceOptions"
+            clearable
+            filterable
+            placeholder="选择渠道（空 = 无来源）"
+          />
         </NFormItem>
       </NForm>
       <template #footer>
@@ -993,6 +1168,57 @@ onMounted(load)
         </div>
       </template>
     </NModal>
+
+    <!-- 重置普通用户密码 -->
+    <NModal
+      v-model:show="showResetPwd"
+      preset="card"
+      :title="`重置密码 · ${resetPwdTarget?.username ?? ''}`"
+      style="width: 420px"
+    >
+      <NForm label-placement="top">
+        <NFormItem label="新密码">
+          <NInput
+            v-model:value="resetPwdValue"
+            type="password"
+            show-password-on="click"
+            placeholder="至少 8 位"
+          />
+        </NFormItem>
+      </NForm>
+      <NAlert type="info" :show-icon="false" style="margin-top: 4px">
+        重置后对方需用新密码重新登录。管理员账号的密码不能在这里重置。
+      </NAlert>
+      <template #footer>
+        <div class="modal-foot">
+          <NButton size="small" :disabled="resettingPwd" @click="showResetPwd = false">取消</NButton>
+          <NButton size="small" type="primary" :loading="resettingPwd" @click="onResetPwd">
+            重置
+          </NButton>
+        </div>
+      </template>
+    </NModal>
+
+    <!-- 累计花费详情：每个账号的用量明细 -->
+    <NModal
+      v-model:show="showUsageDetail"
+      preset="card"
+      title="各账号用量明细"
+      style="width: 760px"
+    >
+      <NDataTable
+        :columns="usageDetailColumns"
+        :data="stats?.by_user ?? []"
+        :bordered="false"
+        size="small"
+        :max-height="480"
+      />
+      <template #footer>
+        <div class="modal-foot">
+          <NButton size="small" @click="showUsageDetail = false">关闭</NButton>
+        </div>
+      </template>
+    </NModal>
   </div>
 </template>
 
@@ -1006,6 +1232,13 @@ onMounted(load)
 
 .stat-card {
   text-align: center;
+}
+
+/* 卡片 header 右侧：折叠按钮 + 主操作按钮并排 */
+.card-extra {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .cost {

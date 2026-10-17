@@ -51,6 +51,8 @@ export interface CreateUserPayload {
   username: string
   password: string
   role?: Role
+  /** 代建账号的来源邀请码（可选）。填了进渠道统计，不填 = 无来源。 */
+  invite_code?: string
 }
 
 export interface UpdateUserPayload {
@@ -64,7 +66,7 @@ export async function listUsers(): Promise<AdminUser[]> {
   return data
 }
 
-/** 管理员代建账号 —— 绕过邀请码（邀请码是给自助注册用的门槛）。 */
+/** 管理员代建账号。邀请码可选（填了当来源，不扣次数）。 */
 export async function createUser(payload: CreateUserPayload): Promise<AdminUser> {
   const { data } = await http.post<AdminUser>('/admin/users', payload)
   return data
@@ -76,6 +78,14 @@ export async function updateUser(
   payload: UpdateUserPayload,
 ): Promise<AdminUser> {
   const { data } = await http.patch<AdminUser>(`/admin/users/${id}`, payload)
+  return data
+}
+
+/** 重置某个普通用户的密码（管理员账号的密码不走此旁路，后端会 400）。 */
+export async function resetUserPassword(id: string, password: string): Promise<AdminUser> {
+  const { data } = await http.post<AdminUser>(`/admin/users/${id}/reset-password`, {
+    password,
+  })
   return data
 }
 
@@ -193,6 +203,12 @@ export async function listInviteCodes(): Promise<InviteCodeItem[]> {
 /** 生成一条邀请码（可自定义或随机，可限次或不限）。 */
 export async function createInviteCode(payload: InviteCodePayload): Promise<InviteCodeItem> {
   const { data } = await http.post<InviteCodeItem>('/admin/invite-codes', payload)
+  return data
+}
+
+/** 修改邀请码的渠道备注（note）。只改备注，不碰码本身 / 次数 / 停用态。 */
+export async function updateInviteCode(id: string, note: string): Promise<InviteCodeItem> {
+  const { data } = await http.patch<InviteCodeItem>(`/admin/invite-codes/${id}`, { note })
   return data
 }
 

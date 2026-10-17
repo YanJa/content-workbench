@@ -553,8 +553,11 @@ def test_admin_create_user_bypasses_invite_code(env):
     )
     assert r.status_code == 200, r.text
     assert r.json()["role"] == "member"
-    # 代建的账号没邀请码也能登录
+    # 代建的账号没邀请码也能登录（邀请码对代建是可选来源，不是门槛）
     assert _login(client, "bob").status_code == 200
+    # 没传来源 → invite_code / invite_note 都为空
+    assert r.json()["invite_code"] is None
+    assert r.json()["invite_note"] is None
 
     assert client.post(
         "/api/admin/users",
@@ -566,6 +569,82 @@ def test_admin_create_user_bypasses_invite_code(env):
         json={"username": "carol", "password": "short"},
         headers=_auth(admin_token),
     ).status_code == 422
+
+
+def test_admin_create_user_with_invite_source(env):
+    """代建账号可以带上来源邀请码，进渠道统计（不扣次数、不校验门槛）。"""
+    client = TestClient(app)
+    admin_token = _admin_token(client)
+
+    # 先造一条渠道码
+    from app.models.invite import InviteCode
+
+    async def _seed_code():
+        async with env.Maker() as s:
+            s.add(InviteCode(code="channel-x", note="小红书投放", max_uses=1))
+            await s.commit()
+
+    asyncio.run(_seed_code())
+
+    r = client.post(
+        "/api/admin/users",
+        json={"username": "dave", "password": PASSWORD, "invite_code": "channel-x"},
+        headers=_auth(admin_token),
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["invite_code"] == "channel-x"
+    assert r.json()["invite_note"] == "小红书投放"
+
+    # 代建不扣次数：该码 max_uses=1，代建后仍可再注册 1 个
+    assert _register(client, "eve", invite="channel-x").status_code == 200
+
+    # 填了不存在的码 → 400（提示选错渠道，不静默吞掉）
+    r2 = client.post(
+        "/api/admin/users",
+        json={"username": "frank", "password": PASSWORD, "invite_code": "nope"},
+        headers=_auth(admin_token),
+    )
+    assert r2.status_code == 400 and "不存在" in r2.json()["detail"]
+
+
+def test_admin_reset_member_password(env):
+    """管理员能重置普通用户密码；重置后旧密码失效、新密码可登录。"""
+    client = TestClient(app)
+    admin_token = _admin_token(client)
+    bob_id = _register(client, "bob", invite="test-invite").json()["user"]["id"]
+
+    r = client.post(
+        f"/api/admin/users/{bob_id}/reset-password",
+        json={"password": "newpass123"},
+        headers=_auth(admin_token),
+    )
+    assert r.status_code == 200, r.text
+
+    # 旧密码失效，新密码可登录
+    assert _login(client, "bob", password=PASSWORD).status_code == 401
+    assert _login(client, "bob", password="newpass123").status_code == 200
+
+    # 密码太短 → 422
+    assert client.post(
+        f"/api/admin/users/{bob_id}/reset-password",
+        json={"password": "short"},
+        headers=_auth(admin_token),
+    ).status_code == 422
+
+
+def test_admin_cannot_reset_admin_password(env):
+    """管理员账号的密码不走重置旁路（防一个管理员抢另一个的登录权）。"""
+    client = TestClient(app)
+    admin_token = _admin_token(client)
+    my_id = client.get("/api/auth/me", headers=_auth(admin_token)).json()["id"]
+
+    r = client.post(
+        f"/api/admin/users/{my_id}/reset-password",
+        json={"password": "hijack123"},
+        headers=_auth(admin_token),
+    )
+    assert r.status_code == 400
+    assert "管理员" in r.json()["detail"]
 
 
 def test_deactivated_user_loses_access_immediately(env):

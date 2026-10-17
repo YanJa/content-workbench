@@ -96,11 +96,18 @@ class CreateUserIn(BaseModel):
     username: str = Field(min_length=1, max_length=64)
     password: str = Field(min_length=1, max_length=128)
     role: str = ROLE_MEMBER
+    # 代建账号的来源邀请码（可选）。填了就记到 users.invite_code，用户列表
+    # 「来源」列能跟着渠道归因；不填 = 无来源（和预置 admin、首用户一致）。
+    invite_code: str | None = None
 
 
 class UpdateUserIn(BaseModel):
     role: str | None = None
     is_active: bool | None = None
+
+
+class ResetPasswordIn(BaseModel):
+    password: str = Field(min_length=1, max_length=128)
 
 
 class RolePermIn(BaseModel):
@@ -218,13 +225,19 @@ async def _user_row(
 
     一并算出来是因为管理页要用：改完权限想立刻看到这个人现在到底能干什么，
     还得再挨个端点问一遍，不如一次给全。`invite_notes` 是「码 → 渠道备注」
-    的预取映射（list_users 一次性查好，避免每个用户各查一次邀请码表）。
+    的预取映射（list_users 一次性查好，避免每个用户各查一次邀请码表）；
+    单用户端点（create / update / reset 等）不传时，这里按需反查一次。
     """
     row = await _role_row(db, user.role)
     quotas = effective_quotas(user, row)
     note = None
-    if user.invite_code and invite_notes is not None:
-        note = invite_notes.get(user.invite_code)
+    if user.invite_code:
+        if invite_notes is not None:
+            note = invite_notes.get(user.invite_code)
+        else:
+            note = (
+                await db.execute(select(InviteCode.note).where(InviteCode.code == user.invite_code))
+            ).scalar_one_or_none()
     return AdminUserOut(
         id=user.id,
         username=user.username,
@@ -271,9 +284,12 @@ async def create_user(
     operator: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """管理员代建账号 —— 绕过邀请码（邀请码是给自助注册用的门槛）。
+    """管理员代建账号。
 
-    建出来一律是启用状态；想建完就封，再调一次 PATCH。
+    邀请码对自助注册是门槛，对代建是**可选来源标记**：填了 `invite_code`
+    就把码记到 users.invite_code（不扣次数、不校验门槛），让代建的人也能
+    进渠道统计；不填 = 无来源。建出来一律是启用状态；想建完就封，再调一次
+    PATCH。
     """
     username = validate_username(req.username)
     if len(req.password) < 8:
@@ -285,11 +301,64 @@ async def create_user(
     if taken:
         raise HTTPException(409, "用户名已被占用")
 
-    user = User(username=username, password_hash=hash_password(req.password), role=req.role)
+    # 代建来源：填了才校验码存在（不扣次数），不存在提示管理员选错渠道
+    invite_code: str | None = None
+    if req.invite_code:
+        code = req.invite_code.strip()
+        exists = (
+            await db.execute(select(InviteCode.id).where(InviteCode.code == code))
+        ).first()
+        if not exists:
+            raise HTTPException(400, "邀请码不存在")
+        invite_code = code
+
+    user = User(
+        username=username,
+        password_hash=hash_password(req.password),
+        role=req.role,
+        invite_code=invite_code,
+    )
     db.add(user)
     await db.commit()
-    logger.info("管理员 %s 创建用户 %s (role=%s)", operator.username, username, req.role)
+    logger.info(
+        "管理员 %s 创建用户 %s (role=%s, invite_code=%s)",
+        operator.username,
+        username,
+        req.role,
+        invite_code,
+    )
     return await _user_row(user, db)
+
+
+@router.post("/users/{user_id}/reset-password", response_model=AdminUserOut)
+async def reset_user_password(
+    user_id: str,
+    req: ResetPasswordIn,
+    operator: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """重置某个用户的密码。
+
+    只对**普通用户**开放（需求口径：管理员重置普通用户密码）。管理员不能
+    重置自己、也不能重置别的管理员 —— 管理员改自己密码走正常的「修改密码」
+    流程（登录态下凭旧密码换新密码），这里刻意不提供「不验旧密码直接改」的
+    旁路，否则一个管理员就能把另一个管理员的登录权抢走。
+    """
+    if len(req.password) < 8:
+        raise HTTPException(422, "密码至少 8 位")
+
+    target = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if target is None:
+        raise HTTPException(404, "用户不存在")
+
+    if target.role == ROLE_ADMIN:
+        # 无论目标是不是自己，管理员账号的密码都不走这条旁路
+        raise HTTPException(400, "管理员账号的密码不能通过重置修改，请走「修改密码」流程")
+
+    target.password_hash = hash_password(req.password)
+    await db.commit()
+    logger.warning("管理员 %s 重置了用户 %s 的密码", operator.username, target.username)
+    return await _user_row(target, db)
 
 
 @router.patch("/users/{user_id}", response_model=AdminUserOut)
@@ -644,6 +713,38 @@ async def create_invite_code(
         db=db,
     )
     await db.commit()
+    return _invite_out(inv)
+
+
+class InviteCodePatchIn(BaseModel):
+    """邀请码的部分字段更新。目前只支持改渠道备注（note）。"""
+
+    note: str | None = None
+
+
+@router.patch("/invite-codes/{code_id}", response_model=InviteCodeOut)
+async def update_invite_code(
+    code_id: str,
+    req: InviteCodePatchIn,
+    operator: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """修改邀请码的渠道备注（渠道名称可改，如把「小红书投放」改成「小红书 12 月」）。
+
+    只改 note，不碰 code / max_uses / disabled —— 码本身一旦发出再改会让
+    已经复制出去的码失效，次数上限改了也会让渠道对账乱掉。用过的码、没用过的
+    码都能改备注。
+    """
+    if req.note is None:
+        raise HTTPException(400, "没有要修改的内容")
+
+    inv = (await db.execute(select(InviteCode).where(InviteCode.id == code_id))).scalar_one_or_none()
+    if inv is None:
+        raise HTTPException(404, "邀请码不存在")
+
+    inv.note = (req.note or "").strip()
+    await db.commit()
+    logger.warning("管理员 %s 修改邀请码 %s 的备注为 %r", operator.username, inv.code, inv.note)
     return _invite_out(inv)
 
 

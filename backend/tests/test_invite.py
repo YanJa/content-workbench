@@ -196,6 +196,44 @@ def test_user_list_shows_invite_note(env):
     assert u["invite_note"] == "小红书投放"
 
 
+# ---------------------------------------------------------------- 改渠道名
+def test_update_invite_note(env):
+    """渠道备注可修改；改完用户列表的「来源」跟着变（备注实时反查）。"""
+    client = TestClient(app)
+    token = _login_admin(client)
+    code = _create_code(client, token, note="旧渠道名").json()
+    cid, ccode = code["id"], code["code"]
+    assert _register(client, "note_user", ccode).status_code == 200
+
+    # 改备注
+    r = client.patch(
+        f"/api/admin/invite-codes/{cid}", json={"note": "小红书 12 月"}, headers=_auth(token)
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["note"] == "小红书 12 月"
+
+    # 用户列表的来源实时跟着变（不冗余存备注）
+    users = client.get("/api/admin/users", headers=_auth(token)).json()
+    u = next(x for x in users if x["username"] == "note_user")
+    assert u["invite_note"] == "小红书 12 月"
+
+    # code / max_uses 不受影响
+    assert r.json()["code"] == ccode
+    assert r.json()["max_uses"] == code["max_uses"]
+
+    # 空 note 也算修改（清空备注）
+    r2 = client.patch(f"/api/admin/invite-codes/{cid}", json={"note": ""}, headers=_auth(token))
+    assert r2.status_code == 200 and r2.json()["note"] == ""
+
+    # 无字段 / 不存在 → 400 / 404
+    assert client.patch(
+        f"/api/admin/invite-codes/{cid}", json={}, headers=_auth(token)
+    ).status_code == 400
+    assert client.patch(
+        "/api/admin/invite-codes/deadbeef", json={"note": "x"}, headers=_auth(token)
+    ).status_code == 404
+
+
 # ---------------------------------------------------------------- 删除保护
 def test_delete_only_unused_code(env):
     client = TestClient(app)

@@ -71,13 +71,25 @@ const visibleNav = computed(() =>
   NAV.filter((n) => (!n.adminOnly || auth.isAdmin) && (!n.perm || auth.can(n.perm))),
 )
 
+/**
+ * 菜单 label：发布队列有「已就绪待发布」的记录时，在文字右侧挂一个红点，
+ * 不再用「(N)」这种数量 —— 数量会让人误以为是「新消息」，红点只表达
+ * 「有东西需要处理」，语义更准。
+ */
+function queueLabel(n: NavItem) {
+  if (n.key === 'queue' && queue.pendingCount > 0) {
+    return h('span', { class: 'menu-label-dot' }, [
+      n.label,
+      h('span', { class: 'dot' }),
+    ])
+  }
+  return n.label
+}
+
 const menuOptions = computed<MenuOption[]>(() =>
   visibleNav.value.map((n) => ({
     key: n.key,
-    label:
-      n.key === 'queue' && queue.pendingCount > 0
-        ? `发布队列 (${queue.pendingCount})`
-        : n.label,
+    label: () => queueLabel(n),
     icon: () => h(NavIcon, { name: n.icon }),
   })),
 )
@@ -86,7 +98,7 @@ const menuOptions = computed<MenuOption[]>(() =>
 const mobileTabs = computed(() =>
   visibleNav.value.map((n) =>
     n.key === 'queue' && queue.pendingCount > 0
-      ? { ...n, label: `队列 ${queue.pendingCount}` }
+      ? { ...n, label: `${n.label} ●` }
       : n,
   ),
 )
@@ -430,6 +442,21 @@ onMounted(async () => {
 
 .tab.active {
   color: var(--app-primary);
+}
+
+/* 侧栏菜单「发布队列」红点：表示有已就绪待发布的记录 */
+.menu-label-dot {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.menu-label-dot .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #f5222d;
+  flex-shrink: 0;
 }
 
 @media (max-width: 768px) {
