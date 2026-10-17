@@ -28,6 +28,7 @@ import {
 import { useChatStore } from '@/stores/chat'
 import { useQueueStore } from '@/stores/queue'
 import { useAuthStore } from '@/stores/auth'
+import ActionBtn from '@/components/ActionBtn.vue'
 import { usePermGate } from '@/composables/usePermGate'
 import { estimateUsage } from '@/api/usage'
 import { saveToQueue } from '@/api/queue'
@@ -623,19 +624,15 @@ async function restoreFromQueue() {
 
               <!-- AI 回复的操作栏：复制 / 保存到队列（排版在队列页做） -->
               <div v-if="m.role === 'assistant' && !m.streaming && m.content" class="msg-actions">
-                <NButton size="tiny" quaternary @click="copyMessage(m.content)">复制</NButton>
-                <NButton size="tiny" type="primary" ghost @click="openSaveModal(m)">
-                  保存到队列
-                </NButton>
-                <NButton
+                <ActionBtn name="copy" tip="复制" @click="copyMessage(m.content)" />
+                <ActionBtn name="inbox" tip="保存到队列" type="primary" @click="openSaveModal(m)" />
+                <ActionBtn
                   v-if="savedMap[m.id]"
-                  size="tiny"
-                  quaternary
+                  name="eye"
+                  tip="去队列查看"
                   type="info"
                   @click="goQueue(savedMap[m.id], m.id)"
-                >
-                  去队列查看
-                </NButton>
+                />
               </div>
 
               <!-- token 用量 + 本条花费（费用由后端计价引擎算，前端不复刻规则） -->

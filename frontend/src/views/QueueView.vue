@@ -172,85 +172,64 @@ const columns = computed<DataTableColumns<QueueItem>>(() => [
     render: (row) => {
       // 加工中（排版/生图）禁用所有会改状态的操作，避免重复触发/冲突
       const busy = !!row.processing
-      return h(NSpace, { size: 6 }, {
-        default: () => [
-          h(
-            NButton,
-            { size: 'tiny', type: 'primary', disabled: busy, onClick: () => openLayout(row) },
-            {
-              default: () =>
-                busy
-                  ? PROCESSING_LABEL[row.processing!] ?? '加工中'
-                  : row.status === 'published'
-                    ? '查看排版'
-                    : '加工排版',
-            },
-          ),
-          h(
-            NButton,
-            { size: 'tiny', disabled: busy, onClick: () => openCheck(row) },
-            { default: () => '发布检查' },
-          ),
-          row.wechat_media_id
-            ? null
-            : h(
-                NButton,
+      const isGzh = row.platform === 'gzh'
+      const items = [
+        // 加工排版 / 查看排版：加工中时禁用，tooltip 显示当前加工阶段
+        actionBtn(
+          'edit',
+          busy
+            ? `加工中：${PROCESSING_LABEL[row.processing!] ?? '排版中'}`
+            : row.status === 'published'
+              ? '查看排版'
+              : '加工排版',
+          () => openLayout(row),
+          { type: row.status === 'published' ? 'default' : 'primary', disabled: busy },
+        ),
+        // 发布检查
+        actionBtn('search', '发布检查', () => openCheck(row), { disabled: busy }),
+        // 推草稿箱（公众号）/ 复制文案（其它平台）：额度耗尽时禁用并说明
+        row.wechat_media_id
+          ? null
+          : isGzh && pushGate.blocked.value
+            ? actionBtn('send', '无法推送：今日公众号推送额度已用完', () => onPushDraft(row), {
+                type: 'primary',
+                disabled: true,
+              })
+            : actionBtn(
+                isGzh ? 'send' : 'copy',
+                isGzh
+                  ? `推草稿箱${pushGate.left.value === null ? '' : `（剩 ${pushGate.left.value}）`}`
+                  : '复制文案',
+                () => onPushDraft(row),
                 {
-                  size: 'tiny',
-                  type: row.platform === 'gzh' ? 'primary' : 'default',
-                  // 非公众号平台的「复制文案」不走微信接口，不受这个门控
-                  disabled: busy || (row.platform === 'gzh' && pushGate.blocked.value),
-                  onClick: () => onPushDraft(row),
-                },
-                {
-                  default: () =>
-                    row.platform === 'gzh' && pushGate.blocked.value
-                      ? '无法推送'
-                      : row.platform === 'gzh'
-                        ? `推草稿箱${pushGate.left.value === null ? '' : `（剩 ${pushGate.left.value}）`}`
-                        : '复制文案',
+                  type: isGzh ? 'primary' : 'default',
+                  disabled: busy || (isGzh && pushGate.blocked.value),
                 },
               ),
-          row.status !== 'published'
-            ? h(
-                NButton,
-                { size: 'tiny', disabled: busy, onClick: () => markPublished(row) },
-                { default: () => '标记已发' },
-              )
-            : null,
-          h(
-            NButton,
-            { size: 'tiny', quaternary: true, disabled: busy, onClick: () => onDelete(row) },
-            { default: () => '删除' },
-          ),
-          // 来源是某条对话 → 跳回会话并定位到那条 AI 回复（非会话来源没有此字段）
-          row.conversation_id
-            ? h(
-                NButton,
-                {
-                  size: 'tiny',
-                  quaternary: true,
-                  disabled: busy,
-                  onClick: () => goChat(row),
-                },
-                { default: () => '回到对话' },
-              )
-            : null,
-          // 加工中卡住时的唯一出口：解除 processing 标记，恢复其它按钮可点
-          busy
-            ? h(
-                NButton,
-                { size: 'tiny', type: 'warning', ghost: true, onClick: () => onCancelProcessing(row) },
-                { default: () => '取消' },
-              )
-            : null,
-        ].filter(Boolean),
-      })
+        // 标记已发
+        row.status !== 'published'
+          ? actionBtn('check-circle', '标记为已发布', () => markPublished(row), { disabled: busy })
+          : null,
+        // 删除
+        actionBtn('trash', '删除该内容', () => onDelete(row), { type: 'error', disabled: busy }),
+        // 来源是某条对话 → 跳回会话并定位到那条 AI 回复（非会话来源没有此字段）
+        row.conversation_id
+          ? actionBtn('arrow-left', '回到来源对话', () => goChat(row), { disabled: busy })
+          : null,
+        // 加工中卡住时的唯一出口：解除 processing 标记，恢复其它按钮可点
+        busy
+          ? actionBtn('close', '取消加工（解除卡死状态）', () => onCancelProcessing(row), {
+              type: 'warning',
+            })
+          : null,
+      ].filter(Boolean) as VNode[]
+      return h('div', { style: 'display:flex;gap:6px;flex-wrap:wrap;align-items:center' }, items)
     },
   },
 ])
 
-import { h } from 'vue'
+import { h, type VNode } from 'vue'
+import { actionBtn } from '@/utils/actionBtn'
 
 /**
  * 「回到对话」：跳回来源会话并定位到那条 AI 回复。

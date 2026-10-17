@@ -9,6 +9,8 @@ import { ref } from 'vue'
 import { NButton, NEmpty, NInput, NPopconfirm, NScrollbar } from 'naive-ui'
 
 import type { Conversation } from '@/types'
+import ActionBtn from '@/components/ActionBtn.vue'
+import IconSvg from '@/components/IconSvg.vue'
 
 const props = withDefaults(
   defineProps<{
@@ -98,12 +100,12 @@ function onItemClick(c: Conversation) {
             <div class="conv-time">{{ fmtTime(c.updated_at) }}</div>
           </div>
           <div class="conv-actions">
-            <NButton quaternary size="tiny" title="重命名" @click.stop="startRename(c)">
-              ✏️
-            </NButton>
+            <ActionBtn name="edit" tip="重命名" @click.stop="startRename(c)" />
             <NPopconfirm @positive-click="emit('remove', c.id)">
               <template #trigger>
-                <NButton quaternary size="tiny" title="删除会话" @click.stop>🗑</NButton>
+                <NButton quaternary circle size="tiny" type="error" title="删除会话">
+                  <template #icon><IconSvg name="trash" /></template>
+                </NButton>
               </template>
               删除后该会话的消息会一并清除，确定吗？
             </NPopconfirm>

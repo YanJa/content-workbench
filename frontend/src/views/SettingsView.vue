@@ -5,6 +5,7 @@
  * 这几件事摊开给运营同学看，出问题能自己定位。
  */
 import { computed, h, onMounted, ref } from 'vue'
+import { actionBtn } from '@/utils/actionBtn'
 import { useRouter } from 'vue-router'
 import {
   NAlert,
@@ -387,30 +388,12 @@ const wechatColumns = computed<DataTableColumns<WeChatAccount>>(() => [
     key: 'actions',
     width: 250,
     render: (row) =>
-      h('div', { style: 'display:flex;gap:6px;flex-wrap:wrap' }, [
-        h(
-          NButton,
-          {
-            size: 'tiny',
-            loading: checkingId.value === row.id,
-            onClick: () => onCheck(row),
-          },
-          { default: () => '测试连通' },
-        ),
-        !row.is_default
-          ? h(
-              NButton,
-              { size: 'tiny', onClick: () => onSetDefault(row) },
-              { default: () => '设为默认' },
-            )
-          : null,
-        h(NButton, { size: 'tiny', onClick: () => openEdit(row) }, { default: () => '编辑' }),
-        h(
-          NButton,
-          { size: 'tiny', quaternary: true, type: 'error', onClick: () => onDelete(row) },
-          { default: () => '删除' },
-        ),
-      ]),
+      h('div', { style: 'display:flex;gap:6px;flex-wrap:wrap;align-items:center' }, [
+        actionBtn('link', '测试连通', () => onCheck(row), { loading: checkingId.value === row.id }),
+        !row.is_default ? actionBtn('star', '设为默认', () => onSetDefault(row)) : null,
+        actionBtn('edit', '编辑', () => openEdit(row)),
+        actionBtn('trash', '删除', () => onDelete(row), { type: 'error' }),
+      ].filter(Boolean)),
   },
 ])
 

@@ -76,6 +76,7 @@ import {
 import type { QuotaConf, QuotaPeriod, Role } from '@/api/auth'
 import { useAuthStore } from '@/stores/auth'
 import { useRouter } from 'vue-router'
+import { actionBtn } from '@/utils/actionBtn'
 
 const message = useMessage()
 const dialog = useDialog()
@@ -274,116 +275,8 @@ function templateQuotaOf(role: Role, feature: string): QuotaConf | undefined {
 }
 
 // ---------------------------------------------------------------- 展示辅助
-/**
- * 内联 SVG 图标（stroke 线性风格，与 NavIcon 一致）。用 h 渲染，避免为几个
- * 小图标引入图标库。currentColor 跟随按钮文字色。
- */
-function icon(name: string, size = 16) {
-  const nodes: Record<string, [string, Record<string, string | number>][]> = {
-    // 向上箭头（折叠）
-    'chevron-up': [['polyline', { points: '18 15 12 9 6 15' }]],
-    // 向下箭头（展开）
-    'chevron-down': [['polyline', { points: '6 9 12 15 18 9' }]],
-    // 详情：列表展开（三条横线 + 右侧箭头）
-    detail: [
-      ['line', { x1: '3', y1: '6', x2: '15', y2: '6' }],
-      ['line', { x1: '3', y1: '12', x2: '15', y2: '12' }],
-      ['line', { x1: '3', y1: '18', x2: '11', y2: '18' }],
-      ['polyline', { points: '15 15 19 19 23 15' }],
-    ],
-    // 编辑（铅笔）
-    edit: [
-      ['path', { d: 'M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7' }],
-      ['path', { d: 'M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4z' }],
-    ],
-    // 删除（垃圾桶）
-    trash: [
-      ['polyline', { points: '3 6 5 6 21 6' }],
-      ['path', { d: 'M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2' }],
-    ],
-    // 重置密码（钥匙）
-    key: [
-      ['path', { d: 'M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4' }],
-    ],
-    // 配置（齿轮）
-    gear: [
-      ['circle', { cx: '12', cy: '12', r: '3' }],
-      ['path', { d: 'M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z' }],
-    ],
-    // 重置（逆时针刷新）
-    reset: [
-      ['polyline', { points: '1 4 1 10 7 10' }],
-      ['path', { d: 'M3.51 15a9 9 0 1 0 2.13-9.36L1 10' }],
-    ],
-    // 复制
-    copy: [
-      ['rect', { x: '9', y: '9', width: '13', height: '13', rx: '2', ry: '2' }],
-      ['path', { d: 'M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1' }],
-    ],
-    // 保存（对勾）
-    check: [['polyline', { points: '20 6 9 17 4 12' }]],
-    // 取消（叉）
-    close: [
-      ['line', { x1: '18', y1: '6', x2: '6', y2: '18' }],
-      ['line', { x1: '6', y1: '6', x2: '18', y2: '18' }],
-    ],
-    // 停用/启用（电源）
-    power: [
-      ['path', { d: 'M18.36 6.64a9 9 0 1 1-12.73 0' }],
-      ['line', { x1: '12', y1: '2', x2: '12', y2: '12' }],
-    ],
-  }
-  return h(
-    'svg',
-    {
-      width: size,
-      height: size,
-      viewBox: '0 0 24 24',
-      fill: 'none',
-      stroke: 'currentColor',
-      'stroke-width': '1.8',
-      'stroke-linecap': 'round',
-      'stroke-linejoin': 'round',
-      'aria-hidden': 'true',
-      style: 'display:block',
-    },
-    (nodes[name] ?? []).map(([tag, attrs]) => h(tag, attrs)),
-  )
-}
-
-/**
- * 统一的图标操作按钮：circle 图标按钮 + hover tooltip。
- * 让账号表 / 邀请码表里所有行内操作视觉一致（不再图标文字混用）。
- */
-function actionBtn(
-  name: string,
-  tip: string,
-  onClick: () => void,
-  opts: { type?: 'default' | 'error' | 'primary'; loading?: boolean; disabled?: boolean } = {},
-) {
-  return h(
-    NTooltip,
-    { trigger: 'hover' },
-    {
-      trigger: () =>
-        h(
-          NButton,
-          {
-            size: 'tiny',
-            quaternary: true,
-            circle: true,
-            type: opts.type ?? 'default',
-            loading: opts.loading ?? false,
-            disabled: opts.disabled ?? false,
-            onClick,
-          },
-          { icon: () => icon(name) },
-        ),
-      default: () => tip,
-    },
-  )
-}
-
+// 图标与图标操作按钮统一走共享实现（utils/icon.ts + components/ActionBtn.vue），
+// 保证账号表 / 邀请码表 / 各模块记录操作按钮视觉一致（不再图标文字混用）。
 function roleTag(role: Role) {
   return h(
     NTag,
@@ -627,13 +520,26 @@ const columns = computed<DataTableColumns<AdminUser>>(() => [
   {
     title: '用户名',
     key: 'username',
+    // 移动端列会变窄：用 ellipsis 截断 + 原生 title 显示全名，避免长用户名换行撑高整行
+    minWidth: 140,
+    maxWidth: 220,
     render: (row) =>
       h('div', { style: 'display:flex;align-items:center;gap:6px' }, [
-        row.username,
+        h(
+          'span',
+          {
+            title: row.username,
+            style:
+              'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0',
+          },
+          { default: () => row.username },
+        ),
         row.id === myId.value
-          ? h(NTag, { size: 'tiny', bordered: false, type: 'info' }, { default: () => '我' })
+          ? h(NTag, { size: 'tiny', bordered: false, type: 'info', style: 'flex-shrink:0' }, { default: () => '我' })
           : null,
-        row.is_active ? null : h(NTag, { size: 'tiny', bordered: false }, { default: () => '已停用' }),
+        row.is_active
+          ? null
+          : h(NTag, { size: 'tiny', bordered: false, style: 'flex-shrink:0' }, { default: () => '已停用' }),
       ]),
   },
   {
@@ -674,25 +580,7 @@ const columns = computed<DataTableColumns<AdminUser>>(() => [
               )
             : null,
         ]),
-        h(
-          NTooltip,
-          { trigger: 'hover' },
-          {
-            trigger: () =>
-              h(
-                NButton,
-                {
-                  size: 'tiny',
-                  quaternary: true,
-                  circle: true,
-                  disabled: resetting.value,
-                  onClick: () => onResetQuota(row),
-                },
-                { icon: () => icon('reset') },
-              ),
-            default: () => '重置用量',
-          },
-        ),
+        actionBtn('reset', '重置用量', () => onResetQuota(row), { disabled: resetting.value }),
       ])
     },
   },
@@ -1029,7 +917,13 @@ onMounted(load)
       </template>
       <div v-show="!collapsedCards.accounts">
         <NSpin :show="loading">
-          <NDataTable :columns="columns" :data="users" :bordered="false" size="small" />
+          <NDataTable
+            :columns="columns"
+            :data="users"
+            :bordered="false"
+            size="small"
+            :scroll-x="1240"
+          />
         </NSpin>
         <div class="hint">
           停用即时生效：被停用的人手里那张还没过期的令牌下一次请求就会失效。

@@ -43,6 +43,8 @@ import type { VisualScene } from '@/api/tools'
 import { getApiBase } from '@/api/config'
 import type { JobStatus, RenderJob } from '@/types'
 import VoiceClonePanel from '@/components/VoiceClonePanel.vue'
+import ActionBtn from '@/components/ActionBtn.vue'
+import IconSvg from '@/components/IconSvg.vue'
 import { listCloneVoices } from '@/api/tools'
 import type { CloneVoice } from '@/api/tools'
 import { useAuthStore } from '@/stores/auth'
@@ -795,27 +797,29 @@ onBeforeUnmount(stopPoll)
                  NSpace 对含 v-if 的插槽会重复渲染 vnode（实测「停止刷新」
                  出现两个）。原生 flex 没这个问题。 -->
             <div class="job-actions">
-              <NButton
+              <ActionBtn
                 v-if="job.status === 'done' && job.output_url"
-                size="small"
+                name="download"
+                tip="下载成片"
                 type="primary"
+                size="small"
                 tag="a"
                 :href="mediaUrl(job.output_url)"
                 :download="`${job.title || 'video'}.mp4`"
-              >
-                下载成片
-              </NButton>
-              <NButton
+              />
+              <ActionBtn
                 v-if="job.status === 'failed' || job.status === 'done'"
+                name="rotate"
+                tip="重新渲染"
                 size="small"
                 @click="onRetry(job)"
-              >
-                重新渲染
-              </NButton>
-              <NButton v-if="polling" size="small" @click="stopPoll">停止刷新</NButton>
+              />
+              <ActionBtn v-if="polling" name="stop" tip="停止刷新" size="small" @click="stopPoll" />
               <NPopconfirm @positive-click="onDelete(job)">
                 <template #trigger>
-                  <NButton size="small" quaternary type="error">删除</NButton>
+                  <NButton size="small" quaternary circle type="error" title="删除">
+                    <template #icon><IconSvg name="trash" /></template>
+                  </NButton>
                 </template>
                 删除任务和成片文件？
               </NPopconfirm>
