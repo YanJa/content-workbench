@@ -565,7 +565,7 @@ onBeforeUnmount(() => {
                   : `一键排版（剩 ${layoutGate.left.value}）`
             }}
           </IconTextBtn>
-          <div v-if="layoutGate.reason" class="gate-tip">⚠ {{ layoutGate.reason }}</div>
+          <div v-if="layoutGate.reason.value" class="gate-tip">⚠ {{ layoutGate.reason.value }}</div>
           <NCheckbox
             v-if="coverReady"
             v-model:checked="autoCover"
@@ -604,7 +604,7 @@ onBeforeUnmount(() => {
                   : `推公众号草稿箱（剩 ${pushGate.left.value}）`
             }}
           </IconTextBtn>
-          <div v-if="pushGate.reason" class="gate-tip">⚠ {{ pushGate.reason }}</div>
+          <div v-if="pushGate.reason.value" class="gate-tip">⚠ {{ pushGate.reason.value }}</div>
           <IconTextBtn
             name="save"
             :type="dirty ? 'warning' : 'default'"

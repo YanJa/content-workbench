@@ -244,7 +244,7 @@ onBeforeUnmount(stopPoll)
             </NButton>
           </NUpload>
         </div>
-        <div v-if="cloneGate.reason" class="hint gate-tip">⚠ {{ cloneGate.reason }}</div>
+        <div v-if="cloneGate.reason.value" class="hint gate-tip">⚠ {{ cloneGate.reason.value }}</div>
 
         <div v-if="running" class="rec-progress">
           <div class="rec-stage">

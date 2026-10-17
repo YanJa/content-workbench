@@ -697,7 +697,7 @@ onBeforeUnmount(stopPoll)
               </NButton>
             </NSpace>
             <!-- 常驻说明而不是 tooltip：禁用按钮的 hover 提示多数浏览器不触发 -->
-            <div v-if="renderGate.reason" class="hint gate-tip">⚠ {{ renderGate.reason }}</div>
+            <div v-if="renderGate.reason.value" class="hint gate-tip">⚠ {{ renderGate.reason.value }}</div>
           </NForm>
         </NCard>
 
@@ -714,7 +714,7 @@ onBeforeUnmount(stopPoll)
               {{ pptParsing ? '解析中…' : '上传 PPT，解析成口播稿' }}
             </IconTextBtn>
           </NUpload>
-          <div v-if="pptGate.reason" class="hint gate-tip">⚠ {{ pptGate.reason }}</div>
+          <div v-if="pptGate.reason.value" class="hint gate-tip">⚠ {{ pptGate.reason.value }}</div>
           <div class="hint" style="margin-top: 10px">
             优先取每页<b>演讲者备注</b>（那才是要念的话），没有备注时拼接页面文字。
             解析后<b>每页的口播稿单独一块</b>显示在上方，改哪页算哪页，不是黑盒。

@@ -312,8 +312,8 @@ async function saveAlt(img: ContentImage, alt: string) {
               收起
             </IconTextBtn>
           </div>
-          <div v-if="coverGate.reason" class="hint warn gate-tip">
-            {{ coverGate.reason }}
+          <div v-if="coverGate.reason.value" class="hint warn gate-tip">
+            {{ coverGate.reason.value }}
           </div>
         </div>
       </div>
@@ -353,8 +353,8 @@ async function saveAlt(img: ContentImage, alt: string) {
         >
           {{ imageGenGate.blocked.value ? '无权限' : '生成配图' }}
         </IconTextBtn>
-        <div v-if="imageGenGate.reason" class="hint warn gate-tip">
-          {{ imageGenGate.reason }}
+        <div v-if="imageGenGate.reason.value" class="hint warn gate-tip">
+          {{ imageGenGate.reason.value }}
         </div>
         <NUpload
           :show-file-list="false"
