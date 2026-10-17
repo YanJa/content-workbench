@@ -673,6 +673,19 @@ async function restoreFromQueue() {
                 />
               </div>
 
+              <!-- 已入队引导 pill：操作栏默认只有 0.55 透明度、hover 才全亮，
+                   纯图标按钮用户很难发现。这条 pill 常亮可点，一眼说清
+                   「已入队 → 去哪 → 点这里」，把对话→队列的闭环引导做明显。 -->
+              <div
+                v-if="m.role === 'assistant' && !m.streaming && m.content && savedMap[m.id]"
+                class="queued-entry"
+                @click="goQueue(savedMap[m.id], m.id)"
+              >
+                <span class="queued-entry-badge">已入队</span>
+                <span class="queued-entry-text">点此去发布队列排版加工</span>
+                <span class="queued-entry-arrow">→</span>
+              </div>
+
               <!-- token 用量 + 本条花费（费用由后端计价引擎算，前端不复刻规则） -->
               <div v-if="m.usage && !m.streaming" class="usage-line">
                 tokens {{ m.usage.total_tokens }}
@@ -1049,6 +1062,43 @@ async function restoreFromQueue() {
 }
 .msg:hover .msg-actions {
   opacity: 1;
+}
+
+/* 已入队引导 pill：放在操作栏外，不继承 .msg-actions 的 hover 透明度，
+   始终常亮可点——解决「图标按钮太隐蔽，用户不知道已入队的内容该去哪加工」 */
+.queued-entry {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 3px 10px 3px 4px;
+  border-radius: 999px;
+  background: var(--app-primary-a10);
+  border: 1px solid var(--app-primary-border-soft);
+  color: var(--app-primary-soft);
+  font-size: 12px;
+  line-height: 1.6;
+  cursor: pointer;
+  user-select: none;
+  transition:
+    background 0.15s ease,
+    transform 0.15s ease;
+}
+.queued-entry:hover {
+  background: var(--app-primary-a18);
+}
+.queued-entry:active {
+  transform: scale(0.97);
+}
+.queued-entry-badge {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--app-primary);
+  color: #fff;
+  font-size: 11px;
+}
+.queued-entry-arrow {
+  font-weight: 700;
 }
 
 /* 思维链盒子：视觉上弱化，不抢正文的注意力 */

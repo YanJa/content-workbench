@@ -13,6 +13,7 @@ import {
   NPagination,
   NSpace,
   NTag,
+  NTooltip,
   NAlert,
   NEmpty,
   useDialog,
@@ -157,11 +158,26 @@ const columns = computed<DataTableColumns<QueueItem>>(() => [
   {
     title: '推送',
     key: 'wechat_media_id',
-    width: 90,
-    render: (row) =>
-      row.wechat_media_id
-        ? h(NTag, { size: 'tiny', type: 'success', bordered: false }, { default: () => '已推送' })
-        : h('span', { style: 'color:var(--app-text-3);font-size:12px' }, '—'),
+    width: 100,
+    render: (row) => {
+      if (!row.wechat_media_id) {
+        return h('span', { style: 'color:var(--app-text-3);font-size:12px' }, '—')
+      }
+      // 已推送：绿色标签常驻显示，tooltip 说明下一步去哪（微信后台预览/群发）
+      return h(
+        NTooltip,
+        { trigger: 'hover' },
+        {
+          trigger: () =>
+            h(
+              NTag,
+              { size: 'small', type: 'success', bordered: false },
+              { default: () => '已推送' },
+            ),
+          default: () => '已推送到公众号草稿箱，可去微信后台预览或群发',
+        },
+      )
+    },
   },
   {
     title: '创建时间',
