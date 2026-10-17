@@ -9,7 +9,6 @@
  */
 import { computed, ref } from 'vue'
 import {
-  NButton,
   NDivider,
   NEmpty,
   NInput,
@@ -21,6 +20,7 @@ import {
   NUpload,
   useMessage,
 } from 'naive-ui'
+import IconTextBtn from './IconTextBtn.vue'
 import type { UploadFileInfo } from 'naive-ui'
 import {
   deleteImage,
@@ -243,26 +243,26 @@ async function saveAlt(img: ContentImage, alt: string) {
       <div v-if="coverImg" class="cover-preview">
         <img :src="coverImg.url" :alt="coverImg.alt || '封面'" />
         <div v-if="!isReadonly" class="cover-ops">
-          <NButton size="tiny" :disabled="!coverReady" :loading="coverGen" @click="openCoverForm">
+          <IconTextBtn name="image" size="tiny" :disabled="!coverReady" :loading="coverGen" @click="openCoverForm">
             换一张
-          </NButton>
-          <NButton size="tiny" quaternary type="error" @click="onDelete(coverImg)">
+          </IconTextBtn>
+          <IconTextBtn name="trash" size="tiny" quaternary type="error" @click="onDelete(coverImg)">
             删除
-          </NButton>
+          </IconTextBtn>
         </div>
       </div>
 
       <!-- 无封面：直接展开表单（只读时不显示生成入口） -->
       <div v-else-if="coverReady && !isReadonly" class="cover-empty">
-        <NButton
-          size="small"
+        <IconTextBtn
+          name="image"
           type="primary"
           ghost
           :disabled="coverGate.blocked.value"
           @click="openCoverForm"
         >
-          {{ coverGate.blocked.value ? '无权限' : '＋ 生成封面' }}
-        </NButton>
+          {{ coverGate.blocked.value ? '无权限' : '生成封面' }}
+        </IconTextBtn>
         <span class="hint-inline">或上传图片后点「设为封面」</span>
       </div>
       <div v-else-if="!coverReady && !isReadonly" class="hint warn">
@@ -299,18 +299,18 @@ async function saveAlt(img: ContentImage, alt: string) {
             </NRadioButton>
           </NRadioGroup>
           <div class="cover-btns">
-            <NButton
-              size="small"
+            <IconTextBtn
+              name="image"
               type="primary"
               :loading="coverGen"
               :disabled="coverGate.blocked.value"
               @click="onGenerateCover"
             >
               {{ coverGate.blocked.value ? '无权限' : coverImg ? '重新生成' : '生成' }}
-            </NButton>
-            <NButton size="small" quaternary :disabled="coverGen" @click="showCoverForm = false">
+            </IconTextBtn>
+            <IconTextBtn name="close" size="small" quaternary :disabled="coverGen" @click="showCoverForm = false">
               收起
-            </NButton>
+            </IconTextBtn>
           </div>
           <div v-if="coverGate.reason" class="hint warn gate-tip">
             {{ coverGate.reason }}
@@ -344,15 +344,15 @@ async function saveAlt(img: ContentImage, alt: string) {
           style="width: 92px"
           :disabled="generating"
         />
-        <NButton
-          size="small"
+        <IconTextBtn
+          name="image"
           type="primary"
           :loading="generating"
           :disabled="!genReady || imageGenGate.blocked.value"
           @click="onGenerate"
         >
           {{ imageGenGate.blocked.value ? '无权限' : '生成配图' }}
-        </NButton>
+        </IconTextBtn>
         <div v-if="imageGenGate.reason" class="hint warn gate-tip">
           {{ imageGenGate.reason }}
         </div>
@@ -362,7 +362,7 @@ async function saveAlt(img: ContentImage, alt: string) {
           accept="image/*"
           :disabled="uploading"
         >
-          <NButton size="small" :loading="uploading" :disabled="uploading">上传图片</NButton>
+          <IconTextBtn name="upload" size="small" :loading="uploading" :disabled="uploading">上传图片</IconTextBtn>
         </NUpload>
       </div>
     </div>
@@ -395,23 +395,25 @@ async function saveAlt(img: ContentImage, alt: string) {
             />
             <span v-else class="alt-readonly">{{ img.alt || '（无说明）' }}</span>
             <template v-if="!isReadonly">
-              <NButton
+              <IconTextBtn
                 class="del-btn"
+                name="pin"
                 size="tiny"
                 quaternary
                 @click="makeCover(img)"
               >
                 设为封面
-              </NButton>
-              <NButton
+              </IconTextBtn>
+              <IconTextBtn
                 class="del-btn"
+                name="trash"
                 size="tiny"
                 quaternary
                 type="error"
                 @click="onDelete(img)"
               >
                 删除
-              </NButton>
+              </IconTextBtn>
             </template>
           </div>
         </div>

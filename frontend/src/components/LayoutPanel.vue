@@ -13,7 +13,6 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import {
   NModal,
   NSelect,
-  NButton,
   NCheckbox,
   NTag,
   NAlert,
@@ -27,6 +26,7 @@ import {
   useMessage,
 } from 'naive-ui'
 import MarkdownEditor from './MarkdownEditor.vue'
+import IconTextBtn from './IconTextBtn.vue'
 import MarkdownView from './MarkdownView.vue'
 import ImageManager from './ImageManager.vue'
 import {
@@ -528,9 +528,14 @@ onBeforeUnmount(() => {
       <NTag v-if="isReadonly" size="small" type="success" :bordered="false" style="margin-right: 8px">
         已发布 · 只读
       </NTag>
-      <NButton size="small" quaternary @click="fullscreen = !fullscreen">
+      <IconTextBtn
+        :name="fullscreen ? 'compress' : 'expand'"
+        size="small"
+        quaternary
+        @click="fullscreen = !fullscreen"
+      >
         {{ fullscreen ? '还原' : '全屏' }}
-      </NButton>
+      </IconTextBtn>
     </template>
 
     <div v-if="local" class="panel">
@@ -545,8 +550,8 @@ onBeforeUnmount(() => {
             placeholder="选择排版主题"
             :disabled="layouting"
           />
-          <NButton
-            size="small"
+          <IconTextBtn
+            name="magic"
             type="primary"
             :loading="layouting"
             :disabled="layoutGate.blocked.value"
@@ -559,7 +564,7 @@ onBeforeUnmount(() => {
                   ? '一键排版'
                   : `一键排版（剩 ${layoutGate.left.value}）`
             }}
-          </NButton>
+          </IconTextBtn>
           <div v-if="layoutGate.reason" class="gate-tip">⚠ {{ layoutGate.reason }}</div>
           <NCheckbox
             v-if="coverReady"
@@ -570,7 +575,7 @@ onBeforeUnmount(() => {
             排版时自动生成封面
           </NCheckbox>
         </template>
-        <NButton size="small" :disabled="!hasHtml" @click="onCopyRich">复制富文本</NButton>
+        <IconTextBtn name="copy" size="small" :disabled="!hasHtml" @click="onCopyRich">复制富文本</IconTextBtn>
         <template v-if="!isReadonly">
           <NSelect
             v-if="wechatAccounts.length > 1"
@@ -583,8 +588,8 @@ onBeforeUnmount(() => {
           <NTag v-if="followCardHint" size="small" :bordered="false" type="info">
             {{ followCardHint }}
           </NTag>
-          <NButton
-            size="small"
+          <IconTextBtn
+            name="send"
             type="primary"
             ghost
             :disabled="!hasHtml || layouting || pushGate.blocked.value"
@@ -598,17 +603,17 @@ onBeforeUnmount(() => {
                   ? '推公众号草稿箱'
                   : `推公众号草稿箱（剩 ${pushGate.left.value}）`
             }}
-          </NButton>
+          </IconTextBtn>
           <div v-if="pushGate.reason" class="gate-tip">⚠ {{ pushGate.reason }}</div>
-          <NButton
-            size="small"
+          <IconTextBtn
+            name="save"
             :type="dirty ? 'warning' : 'default'"
             :ghost="dirty"
             :loading="saving"
             @click="onSave"
           >
             {{ dirty ? '保存修改' : '保存' }}
-          </NButton>
+          </IconTextBtn>
           <NTag v-if="currentThemeInfo" size="small" :bordered="false">
             {{ currentThemeInfo.desc }}
           </NTag>
@@ -635,7 +640,7 @@ onBeforeUnmount(() => {
           placeholder="一句话简介（如：专注 AI 观察与干货）"
           :disabled="layouting"
         />
-        <NButton size="tiny" quaternary @click="saveAuthorAsDefault">存为默认</NButton>
+        <IconTextBtn name="star" size="tiny" quaternary @click="saveAuthorAsDefault">存为默认</IconTextBtn>
         <span class="author-hint">
           排版后自动替换正文里的 <code v-text="PH_NAME" /> / <code v-text="PH_INTRO" />；留空则保留占位
         </span>
@@ -692,15 +697,16 @@ onBeforeUnmount(() => {
             <NTag v-if="hasHtml" size="tiny" type="success" :bordered="false">已排版</NTag>
             <NTag v-else size="tiny" :bordered="false">未排版</NTag>
             <span v-if="editedHtml" class="edit-flag">已手动编辑</span>
-            <NButton
+            <IconTextBtn
               v-if="editedHtml && !isReadonly"
+              name="reset"
               size="tiny"
               quaternary
               style="margin-left: 6px"
               @click="resetPreview"
             >
               重置
-            </NButton>
+            </IconTextBtn>
             <NRadioGroup v-model:value="previewMode" size="small" style="margin-left: auto">
               <NRadioButton value="mobile">手机</NRadioButton>
               <NRadioButton value="tablet">平板</NRadioButton>
