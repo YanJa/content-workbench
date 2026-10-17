@@ -89,6 +89,11 @@ export async function resetUserPassword(id: string, password: string): Promise<A
   return data
 }
 
+/** 删除一个从未产生过任何数据的空账号。有数据/管理员/自己会被后端 400 拒绝。 */
+export async function deleteUser(id: string): Promise<void> {
+  await http.delete(`/admin/users/${id}`)
+}
+
 /** 全站聚合统计：只报数字，不报内容。 */
 export async function getAdminStats(): Promise<AdminStats> {
   const { data } = await http.get<AdminStats>('/admin/stats')

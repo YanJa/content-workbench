@@ -886,3 +886,61 @@ def test_every_api_endpoint_is_guarded():
 
     assert not unguarded, "以下端点缺少鉴权依赖（补 Depends(current_owner_id) 或加进白名单）：\n" + "\n".join(unguarded)
     assert not stale, f"白名单里有不存在的端点：{stale}"
+
+
+# ---------------------------------------------------------------- 删除用户
+def test_delete_user_requires_zero_data(env):
+    """删除用户只允许「从没产生过数据」的空账号；有数据一律拒绝，引导去停用。"""
+    client = TestClient(app)
+    admin_token = _admin_token(client)
+
+    # 空账号可以删
+    empty = client.post(
+        "/api/admin/users",
+        json={"username": "emptyguy", "password": PASSWORD},
+        headers=_auth(admin_token),
+    ).json()
+    empty_id = empty["id"]
+    assert client.delete(f"/api/admin/users/{empty_id}", headers=_auth(admin_token)).status_code == 204
+    # 删完列表里没了
+    users = client.get("/api/admin/users", headers=_auth(admin_token)).json()
+    assert "emptyguy" not in {u["username"] for u in users}
+
+    # 有内容数据的账号不能删
+    busy = client.post(
+        "/api/admin/users",
+        json={"username": "busyguy", "password": PASSWORD},
+        headers=_auth(admin_token),
+    ).json()
+    busy_id = busy["id"]
+
+    async def _seed_content():
+        async with env.Maker() as s:
+            s.add(Content(id="c-busy", platform="gzh", kind="text", title="t", body="b", owner=busy_id))
+            await s.commit()
+
+    asyncio.run(_seed_content())
+
+    r = client.delete(f"/api/admin/users/{busy_id}", headers=_auth(admin_token))
+    assert r.status_code == 400
+    assert "不能删除" in r.json()["detail"] and "停用" in r.json()["detail"]
+
+
+def test_delete_user_rejects_admin_and_self(env):
+    """不能删自己、不能删管理员。"""
+    client = TestClient(app)
+    admin_token = _admin_token(client)
+    my_id = client.get("/api/auth/me", headers=_auth(admin_token)).json()["id"]
+
+    # 删自己 → 400
+    r = client.delete(f"/api/admin/users/{my_id}", headers=_auth(admin_token))
+    assert r.status_code == 400 and "自己" in r.json()["detail"]
+
+    # 再建一个 admin，删它 → 400
+    other_admin = client.post(
+        "/api/admin/users",
+        json={"username": "admin2", "password": PASSWORD, "role": "admin"},
+        headers=_auth(admin_token),
+    ).json()
+    r2 = client.delete(f"/api/admin/users/{other_admin['id']}", headers=_auth(admin_token))
+    assert r2.status_code == 400 and "管理员" in r2.json()["detail"]

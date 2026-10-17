@@ -44,6 +44,7 @@ import {
   NSwitch,
   NTag,
   NText,
+  NTooltip,
   useDialog,
   useMessage,
   type DataTableColumns,
@@ -54,6 +55,7 @@ import {
   createUser,
   createInviteCode,
   deleteInviteCode,
+  deleteUser,
   disableInviteCode,
   enableInviteCode,
   getAdminStats,
@@ -265,6 +267,56 @@ function templateQuotaOf(role: Role, feature: string): QuotaConf | undefined {
 }
 
 // ---------------------------------------------------------------- 展示辅助
+/**
+ * 内联 SVG 图标（stroke 线性风格，与 NavIcon 一致）。用 h 渲染，避免为几个
+ * 小图标引入图标库。currentColor 跟随按钮文字色。
+ */
+function icon(name: string, size = 16) {
+  const nodes: Record<string, [string, Record<string, string | number>][]> = {
+    // 向上箭头（折叠）
+    'chevron-up': [['polyline', { points: '18 15 12 9 6 15' }]],
+    // 向下箭头（展开）
+    'chevron-down': [['polyline', { points: '6 9 12 15 18 9' }]],
+    // 详情：列表展开（三条横线 + 右侧箭头）
+    detail: [
+      ['line', { x1: '3', y1: '6', x2: '15', y2: '6' }],
+      ['line', { x1: '3', y1: '12', x2: '15', y2: '12' }],
+      ['line', { x1: '3', y1: '18', x2: '11', y2: '18' }],
+      ['polyline', { points: '15 15 19 19 23 15' }],
+    ],
+    // 编辑（铅笔）
+    edit: [
+      ['path', { d: 'M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7' }],
+      ['path', { d: 'M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4z' }],
+    ],
+    // 删除（垃圾桶）
+    trash: [
+      ['polyline', { points: '3 6 5 6 21 6' }],
+      ['path', { d: 'M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2' }],
+    ],
+    // 重置密码（钥匙）
+    key: [
+      ['path', { d: 'M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4' }],
+    ],
+  }
+  return h(
+    'svg',
+    {
+      width: size,
+      height: size,
+      viewBox: '0 0 24 24',
+      fill: 'none',
+      stroke: 'currentColor',
+      'stroke-width': '1.8',
+      'stroke-linecap': 'round',
+      'stroke-linejoin': 'round',
+      'aria-hidden': 'true',
+      style: 'display:block',
+    },
+    (nodes[name] ?? []).map(([tag, attrs]) => h(tag, attrs)),
+  )
+}
+
 function roleTag(role: Role) {
   return h(
     NTag,
@@ -363,6 +415,26 @@ async function onResetPwd() {
   } finally {
     resettingPwd.value = false
   }
+}
+
+/** 删除用户：只对「从没产生过数据」的空账号开放，需二次确认 */
+function onDeleteUser(row: AdminUser) {
+  dialog.warning({
+    title: '删除账号',
+    content: `确定删除 ${row.username}？只有从没产生过任何数据（内容、会话、用量、音色等）的空账号才能删除；一旦有数据会被拒绝，请改用「停用」。此操作不可逆。`,
+    positiveText: '删除',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      try {
+        await deleteUser(row.id)
+        message.success(`已删除账号 ${row.username}`)
+        await load()
+      } catch (e) {
+        message.error(`删除失败：${(e as Error).message}`)
+        await load()
+      }
+    },
+  })
 }
 
 async function onChangeRole(row: AdminUser, role: Role) {
@@ -549,11 +621,11 @@ const columns = computed<DataTableColumns<AdminUser>>(() => [
     },
   },
   {
-    title: '权限/配额',
+    title: '操作',
     key: 'perm',
-    width: 170,
+    width: 150,
     render: (row) =>
-      h('div', { style: 'display:flex;align-items:center;gap:6px' }, [
+      h('div', { style: 'display:flex;align-items:center;gap:2px' }, [
         h(
           NButton,
           { size: 'tiny', onClick: () => openEdit(row) },
@@ -562,9 +634,39 @@ const columns = computed<DataTableColumns<AdminUser>>(() => [
         // 重置密码：只对普通用户开放（管理员账号的密码不走重置旁路）
         row.role === 'member'
           ? h(
-              NButton,
-              { size: 'tiny', quaternary: true, onClick: () => openResetPwd(row) },
-              { default: () => '重置密码' },
+              NTooltip,
+              { trigger: 'hover' },
+              {
+                trigger: () =>
+                  h(
+                    NButton,
+                    { size: 'tiny', quaternary: true, circle: true, onClick: () => openResetPwd(row) },
+                    { icon: () => icon('key') },
+                  ),
+                default: () => '重置密码',
+              },
+            )
+          : null,
+        // 删除：仅非自己、非管理员（空账号才能删，后端会拦有数据的）
+        row.id !== myId.value && row.role !== 'admin'
+          ? h(
+              NTooltip,
+              { trigger: 'hover' },
+              {
+                trigger: () =>
+                  h(
+                    NButton,
+                    {
+                      size: 'tiny',
+                      quaternary: true,
+                      circle: true,
+                      type: 'error',
+                      onClick: () => onDeleteUser(row),
+                    },
+                    { icon: () => icon('trash') },
+                  ),
+                default: () => '删除（仅限空账号）',
+              },
             )
           : null,
       ]),
@@ -758,7 +860,7 @@ const inviteColumns: DataTableColumns<InviteCodeItem> = [
           ),
         ])
       }
-      // 非编辑态：渠道名 + 「改」按钮（点一下进入编辑）
+      // 非编辑态：渠道名 + 铅笔图标（点一下进入编辑）
       return h('div', { style: 'display:flex;align-items:center;gap:6px' }, [
         h(
           NText,
@@ -766,9 +868,22 @@ const inviteColumns: DataTableColumns<InviteCodeItem> = [
           { default: () => row.note || '未备注' },
         ),
         h(
-          NButton,
-          { size: 'tiny', quaternary: true, onClick: () => startEditNote(row) },
-          { default: () => '改' },
+          NTooltip,
+          { trigger: 'hover' },
+          {
+            trigger: () =>
+              h(
+                NButton,
+                {
+                  size: 'tiny',
+                  quaternary: true,
+                  circle: true,
+                  onClick: () => startEditNote(row),
+                },
+                { icon: () => icon('edit') },
+              ),
+            default: () => '修改渠道名',
+          },
         ),
       ])
     },
@@ -854,23 +969,51 @@ onMounted(load)
         <NStatistic label="累计花费">
           <span class="cost">¥{{ stats.llm.cost.toFixed(4) }}</span>
         </NStatistic>
-        <NButton
-          size="tiny"
-          quaternary
-          style="margin-top: 6px"
-          @click="showUsageDetail = true"
-        >
-          详情
-        </NButton>
+        <NTooltip trigger="hover">
+          <template #trigger>
+            <NButton
+              size="tiny"
+              quaternary
+              circle
+              class="stat-detail-btn"
+              @click="showUsageDetail = true"
+            >
+              <template #icon>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <line x1="3" y1="6" x2="15" y2="6" />
+                  <line x1="3" y1="12" x2="15" y2="12" />
+                  <line x1="3" y1="18" x2="11" y2="18" />
+                  <polyline points="15 15 19 19 23 15" />
+                </svg>
+              </template>
+            </NButton>
+          </template>
+          查看各账号用量明细
+        </NTooltip>
       </NCard>
     </div>
 
     <NCard size="small" title="账号" style="margin-bottom: 16px">
       <template #header-extra>
         <div class="card-extra">
-          <NButton size="tiny" quaternary @click="toggleCard('accounts')">
+          <NTooltip trigger="hover">
+            <template #trigger>
+              <NButton
+                size="tiny"
+                quaternary
+                circle
+                @click="toggleCard('accounts')"
+              >
+                <template #icon>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline v-if="collapsedCards.accounts" points="6 9 12 15 18 9" />
+                    <polyline v-else points="18 15 12 9 6 15" />
+                  </svg>
+                </template>
+              </NButton>
+            </template>
             {{ collapsedCards.accounts ? '展开' : '折叠' }}
-          </NButton>
+          </NTooltip>
           <NButton size="small" type="primary" @click="showCreate = true">新建账号</NButton>
         </div>
       </template>
@@ -888,9 +1031,24 @@ onMounted(load)
     <!-- 角色模板：member 的权限清单 + 各功能次数上限 -->
     <NCard v-if="catalog" size="small" title="权限模板 · 普通成员" style="margin-bottom: 16px">
       <template #header-extra>
-        <NButton size="tiny" quaternary @click="toggleCard('memberTemplate')">
+        <NTooltip trigger="hover">
+          <template #trigger>
+            <NButton
+              size="tiny"
+              quaternary
+              circle
+              @click="toggleCard('memberTemplate')"
+            >
+              <template #icon>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline v-if="collapsedCards.memberTemplate" points="6 9 12 15 18 9" />
+                  <polyline v-else points="18 15 12 9 6 15" />
+                </svg>
+              </template>
+            </NButton>
+          </template>
           {{ collapsedCards.memberTemplate ? '展开' : '折叠' }}
-        </NButton>
+        </NTooltip>
       </template>
       <NSpin v-show="!collapsedCards.memberTemplate" :show="loading">
         <div class="perm-grid">
@@ -965,9 +1123,24 @@ onMounted(load)
     <!-- 管理员：只给配额，权限固定全开 -->
     <NCard v-if="catalog" size="small" title="配额 · 管理员" style="margin-bottom: 16px">
       <template #header-extra>
-        <NButton size="tiny" quaternary @click="toggleCard('adminQuota')">
+        <NTooltip trigger="hover">
+          <template #trigger>
+            <NButton
+              size="tiny"
+              quaternary
+              circle
+              @click="toggleCard('adminQuota')"
+            >
+              <template #icon>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline v-if="collapsedCards.adminQuota" points="6 9 12 15 18 9" />
+                  <polyline v-else points="18 15 12 9 6 15" />
+                </svg>
+              </template>
+            </NButton>
+          </template>
           {{ collapsedCards.adminQuota ? '展开' : '折叠' }}
-        </NButton>
+        </NTooltip>
       </template>
       <div v-show="!collapsedCards.adminQuota">
         <NAlert type="info" :show-icon="false" style="margin-bottom: 12px">
@@ -1009,9 +1182,24 @@ onMounted(load)
     <NCard size="small" title="邀请码管理" style="margin-bottom: 16px">
       <template #header-extra>
         <div class="card-extra">
-          <NButton size="tiny" quaternary @click="toggleCard('invite')">
+          <NTooltip trigger="hover">
+            <template #trigger>
+              <NButton
+                size="tiny"
+                quaternary
+                circle
+                @click="toggleCard('invite')"
+              >
+                <template #icon>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline v-if="collapsedCards.invite" points="6 9 12 15 18 9" />
+                    <polyline v-else points="18 15 12 9 6 15" />
+                  </svg>
+                </template>
+              </NButton>
+            </template>
             {{ collapsedCards.invite ? '展开' : '折叠' }}
-          </NButton>
+          </NTooltip>
           <NText depth="3" style="font-size: 12px">注册码 + 渠道统计</NText>
         </div>
       </template>
@@ -1243,6 +1431,11 @@ onMounted(load)
 
 .cost {
   font-variant-numeric: tabular-nums;
+}
+
+/* 累计花费卡里的详情图标按钮：与数字之间留一点间距 */
+.stat-detail-btn {
+  margin-top: 6px;
 }
 
 .hint,

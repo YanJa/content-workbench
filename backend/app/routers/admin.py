@@ -39,6 +39,7 @@ owner 隔离（`core/tenant.py`），admin 登录后也只是「他自己那个 
 from __future__ import annotations
 
 from collections import defaultdict
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -47,6 +48,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import quota as quota_mod
 from app.core import invite as invite_mod
+from app.core.config import settings
 from app.core.logging import logger
 from app.core.rbac import (
     DEFAULT_PERMISSIONS,
@@ -63,9 +65,13 @@ from app.core.rbac import (
 )
 from app.core.security import hash_password
 from app.models.content import Content, QueueItem
+from app.models.conversation import Conversation
 from app.models.invite import InviteCode
 from app.models.permission import RolePermission
+from app.models.quota import QuotaUsage
 from app.models.renderjob import RenderJob
+from app.models.settings import AppSetting, WeChatAccount
+from app.models.slide import PptSlideClaim
 from app.models.usage import LlmUsage
 from app.models.user import User
 from app.db.session import get_db
@@ -359,6 +365,89 @@ async def reset_user_password(
     await db.commit()
     logger.warning("管理员 %s 重置了用户 %s 的密码", operator.username, target.username)
     return await _user_row(target, db)
+
+
+# ---------------------------------------------------------------- 删除用户
+# 用户 id 作为 owner 出现在这些表里。删除前必须逐一确认「一条都没有」——
+# 有任一条，说明这个账号已经产生过业务数据，真删会把它的历史配图/会话/用量
+# 一起从库里抹掉（直链 ?o=<uid> 集体 404），不可逆。宁可让管理员去「停用」。
+_USER_DATA_MODELS = [
+    ("内容", Content),
+    ("发布队列", QueueItem),
+    ("对话会话", Conversation),
+    ("渲染任务", RenderJob),
+    ("公众号账号", WeChatAccount),
+    ("应用设置", AppSetting),
+    ("AI 用量", LlmUsage),
+    ("配额计数", QuotaUsage),
+    ("幻灯片归属", PptSlideClaim),
+]
+
+
+async def _user_data_usage(db: AsyncSession, uid: str) -> list[tuple[str, int]]:
+    """返回该用户在各数据表里的行数（`[(表名, 行数), ...]`，含为 0 的项）。
+
+    删除前拿它判断「是不是空账号」，也拿它拼 400 的提示文案，让管理员知道
+    到底卡在哪些数据上。
+    """
+    out: list[tuple[str, int]] = []
+    for label, model in _USER_DATA_MODELS:
+        n = (
+            await db.execute(select(func.count()).select_from(model).where(model.owner == uid))
+        ).scalar_one()
+        out.append((label, int(n)))
+    return out
+
+
+def _user_voice_dir(uid: str) -> Path:
+    """该用户的音色目录（不存在也算「没数据」）。"""
+    return Path(settings.VOICE_DIR) / "owners" / uid
+
+
+@router.delete("/users/{user_id}", status_code=204)
+async def delete_user(
+    user_id: str,
+    operator: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """删除一个**从未产生过任何数据**的用户。
+
+    为什么这么严：业务表的 owner 列直接绑用户 id，删了用户，他的历史配图
+    （直链签名 ?o=<uid>）、会话、用量、音色就全成了孤儿，而且不可逆。
+    所以这里只允许删「空账号」—— 管理员建错、或有人注册了从没用过，才该删；
+    一旦产生过数据，一律去「停用」而不是删除。
+
+    三条硬校验：不能删自己、不能删管理员（含其它 admin）、必须零数据。
+    """
+    target = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if target is None:
+        raise HTTPException(404, "用户不存在")
+
+    if target.id == operator.id:
+        raise HTTPException(400, "不能删除自己的账号")
+
+    if target.role == ROLE_ADMIN:
+        # 管理员账号承载了权限语义，删掉可能把系统删成没有管理员的孤儿；
+        # 即使还有别的 admin，删 admin 也该走更审慎的流程，这里直接拒。
+        raise HTTPException(400, "不能删除管理员账号")
+
+    # 零数据校验：数据库表 + 音色目录都要空
+    usage = await _user_data_usage(db, uid=target.id)
+    blocked = [(label, n) for label, n in usage if n > 0]
+    voice_dir = _user_voice_dir(target.id)
+    has_voice = voice_dir.is_dir() and any(voice_dir.iterdir())
+    if blocked or has_voice:
+        parts = [f"{label} {n} 条" for label, n in blocked]
+        if has_voice:
+            parts.append("音色库")
+        raise HTTPException(
+            400,
+            f"该账号已产生数据（{', '.join(parts)}），不能删除，请改为停用",
+        )
+
+    await db.delete(target)
+    await db.commit()
+    logger.warning("管理员 %s 删除了空账号 %s（id=%s）", operator.username, target.username, target.id)
 
 
 @router.patch("/users/{user_id}", response_model=AdminUserOut)
