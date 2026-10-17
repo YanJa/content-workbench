@@ -56,6 +56,8 @@ const returnMsgId = ref('')
 const checkVisible = ref(false)
 const checkItem = ref<QueueItem | null>(null)
 const checks = ref<Record<string, boolean>>({})
+/** 已发布 = 任务完成，发布检查转为只读（只能看、不能改勾选/保存） */
+const checkReadonly = computed(() => checkItem.value?.status === 'published')
 const pushing = ref(false)
 
 // 加工排版面板
@@ -562,7 +564,7 @@ const filters: { label: string; value: 'all' | QueueStatus }[] = [
     <NModal
       v-model:show="checkVisible"
       preset="card"
-      :title="checkItem ? `发布检查 · ${checkItem.title}` : '发布检查'"
+      :title="checkItem ? `发布检查 · ${checkItem.title}${checkReadonly ? '（已完成，只读）' : ''}` : '发布检查'"
       style="max-width: 560px"
     >
       <template v-if="checkItem">
@@ -574,7 +576,7 @@ const filters: { label: string; value: 'all' | QueueStatus }[] = [
         </NAlert>
 
         <div v-for="item in CHECKLISTS[checkItem.platform].items" :key="item.key" class="check-row">
-          <NCheckbox v-model:checked="checks[item.key]">
+          <NCheckbox v-model:checked="checks[item.key]" :disabled="checkReadonly">
             {{ item.text }}
           </NCheckbox>
         </div>
@@ -582,8 +584,14 @@ const filters: { label: string; value: 'all' | QueueStatus }[] = [
 
       <template #footer>
         <NSpace justify="end">
-          <NButton @click="checkVisible = false">关闭</NButton>
-          <IconTextBtn name="check" type="primary" :loading="pushing" @click="saveCheck">保存进度</IconTextBtn>
+          <NButton @click="checkVisible = false">{{ checkReadonly ? '关闭' : '取消' }}</NButton>
+          <IconTextBtn
+            v-if="!checkReadonly"
+            name="check"
+            type="primary"
+            :loading="pushing"
+            @click="saveCheck"
+          >保存进度</IconTextBtn>
         </NSpace>
       </template>
     </NModal>
