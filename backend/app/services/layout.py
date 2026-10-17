@@ -94,6 +94,46 @@ def _image_manifest(images: list[dict[str, Any]] | None) -> str:
     return "\n".join(lines)
 
 
+_TOPIC_RE = re.compile(r"#([^#\s]{1,20})#")
+
+
+async def generate_topic_tags(markdown: str, on_progress: ProgressCb | None = None) -> list[str]:
+    """按正文主题生成 2-3 个精准微信话题标签（#话题#）。
+
+    仅作锦上添花：失败（限流/超时/解析不出）一律降级为空列表，绝不拖累排版。
+    """
+    if not markdown.strip():
+        return []
+    if on_progress:
+        on_progress(92, "生成文末话题标签…")
+    llm = get_llm()
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "你是公众号话题标签专家。根据文章提炼 2-3 个精准、可被搜索的长尾话题标签。"
+                "要求：每个标签 2-8 个字；必须是具体主题词（如 #西安马拉松攻略#、#时间管理技巧#），"
+                "不要宽泛词（如 #生活# #日常# #分享# #随笔#）；不要重复；"
+                "只输出标签本身，用 #标签# 包裹、空格分隔，不要任何解释、标点或换行。"
+            ),
+        },
+        {"role": "user", "content": markdown[:2000]},
+    ]
+    try:
+        result = await llm.chat(messages, task="lightweight")
+        text = (result.content or "").strip()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("生成话题标签失败（跳过）: %s", exc)
+        return []
+    tags: list[str] = []
+    for m in _TOPIC_RE.findall(text):
+        if m and m not in tags:
+            tags.append(m)
+        if len(tags) >= 3:
+            break
+    return tags
+
+
 def _inject_images(html: str, images: list[dict[str, Any]] | None) -> str:
     """把模型留的 `<!--IMG:n-->` 占位替换成真实 <img>。
 
@@ -340,6 +380,7 @@ async def layout_content(
     author_name: str = "",
     author_intro: str = "",
     account_id: str = "",
+    auto_tags: bool = True,
 ) -> dict[str, Any]:
     """把内容排版。写回 content.body_html / theme / layout_status，并把队列项置 ready。
 
@@ -383,6 +424,19 @@ async def layout_content(
     # 作者占位符替换（在写库前，与排版同一次落库；放在校验之后不影响合规性）
     if author_name or author_intro:
         html = apply_author_placeholders(html, author_name, author_intro)
+
+    # 文末自动补话题标签（仅公众号）：让 LLM 按正文主题生成 2-3 个精准 #话题#，
+    # 追加到文末（关注卡/二维码之后）。微信发布时会把 #话题# 自动识别成可点的话题入口，
+    # 利于「搜一搜」发现与话题聚合；失败静默跳过，不拖累排版。
+    if auto_tags and platform == "gzh":
+        tags = await generate_topic_tags(markdown, on_progress)
+        if tags:
+            tag_html = " ".join(f"#{t}#" for t in tags)
+            html += (
+                '<p style="margin-top:18px;color:#8a8a8a;font-size:14px;'
+                'text-align:left;letter-spacing:1px;">'
+                f"{tag_html}</p>"
+            )
 
     now = int(time.time())
     content.body_html = html
@@ -540,6 +594,7 @@ async def submit_layout_job(
     author_name: str = "",
     author_intro: str = "",
     account_id: str = "",
+    auto_tags: bool = True,
 ) -> dict[str, Any]:
     """登记排版任务并**立即返回**，真正排版交给后台协程。
 
@@ -579,6 +634,7 @@ async def submit_layout_job(
             author_name,
             author_intro,
             account_id,
+            auto_tags,
         )
     )
     return {
@@ -641,6 +697,7 @@ async def _run_layout_job(
     author_name: str = "",
     author_intro: str = "",
     account_id: str = "",
+    auto_tags: bool = True,
 ) -> None:
     """后台 worker：自建 Session（请求早已返回，不能复用请求期的 db）。"""
     def on_progress(p: int, s: str) -> None:
@@ -674,6 +731,7 @@ async def _run_layout_job(
                         author_name=author_name,
                         author_intro=author_intro,
                         account_id=account_id,
+                        auto_tags=auto_tags,
                     )
                     if not result.get("ok") and result.get("error"):
                         raise RuntimeError(result["error"])

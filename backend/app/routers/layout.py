@@ -101,6 +101,7 @@ async def do_layout(
         author_name=req.author_name,
         author_intro=req.author_intro,
         account_id=req.account_id,
+        auto_tags=req.auto_tags,
     )
 
 

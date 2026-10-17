@@ -130,6 +130,9 @@ class LayoutRequest(BaseModel):
     platform: Literal["gzh", "xiaohongshu"] = "gzh"
     # 排版前是否自动按正文生成一张封面（默认开）。cover 通道不可用时静默跳过。
     auto_cover: bool = True
+    # 公众号排版完成后是否自动在文末补 2-3 个精准 #话题#（默认开）。
+    # 仅对 gzh 生效；小红书文案已在文末自带话题标签。
+    auto_tags: bool = True
     # 作者信息（面板临时覆盖用）。留空 = 排版时不替换 {{作者名}}/{{一句话简介}} 占位。
     author_name: str = ""
     author_intro: str = ""

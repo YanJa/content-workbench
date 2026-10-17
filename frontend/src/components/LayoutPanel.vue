@@ -173,6 +173,8 @@ const coverDefaultStyle = ref('gradient')
 const coverDefaultTag = ref('')
 // 排版时是否自动生成封面（用户可关）
 const autoCover = ref(true)
+// 公众号排版后是否自动在文末补 2-3 个精准 #话题#（用户可关）
+const autoTags = ref(true)
 
 /** 预览宽度：手机 375 / 平板 768 / 桌面 100%（不设限）。 */
 const previewWidth = computed(() => {
@@ -316,6 +318,7 @@ async function onLayout() {
       authorName.value.trim(),
       authorIntro.value.trim(),
       accountId.value,
+      autoTags.value,
     )
     if (!task.ok || !task.task_id) {
       throw new Error(task.message || '提交失败')
@@ -768,6 +771,13 @@ onBeforeUnmount(() => {
             :disabled="layouting"
           >
             排版时自动生成封面
+          </NCheckbox>
+          <NCheckbox
+            v-model:checked="autoTags"
+            size="small"
+            :disabled="layouting"
+          >
+            文末自动补话题标签
           </NCheckbox>
         </template>
         <IconTextBtn name="copy" size="small" :disabled="!hasHtml" @click="onCopyRich">复制富文本</IconTextBtn>

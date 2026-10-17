@@ -67,6 +67,7 @@ export async function layoutContent(
   authorName = '',
   authorIntro = '',
   accountId = '',
+  autoTags = true,
 ): Promise<LayoutTask> {
   // 排版单次约 3 分钟，远超全局 60s 超时 —— 这里单独把本次请求的超时放宽到 30s，
   // 仅用于「提交任务」这一步（正常应是毫秒级返回），避免极端网络下误判。
@@ -76,6 +77,7 @@ export async function layoutContent(
       theme,
       platform,
       auto_cover: autoCover,
+      auto_tags: autoTags,
       author_name: authorName,
       author_intro: authorIntro,
       account_id: accountId,
