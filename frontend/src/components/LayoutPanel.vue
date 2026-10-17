@@ -736,6 +736,7 @@ onBeforeUnmount(() => {
         :cover-default-style="coverDefaultStyle"
         :cover-default-tag="coverDefaultTag"
         :body="local.body || ''"
+        :theme="theme"
         :readonly="isReadonly"
         @changed="onImagesChanged"
       />

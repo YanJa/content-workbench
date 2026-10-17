@@ -74,6 +74,62 @@ THEMES: dict[str, dict[str, str]] = {
 
 DEFAULT_THEME = "moyu-green"
 
+# 每套排版模板的「封面配色」（与正文主色同源，保证头图和排版风格一致）。
+# gradient 为两色线性渐变（封面主背景）；main 为强调色；warm 为辅助浅色。
+# 默认（兜底）= 原来的「码上聊聊」品牌色，保证不传 theme 时行为不变。
+COVER_PALETTES: dict[str, dict[str, str]] = {
+    "zhici-qinglv": {  # 只此青绿
+        "gradient": "linear-gradient(135deg, #12B0A6 0%, #007C7E 100%)",
+        "main": "#007C7E",
+        "warm": "#5EEAD4",
+    },
+    "moyu-green": {  # 摸鱼绿
+        "gradient": "linear-gradient(135deg, #34D399 0%, #059669 100%)",
+        "main": "#059669",
+        "warm": "#6EE7B7",
+    },
+    "red-white": {  # 红白色系
+        "gradient": "linear-gradient(135deg, #F87171 0%, #DC2626 100%)",
+        "main": "#DC2626",
+        "warm": "#FCA5A5",
+    },
+    "graphite-minimal": {  # 石墨极简（全灰阶）
+        "gradient": "linear-gradient(135deg, #9CA3AF 0%, #4B5563 100%)",
+        "main": "#52525B",
+        "warm": "#D1D5DB",
+    },
+    "zen-whitespace": {  # 留白禅意
+        "gradient": "linear-gradient(135deg, #7C9488 0%, #4A5D52 100%)",
+        "main": "#4A5D52",
+        "warm": "#A7B8AE",
+    },
+    "moyu-ticket": {  # 摸鱼票据（与摸鱼绿同源）
+        "gradient": "linear-gradient(135deg, #34D399 0%, #059669 100%)",
+        "main": "#059669",
+        "warm": "#6EE7B7",
+    },
+    "olive-journal": {  # 橄榄手记（墨黑 + 橙点缀）
+        "gradient": "linear-gradient(135deg, #43454C 0%, #1e1f23 100%)",
+        "main": "#ed7b2f",
+        "warm": "#F59E0B",
+    },
+    "mashang-liaoliao": {  # 码上聊聊（原品牌色，兜底默认）
+        "gradient": "linear-gradient(135deg, #FF8A3D 0%, #FF3B30 100%)",
+        "main": "#FF3B30",
+        "warm": "#FF8A3D",
+    },
+}
+
+# 兜底调色板（恰好是原「码上聊聊」品牌色）
+_DEFAULT_COVER = COVER_PALETTES[DEFAULT_THEME]
+
+
+def cover_palette(theme_id: str | None) -> dict[str, str]:
+    """取某排版模板的封面配色；未指定/未知模板回落到默认调色板。"""
+    if theme_id and theme_id in COVER_PALETTES:
+        return COVER_PALETTES[theme_id]
+    return _DEFAULT_COVER
+
 
 def list_themes() -> list[dict[str, str]]:
     """给前端的主题选项列表。"""

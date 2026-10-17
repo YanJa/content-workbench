@@ -156,6 +156,7 @@ class CoverGenRequest(BaseModel):
     style: str = ""  # gradient / dark / light，留空用 COVER_STYLE
     size: str = ""  # wide / square / og，留空用 COVER_SIZE
     date: str = ""
+    theme: str = ""  # 排版主题 id，让封面配色跟随该主题（留空用默认品牌色）
 
 
 class ImageGenRequest(BaseModel):

@@ -57,6 +57,8 @@ const props = defineProps<{
   coverDefaultTag?: string
   /** 正文（用于预填封面标题/副标题） */
   body?: string
+  /** 当前排版主题 id：封面配色跟随该主题（留空用默认品牌色） */
+  theme?: string
   /**
    * 只读：已发布任务的「排版详情」不该还能改配图。
    * 只保留预览，隐藏全部生成/上传/编辑/删除入口。
@@ -150,6 +152,7 @@ async function onGenerateCover() {
       sub: coverSub.value.trim(),
       tag: coverTag.value.trim(),
       style: coverStyle.value,
+      theme: props.theme,
     })
     emit('changed', res.images)
     message.success(coverImg.value ? '封面已替换' : '封面已生成')

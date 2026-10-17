@@ -119,6 +119,8 @@ export interface CoverGenPayload {
   style?: string
   size?: string
   date?: string
+  /** 排版主题 id：让封面配色跟随该主题（留空用默认品牌色） */
+  theme?: string
 }
 
 /**

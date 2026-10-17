@@ -600,7 +600,7 @@ async def _ensure_cover(db: AsyncSession, content: Content) -> None:
         return
     try:
         out_dir = Path(settings.UPLOAD_DIR) / "gen" / content.id
-        path = await covers.generate_cover(title, out_dir, sub=sub)
+        path = await covers.generate_cover(title, out_dir, sub=sub, theme=content.theme)
     except Exception as exc:  # noqa: BLE001
         logger.warning("自动生成封面失败（跳过，不影响排版）: %s", exc)
         return

@@ -334,6 +334,7 @@ async def generate_cover(
             style=req.style,
             size=req.size,
             date=req.date,
+            theme=req.theme,
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("生成封面失败 content=%s", content_id)

@@ -33,6 +33,7 @@ from pathlib import Path
 
 from app.core.config import settings
 from app.core.logging import logger
+from app.assets.gzh.themes import cover_palette
 
 _IMG_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
 
@@ -138,6 +139,7 @@ async def generate_cover(
     style: str = "",
     size: str = "",
     date: str = "",
+    theme: str = "",
 ) -> Path:
     """生成一张封面，返回 PNG 路径。
 
@@ -173,6 +175,12 @@ async def generate_cover(
         cmd += ["--tag", tag]
     if date.strip():
         cmd += ["--date", date.strip()]
+    # 排版主题调色板：让封面配色跟随选中的排版主题（不传则用默认品牌色，向后兼容）
+    if theme.strip():
+        pal = cover_palette(theme.strip())
+        import json as _json
+
+        cmd += ["--palette", _json.dumps(pal, ensure_ascii=False)]
 
     logger.info("调封面脚本: %s", " ".join(cmd))
     proc = await asyncio.create_subprocess_exec(
