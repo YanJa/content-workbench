@@ -18,8 +18,11 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import shutil
 import sys
+import uuid
 from pathlib import Path
 
 from app.core.config import settings
@@ -29,10 +32,20 @@ _IMG_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 
 
 def configured() -> bool:
+    """任一文生图通道可用（本地脚本 或 Cloudflare API）即视为可用。"""
+    return script_configured() or cloudflare_configured()
+
+
+def script_configured() -> bool:
     """生图脚本是否已配置且存在。"""
     if not settings.IMAGE_SCRIPT:
         return False
     return Path(settings.IMAGE_SCRIPT).exists()
+
+
+def cloudflare_configured() -> bool:
+    """Cloudflare Workers AI 文生图是否可用（需 token + account_id）。"""
+    return bool(settings.CLOUDFLARE_API_TOKEN and settings.CLOUDFLARE_ACCOUNT_ID)
 
 
 async def _run_script(prompt: str, size: str, n: int, out_dir: Path) -> list[Path]:
@@ -97,12 +110,69 @@ async def _run_script(prompt: str, size: str, n: int, out_dir: Path) -> list[Pat
 
 
 async def generate_image(
-    prompt: str, size: str = "", n: int = 1, out_dir: Path | None = None
+    prompt: str, size: str = "", n: int = 1, out_dir: Path | None = None, provider: str = "script"
 ) -> list[Path]:
-    """生成 n 张图，返回文件路径列表。out_dir 为空则用默认临时目录。"""
-    if not configured():
-        raise RuntimeError("未配置生图脚本（IMAGE_SCRIPT）")
+    """生成 n 张图，返回文件路径列表。out_dir 为空则用默认临时目录。
 
+    provider:
+      - "script"（默认）：调本地生图脚本（IMAGE_SCRIPT）；
+      - "cloudflare"：调 Cloudflare Workers AI 文生图。
+    """
     out = out_dir or (Path(settings.UPLOAD_DIR) / "gen" / "_tmp")
     out.mkdir(parents=True, exist_ok=True)
+
+    if provider == "cloudflare":
+        if not cloudflare_configured():
+            raise RuntimeError("未配置 Cloudflare（CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID）")
+        return await _run_cloudflare(prompt, n, out)
+
+    if not script_configured():
+        raise RuntimeError("未配置生图脚本（IMAGE_SCRIPT）")
     return await _run_script(prompt, size or settings.IMAGE_SIZE, n, out)
+
+
+async def _run_cloudflare(prompt: str, n: int, out_dir: Path) -> list[Path]:
+    """调 Cloudflare Workers AI 文生图，把返回的 base64 图存盘并返回路径列表。"""
+    import httpx
+
+    url = (
+        f"https://api.cloudflare.com/client/v4/accounts/"
+        f"{settings.CLOUDFLARE_ACCOUNT_ID}/ai/run/{settings.CLOUDFLARE_IMAGE_MODEL}"
+    )
+    headers = {
+        "Authorization": f"Bearer {settings.CLOUDFLARE_API_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    logger.info("调 Cloudflare 文生图: %s (n=%d)", settings.CLOUDFLARE_IMAGE_MODEL, n)
+    try:
+        async with httpx.AsyncClient(timeout=settings.CLOUDFLARE_IMAGE_TIMEOUT) as client:
+            resp = await client.post(url, headers=headers, json={"prompt": prompt})
+            resp.raise_for_status()
+            data = resp.json()
+    except httpx.HTTPError as exc:
+        raise RuntimeError(f"Cloudflare 文生图请求失败：{exc}") from exc
+
+    # 响应形如 {"result": {"images": ["<base64>", ...]}}，部分模型可能嵌套一层
+    result = data.get("result") or {}
+    images_b64 = result.get("images") if isinstance(result, dict) else None
+    if not images_b64:
+        # 兼容有的模型直接返回 base64 列表
+        images_b64 = data.get("images") if isinstance(data, dict) else None
+    if not images_b64:
+        raise RuntimeError(f"Cloudflare 返回结构异常：{str(data)[:300]}")
+
+    out_paths: list[Path] = []
+    for i, b64 in enumerate(images_b64[:n]):
+        if "," in b64:  # 可能带 data:image/png;base64, 前缀
+            b64 = b64.split(",", 1)[1]
+        try:
+            raw = base64.b64decode(b64)
+        except (binascii.Error, ValueError) as exc:
+            raise RuntimeError(f"Cloudflare 返回的图片解码失败：{exc}") from exc
+        fname = f"cf_{uuid.uuid4().hex[:12]}.png"
+        dest = out_dir / fname
+        dest.write_bytes(raw)
+        out_paths.append(dest)
+    if not out_paths:
+        raise RuntimeError("Cloudflare 未返回任何图片")
+    return out_paths

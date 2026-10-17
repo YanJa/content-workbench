@@ -105,9 +105,21 @@ export async function cancelProcessing(
 /** 是否有可用的生图脚本（没有就引导手动上传）。 */
 export async function generateImages(
   contentId: string,
-  payload: { prompt: string; size?: string; count?: number; position?: number },
+  payload: {
+    prompt: string
+    size?: string
+    count?: number
+    position?: number
+    provider?: string
+  },
 ): Promise<{ ok: boolean; images: ContentImage[] }> {
   const { data } = await http.post(`/content/items/${contentId}/images/generate`, payload)
+  return data
+}
+
+/** 文内配图可用通道能力位（script / cloudflare）。 */
+export async function getImageProviders(): Promise<{ script: boolean; cloudflare: boolean }> {
+  const { data } = await http.get(`/content/image-providers`)
   return data
 }
 

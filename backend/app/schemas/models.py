@@ -165,6 +165,8 @@ class ImageGenRequest(BaseModel):
     count: int = Field(default=1, ge=1, le=4)
     # 插入正文的位置（0=文首，-1=文末，n=第 n 段后）；默认文末
     position: int = -1
+    # 生图通道：script（本地脚本）/ cloudflare（Cloudflare Workers AI）。默认 script
+    provider: str = "script"
 
 
 class ImageUpdateRequest(BaseModel):

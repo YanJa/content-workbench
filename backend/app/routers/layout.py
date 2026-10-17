@@ -158,9 +158,14 @@ async def generate_images(
     # 生图只受权限管控，不计次（用户明确没把它纳入配额）
     _perm: User = Depends(require_use("layout.image_gen")),
 ):
-    """调本地生图脚本生成配图，追加到内容里。"""
+    """调生图通道生成配图，追加到内容里。provider=script(本地脚本)/cloudflare(Cloudflare AI)。"""
     c = await _get_content(db, content_id, owner)
-    if not imagegen.configured():
+    provider = req.provider or "script"
+    if provider == "cloudflare" and not imagegen.cloudflare_configured():
+        raise HTTPException(
+            400, "未配置 Cloudflare（CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID）。"
+        )
+    if provider == "script" and not imagegen.script_configured():
         raise HTTPException(
             400,
             "未配置生图脚本（IMAGE_SCRIPT）。可在 .env 中配置，或改用手动上传图片。",
@@ -171,7 +176,7 @@ async def generate_images(
     await db.commit()
     try:
         files = await imagegen.generate_image(
-            prompt=req.prompt, size=req.size, n=req.count, out_dir=out_dir
+            prompt=req.prompt, size=req.size, n=req.count, out_dir=out_dir, provider=provider
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("生图失败 content=%s", content_id)
@@ -377,6 +382,15 @@ async def generate_cover(
 
 
 # ---------------------------------------------------------------- 图片静态服务
+@router.get("/image-providers")
+async def image_providers() -> dict[str, bool]:
+    """文内配图可用通道能力位（前端据此决定显示哪些生成方式）。"""
+    return {
+        "script": imagegen.script_configured(),
+        "cloudflare": imagegen.cloudflare_configured(),
+    }
+
+
 @router.get("/images/{content_id}/{filename}")
 async def serve_image(
     content_id: str,

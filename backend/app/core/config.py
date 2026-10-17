@@ -117,6 +117,16 @@ class Settings(BaseSettings):
     # 默认出图尺寸（脚本支持 1024x1024 / 1024x1536 等）
     IMAGE_SIZE: str = "1024x1024"
 
+    # ---------- 文内配图：Cloudflare Workers AI 文生图（外部 API 通道） ----------
+    # 走 Cloudflare Workers AI 的 text-to-image 模型（如 flux-1-schnell）。
+    # 文档：POST /client/v4/accounts/{account_id}/ai/run/{model}
+    # 需配置账号 token 与 account_id；未配置则该通道不可用（前端降级为脚本/上传）。
+    CLOUDFLARE_API_TOKEN: str = ""
+    CLOUDFLARE_ACCOUNT_ID: str = ""
+    # 文生图模型（Cloudflare Workers AI 模型 id）
+    CLOUDFLARE_IMAGE_MODEL: str = "@cf/black-forest-labs/flux-1-schnell"
+    CLOUDFLARE_IMAGE_TIMEOUT: int = 120
+
     # ---------- 封面图（模板化，与上面的 AI 生图是两条独立通道） ----------
     # 封面脚本：HTML 模板 + 无头浏览器截图，出「文字确定、品牌统一」的头图。
     # 默认指向项目自带的 backend/scripts/make-cover.py，留空则关闭封面通道。

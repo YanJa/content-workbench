@@ -9,7 +9,7 @@
  * 排版是**后台任务**（单次约 3 分钟），提交拿 task_id 后轮询进度，
  * 不再让前端请求干等到超时。
  */
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import {
   NModal,
   NSelect,
@@ -19,12 +19,17 @@ import {
   NDivider,
   NEmpty,
   NInput,
+  NInputNumber,
   NProgress,
   NRadioGroup,
   NRadioButton,
+  NUpload,
+  NTabs,
+  NTabPane,
   useDialog,
   useMessage,
 } from 'naive-ui'
+import type { UploadFileInfo } from 'naive-ui'
 import MarkdownEditor from './MarkdownEditor.vue'
 import IconTextBtn from './IconTextBtn.vue'
 import MarkdownView from './MarkdownView.vue'
@@ -35,6 +40,9 @@ import {
   getLayoutJob,
   cancelProcessing,
   refreshContent,
+  generateImages,
+  uploadImage,
+  getImageProviders,
   type ThemeOption,
 } from '@/api/layout'
 import { updateContent } from '@/api/queue'
@@ -100,6 +108,25 @@ let inputTimer: ReturnType<typeof setTimeout> | null = null
 // 占位符字面量（放常量里，避免在模板里写 `{{...}}` 被 Vue 当成插值解析）
 const PH_NAME = '{{作者名}}'
 const PH_INTRO = '{{一句话简介}}'
+
+// 预览「点哪插哪」插入 / 点击已有图替换 的交互状态。
+// 思路：预览 iframe 是 contenteditable，直接操作它的 DOM 把 <img> 插到点击位置 /
+// 改 src，再把改动后的 innerHTML 回写 editedHtml 落库 —— 复用 `_inject_images`
+// 产出的真实 <img> 形态，不依赖排版时的 <!--IMG:n--> 占位（那是 LLM 排版路径）。
+const insertMode = ref(false)
+const providers = ref<{ script: boolean; cloudflare: boolean }>({ script: false, cloudflare: false })
+const pickerProvider = ref<'script' | 'cloudflare'>('script')
+const genPrompt = ref('')
+const genCount = ref(1)
+const generating = ref(false)
+const uploading = ref(false)
+const picker = reactive({
+  show: false,
+  mode: 'insert' as 'insert' | 'replace',
+  tab: 'gen' as 'gen' | 'upload' | 'existing',
+  insertRef: null as HTMLElement | null,
+  imgEl: null as HTMLImageElement | null,
+})
 
 // 公众号账号（多号时可选）；空 = 用后端默认号 / .env
 const wechatAccounts = ref<WeChatAccount[]>([])
@@ -198,6 +225,13 @@ watch(
       coverDefaultTag.value = r.cover_default_tag || ''
     } catch (e) {
       message.error(`加载主题失败：${(e as Error).message}`)
+    }
+    // 文内配图可用的生成通道（脚本 / Cloudflare），决定 picker 里显示哪些生成方式
+    try {
+      providers.value = await getImageProviders()
+      if (!providers.value.script && providers.value.cloudflare) pickerProvider.value = 'cloudflare'
+    } catch {
+      /* 能力位拿不到就按脚本兜底 */
     }
     // 加载作者默认信息（填进面板，可临时覆盖）
     try {
@@ -434,6 +468,167 @@ function onPreviewLoad() {
     inputTimer = setTimeout(() => {
       editedHtml.value = doc.body.innerHTML
     }, 300)
+  }
+  // 预览点击：插入模式 → 在点击位置插图；否则点中 <img> → 弹出替换/删除
+  doc.body.removeEventListener('click', onPreviewClick)
+  doc.body.addEventListener('click', onPreviewClick)
+}
+
+/** 预览区点击分发：插入模式插新图，点或已有图替换。 */
+function onPreviewClick(e: MouseEvent) {
+  if (isReadonly.value) return
+  const doc = previewRef.value?.contentDocument
+  if (!doc) return
+  if (insertMode.value) {
+    // 在点击位置的「块级容器之后」插入（落在该段/该块下方，符合文章插图的落点）
+    const ref = blockAtPoint(doc, e.target)
+    picker.mode = 'insert'
+    picker.insertRef = ref
+    picker.tab = 'gen'
+    picker.show = true
+    insertMode.value = false
+    return
+  }
+  const t = e.target as HTMLElement | null
+  const img = t?.closest?.('img') as HTMLImageElement | null
+  if (img) {
+    picker.mode = 'replace'
+    picker.imgEl = img
+    picker.tab = 'existing'
+    picker.show = true
+  }
+}
+
+/** 取点击位置所在的块级容器（没有就退回 body），作为插图锚点。 */
+function blockAtPoint(doc: Document, target: EventTarget | null): HTMLElement {
+  const el = (target as HTMLElement | null)?.closest?.(
+    'p,section,div,h1,h2,h3,h4,h5,h6,li,blockquote,figure',
+  ) as HTMLElement | null
+  return el || doc.body
+}
+
+/** 在锚点块之后插入一张图（与 `_inject_images` 产出同款居中自适应 <img>）。 */
+function insertImgAfter(ref: HTMLElement, url: string, alt: string) {
+  const doc = previewRef.value?.contentDocument
+  if (!doc) return
+  const p = doc.createElement('p')
+  p.setAttribute('style', 'margin:16px 0;text-align:center;')
+  const img = doc.createElement('img')
+  img.setAttribute('src', url)
+  if (alt) img.setAttribute('alt', alt)
+  img.setAttribute(
+    'style',
+    'max-width:100%;height:auto;display:block;margin:0 auto;border-radius:8px;',
+  )
+  p.appendChild(img)
+  ref.parentNode?.insertBefore(p, ref.nextSibling)
+}
+
+function setImgSrc(imgEl: HTMLImageElement, url: string, alt: string) {
+  if (alt) imgEl.setAttribute('alt', alt)
+  imgEl.setAttribute('src', url)
+}
+
+/** 替换已有图时，同步把配图库里那条记录的 url 改掉（按旧 src 匹配）。 */
+function syncImageUrl(oldSrc: string, url: string, alt: string) {
+  if (!local.value) return
+  local.value.images = (local.value.images || []).map((i) =>
+    i.url === oldSrc ? { ...i, url, alt: alt || i.alt } : i,
+  )
+}
+
+/** 预览 DOM 被代码改动后：回写 editedHtml 并标脏（程序化改动不触发 input）。 */
+function finalizePreviewEdit() {
+  const doc = previewRef.value?.contentDocument
+  if (doc?.body) editedHtml.value = doc.body.innerHTML
+  dirty.value = true
+}
+
+/** 把选好的图落到预览（插入 or 替换），并收尾。 */
+function applyResult(url: string, alt: string) {
+  if (picker.mode === 'insert' && picker.insertRef) {
+    insertImgAfter(picker.insertRef, url, alt)
+  } else if (picker.mode === 'replace' && picker.imgEl) {
+    const oldSrc = picker.imgEl.getAttribute('src') || ''
+    setImgSrc(picker.imgEl, url, alt)
+    if (oldSrc) syncImageUrl(oldSrc, url, alt)
+  }
+  finalizePreviewEdit()
+  picker.show = false
+}
+
+/** 可用作「选择已有」的配图（封面单独管理，不参与文内替换）。 */
+const existingImages = computed(() =>
+  (local.value?.images || []).filter((i) => i.source !== 'cover'),
+)
+
+function toggleInsertMode() {
+  if (isReadonly.value) return
+  insertMode.value = !insertMode.value
+  if (insertMode.value) message.info('已开启插入模式：点击预览中想放图的位置')
+}
+
+async function onPickerGenerate() {
+  if (!genPrompt.value.trim()) {
+    message.warning('先写一句配图描述')
+    return
+  }
+  if (!local.value) return
+  generating.value = true
+  try {
+    const res = await generateImages(local.value.id, {
+      prompt: genPrompt.value.trim(),
+      count: genCount.value,
+      provider: pickerProvider.value,
+    })
+    local.value.images = res.images
+    const img = res.images.find((i) => i.source !== 'cover') || res.images[0]
+    applyResult(img.url, img.alt || '')
+    genPrompt.value = ''
+  } catch (e) {
+    message.error(`生成失败：${(e as Error).message}`)
+  } finally {
+    generating.value = false
+  }
+}
+
+async function onPickerUpload({ file }: { file: UploadFileInfo }) {
+  if (!file.file || !local.value) return
+  uploading.value = true
+  try {
+    const res = await uploadImage(local.value.id, file.file)
+    local.value.images = res.images
+    const img = res.images[res.images.length - 1]
+    applyResult(img.url, img.alt || '')
+  } catch (e) {
+    message.error(`上传失败：${(e as Error).message}`)
+  } finally {
+    uploading.value = false
+  }
+  return false // 阻止 NUpload 默认上传
+}
+
+function onPickerExisting(img: ContentImage) {
+  applyResult(img.url, img.alt || '')
+}
+
+/** 替换模式下：把点中的图从预览里整块移除（仅视觉，不动配图库）。 */
+function deleteCurrentImg() {
+  const doc = previewRef.value?.contentDocument
+  if (doc && picker.imgEl) {
+    const wrap = picker.imgEl.closest('p,figure,div') as HTMLElement | null
+    if (wrap?.parentNode) wrap.parentNode.removeChild(wrap)
+    else picker.imgEl.remove()
+  }
+  finalizePreviewEdit()
+  picker.show = false
+}
+
+function onPickerClose(v: boolean) {
+  if (!v) {
+    // 取消：插入模式已退出；替换模式无悬挂节点，仅清引用
+    picker.insertRef = null
+    picker.imgEl = null
   }
 }
 
@@ -707,6 +902,19 @@ onBeforeUnmount(() => {
             >
               重置
             </IconTextBtn>
+            <IconTextBtn
+              v-if="!isReadonly"
+              :name="insertMode ? 'check' : 'plus'"
+              size="tiny"
+              :type="insertMode ? 'primary' : 'default'"
+              quaternary
+              style="margin-left: 6px"
+              :class="{ 'insert-active': insertMode }"
+              @click="toggleInsertMode"
+            >
+              {{ insertMode ? '点预览插入' : '插入配图' }}
+            </IconTextBtn>
+            <span v-if="insertMode" class="insert-hint">点击预览里要放图的位置</span>
             <NRadioGroup v-model:value="previewMode" size="small" style="margin-left: auto">
               <NRadioButton value="mobile">手机</NRadioButton>
               <NRadioButton value="tablet">平板</NRadioButton>
@@ -742,6 +950,82 @@ onBeforeUnmount(() => {
       />
     </div>
     <NEmpty v-else description="未选择内容" />
+  </NModal>
+
+  <!-- 配图来源选择器：预览「插入 / 替换」时弹出的来源（AI 生成 / 上传 / 选择已有） -->
+  <NModal
+    v-model:show="picker.show"
+    preset="card"
+    :title="picker.mode === 'replace' ? '替换配图' : '插入配图'"
+    size="small"
+    :style="'width:min(560px,92vw)'"
+    @update:show="onPickerClose"
+  >
+    <div class="picker">
+      <NTabs type="segment" v-model:value="picker.tab">
+        <NTabPane name="gen" tab="AI 生成">
+          <div class="picker-row">
+            <NInput
+              v-model:value="genPrompt"
+              size="small"
+              placeholder="配图描述，如：一杯咖啡旁的笔记本电脑，温暖光线"
+            />
+          </div>
+          <div class="picker-row gen-opts">
+            <NRadioGroup v-model:value="pickerProvider" size="small">
+              <NRadioButton v-if="providers.script" value="script">脚本生成</NRadioButton>
+              <NRadioButton v-if="providers.cloudflare" value="cloudflare">Cloudflare AI</NRadioButton>
+            </NRadioGroup>
+            <span class="count-label">张数</span>
+            <NInputNumber v-model:value="genCount" size="small" :min="1" :max="4" style="width: 92px" />
+            <IconTextBtn
+              name="image"
+              type="primary"
+              :loading="generating"
+              :disabled="!genReady"
+              @click="onPickerGenerate"
+            >
+              生成
+            </IconTextBtn>
+          </div>
+          <div v-if="!genReady" class="hint warn">
+            未配置生图脚本（<code>IMAGE_SCRIPT</code>），可改用「上传」或「选择已有」。
+          </div>
+        </NTabPane>
+        <NTabPane name="upload" tab="上传图片">
+          <NUpload
+            :show-file-list="false"
+            :custom-request="onPickerUpload as never"
+            accept="image/*"
+            :disabled="uploading"
+          >
+            <IconTextBtn name="upload" :loading="uploading">选择本地图片</IconTextBtn>
+          </NUpload>
+          <div class="hint-inline">上传后自动插入 / 替换到预览中的目标位置</div>
+        </NTabPane>
+        <NTabPane name="existing" tab="选择已有">
+          <div v-if="existingImages.length" class="existing-grid">
+            <div
+              v-for="img in existingImages"
+              :key="img.id"
+              class="existing-cell"
+              :title="img.alt || '配图'"
+              @click="onPickerExisting(img)"
+            >
+              <img :src="img.url" :alt="img.alt" />
+            </div>
+          </div>
+          <NEmpty v-else size="small" description="还没有可用配图，先生成或上传" />
+        </NTabPane>
+      </NTabs>
+
+      <div v-if="picker.mode === 'replace'" class="picker-foot">
+        <IconTextBtn name="trash" type="error" size="small" quaternary @click="deleteCurrentImg">
+          删除这张图
+        </IconTextBtn>
+        <span class="hint-inline">仅从排版预览移除，不影响配图库</span>
+      </div>
+    </div>
   </NModal>
 </template>
 
@@ -789,6 +1073,68 @@ onBeforeUnmount(() => {
   font-size: 11px;
   color: var(--app-amber-text, #b8860b);
   margin-left: 6px;
+}
+.insert-active {
+  outline: 1px dashed var(--app-primary, #18a058);
+}
+.insert-hint {
+  font-size: 11.5px;
+  color: var(--app-primary, #18a058);
+  margin-left: 4px;
+}
+/* ---------- 配图来源选择器 ---------- */
+.picker {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.picker-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.gen-opts .prompt-input {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+.count-label {
+  font-size: 12px;
+  color: var(--app-text-3);
+  flex-shrink: 0;
+}
+.existing-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 10px;
+  margin-top: 4px;
+}
+.existing-cell {
+  aspect-ratio: 4 / 3;
+  border: 1px solid var(--app-border, #e0e0e6);
+  border-radius: 8px;
+  overflow: hidden;
+  cursor: pointer;
+  background: rgba(128, 128, 128, 0.08);
+  transition: border-color 0.15s ease, transform 0.1s ease;
+}
+.existing-cell:hover {
+  border-color: var(--app-primary, #18a058);
+  transform: translateY(-1px);
+}
+.existing-cell img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.picker-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 6px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--app-border, #e0e0e6);
 }
 /* 左栏现在放编辑器：去掉内边距，让编辑器撑满 */
 .scroll-edit {

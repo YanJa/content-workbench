@@ -7,7 +7,7 @@
  *  - 配图：AI 文生图（IMAGE_SCRIPT），随机、按提示词，插在正文里。
  * 未配置对应脚本时按钮禁用并提示手动上传。
  */
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import {
   NDivider,
   NEmpty,
@@ -26,6 +26,7 @@ import {
   deleteImage,
   generateCover,
   generateImages,
+  getImageProviders,
   updateImage,
   uploadImage,
 } from '@/api/layout'
@@ -83,6 +84,19 @@ const coverTag = ref('')
 const coverStyle = ref('gradient')
 const coverGen = ref(false)
 const showCoverForm = ref(false)
+
+// ---- 文内配图：生成通道（脚本 / Cloudflare AI）----
+const genProvider = ref<'script' | 'cloudflare'>('script')
+const providers = ref<{ script: boolean; cloudflare: boolean }>({ script: false, cloudflare: false })
+onMounted(async () => {
+  try {
+    providers.value = await getImageProviders()
+    // 默认选第一个可用的通道
+    if (!providers.value.script && providers.value.cloudflare) genProvider.value = 'cloudflare'
+  } catch {
+    /* 能力位拿不到就按脚本兜底 */
+  }
+})
 
 const styleOptions = computed(() => {
   const s = props.coverStyles || {}
@@ -184,6 +198,7 @@ async function onGenerate() {
     const res = await generateImages(props.contentId, {
       prompt: prompt.value.trim(),
       count: count.value,
+      provider: genProvider.value,
     })
     emit('changed', res.images)
     message.success(`已生成 ${count.value} 张配图`)
@@ -338,6 +353,10 @@ async function saveAlt(img: ContentImage, alt: string) {
         :disabled="generating"
       />
       <div class="gen-actions">
+        <NRadioGroup v-model:value="genProvider" size="small" :disabled="generating">
+          <NRadioButton v-if="providers.script" value="script">脚本生成</NRadioButton>
+          <NRadioButton v-if="providers.cloudflare" value="cloudflare">Cloudflare AI</NRadioButton>
+        </NRadioGroup>
         <span class="count-label">张数</span>
         <NInputNumber
           v-model:value="count"
