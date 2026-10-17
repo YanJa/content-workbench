@@ -15,6 +15,8 @@ export const useQueueStore = defineStore('queue', () => {
   const stats = ref<QueueStats>({ total: 0, by_status: {}, by_platform: {} })
   const loading = ref(false)
   const filterStatus = ref<'all' | QueueStatus>('all')
+  // 模糊搜索关键词（标题或正文，后端匹配）
+  const keyword = ref('')
   // 分页状态
   const page = ref(1)
   const pageSize = ref(20)
@@ -31,6 +33,7 @@ export const useQueueStore = defineStore('queue', () => {
       const [res, st] = await Promise.all([
         queueApi.listQueue({
           status: filterStatus.value,
+          q: keyword.value.trim(),
           page: page.value,
           pageSize: pageSize.value,
         }),
@@ -47,6 +50,13 @@ export const useQueueStore = defineStore('queue', () => {
   /** 切换状态筛选：重置到第 1 页并重新请求（筛选在后端）。 */
   async function setFilter(status: 'all' | QueueStatus) {
     filterStatus.value = status
+    page.value = 1
+    await refresh()
+  }
+
+  /** 设置搜索关键词：重置到第 1 页并重新请求（搜索在后端）。 */
+  async function setKeyword(k: string) {
+    keyword.value = k
     page.value = 1
     await refresh()
   }
@@ -111,6 +121,7 @@ export const useQueueStore = defineStore('queue', () => {
     stats,
     loading,
     filterStatus,
+    keyword,
     page,
     pageSize,
     total,
@@ -118,6 +129,7 @@ export const useQueueStore = defineStore('queue', () => {
     hasProcessing,
     refresh,
     setFilter,
+    setKeyword,
     setPage,
     setPageSize,
     refreshProcessingRows,

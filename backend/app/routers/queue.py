@@ -6,7 +6,7 @@ import time
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.tenant import current_owner_id
@@ -28,6 +28,7 @@ router = APIRouter(prefix="/queue", tags=["发布队列"])
 async def list_items(
     status: str = Query("all"),
     platform: str = Query("all"),
+    q: str = Query("", description="模糊搜索：匹配标题或正文（不区分大小写）"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
@@ -35,7 +36,7 @@ async def list_items(
 ):
     """分页返回发布队列。
 
-    返回 `{items, total, page, page_size}`。筛选（status/platform）在**后端**做，
+    返回 `{items, total, page, page_size}`。筛选（status/platform/q）在**后端**做，
     前端不能再本地过滤（否则每页条数对不上）。数据量增长后靠分页控制单次查询与渲染量。
     """
     conds = [QueueItem.owner == owner]
@@ -44,13 +45,25 @@ async def list_items(
     if platform != "all":
         conds.append(QueueItem.platform == platform)
 
-    total = (
-        await db.execute(select(func.count()).select_from(QueueItem).where(*conds))
-    ).scalar_one()
+    # 模糊搜索：标题 OR 正文（正文在关联的 Content 表）。带 q 时才 join Content，
+    # 避免无谓的连表影响性能。
+    need_join = bool(q)
+    if need_join:
+        like = f"%{q}%"
+        conds.append(
+            or_(QueueItem.title.ilike(like), Content.body.ilike(like))
+        )
 
+    count_stmt = select(func.count()).select_from(QueueItem)
+    if need_join:
+        count_stmt = count_stmt.join(Content, Content.id == QueueItem.content_id, isouter=True)
+    total = (await db.execute(count_stmt.where(*conds))).scalar_one()
+
+    stmt = select(QueueItem)
+    if need_join:
+        stmt = stmt.join(Content, Content.id == QueueItem.content_id, isouter=True)
     stmt = (
-        select(QueueItem)
-        .where(*conds)
+        stmt.where(*conds)
         .order_by(QueueItem.created_at.desc())
         .offset((page - 1) * page_size)
         .limit(page_size)

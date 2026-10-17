@@ -6,6 +6,7 @@ import {
   NButton,
   NCard,
   NDataTable,
+  NInput,
   NModal,
   NCheckbox,
   NPagination,
@@ -480,6 +481,19 @@ const filters: { label: string; value: 'all' | QueueStatus }[] = [
   { label: '待加工', value: 'draft' },
   { label: '已发布', value: 'published' },
 ]
+
+/** 标题/正文模糊搜索：本地输入做 300ms 防抖，再交给 store（后端匹配）。 */
+const searchKw = ref('')
+let searchTimer: ReturnType<typeof setTimeout> | undefined
+function onSearchInput(v: string) {
+  if (searchTimer) clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => void queue.setKeyword(v), 300)
+}
+function onSearchClear() {
+  if (searchTimer) clearTimeout(searchTimer)
+  searchKw.value = ''
+  void queue.setKeyword('')
+}
 </script>
 
 <template>
@@ -509,17 +523,32 @@ const filters: { label: string; value: 'all' | QueueStatus }[] = [
     <NCard size="small">
       <template #header>
         <div class="queue-header">
-          <NSpace :size="8">
-            <NButton
-              v-for="f in filters"
-              :key="f.value"
+          <div class="queue-header-left">
+            <NSpace :size="8">
+              <NButton
+                v-for="f in filters"
+                :key="f.value"
+                size="small"
+                :type="queue.filterStatus === f.value ? 'primary' : 'default'"
+                @click="queue.setFilter(f.value)"
+              >
+                {{ f.label }}
+              </NButton>
+            </NSpace>
+            <NInput
+              v-model:value="searchKw"
               size="small"
-              :type="queue.filterStatus === f.value ? 'primary' : 'default'"
-              @click="queue.setFilter(f.value)"
+              clearable
+              placeholder="搜索标题或正文"
+              style="width: 200px"
+              @input="onSearchInput"
+              @clear="onSearchClear"
             >
-              {{ f.label }}
-            </NButton>
-          </NSpace>
+              <template #prefix>
+                <span style="font-size: 13px; opacity: 0.6">🔍</span>
+              </template>
+            </NInput>
+          </div>
           <NSpace :size="8">
             <NTag size="small" :bordered="false">
               共 {{ queue.stats.total }} 条
@@ -622,6 +651,13 @@ const filters: { label: string; value: 'all' | QueueStatus }[] = [
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 12px;
+}
+
+.queue-header-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
 .check-row {

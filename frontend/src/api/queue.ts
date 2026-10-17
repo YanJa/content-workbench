@@ -5,15 +5,16 @@ import type { ContentItem, QueueItem, QueuePage, QueueStats, QueueStatus } from 
 export interface ListQueueParams {
   status?: string
   platform?: string
+  q?: string
   page?: number
   pageSize?: number
 }
 
-/** 分页拉取发布队列（筛选在后端做）。 */
+/** 分页拉取发布队列（筛选/搜索在后端做）。 */
 export async function listQueue(params: ListQueueParams = {}): Promise<QueuePage> {
-  const { status = 'all', platform = 'all', page = 1, pageSize = 20 } = params
+  const { status = 'all', platform = 'all', q = '', page = 1, pageSize = 20 } = params
   const { data } = await http.get('/queue/items', {
-    params: { status, platform, page, page_size: pageSize },
+    params: { status, platform, q, page, page_size: pageSize },
   })
   return data
 }
