@@ -75,10 +75,17 @@ import {
 } from '@/api/admin'
 import type { QuotaConf, QuotaPeriod, Role } from '@/api/auth'
 import { useAuthStore } from '@/stores/auth'
+import { useRouter } from 'vue-router'
 
 const message = useMessage()
 const dialog = useDialog()
 const auth = useAuthStore()
+const router = useRouter()
+
+// 内容总数卡片 → 跳转到发布队列（内容成品集中管理页）
+function goQueue() {
+  void router.push('/queue')
+}
 
 const users = ref<AdminUser[]>([])
 const stats = ref<AdminStats | null>(null)
@@ -942,19 +949,31 @@ onMounted(load)
 
     <div v-if="stats" class="stat-row">
       <NCard size="small" class="stat-card">
-        <NStatistic label="用户总数">
-          <NNumberAnimation :from="0" :to="stats.users.total" />
+        <NStatistic label="用户">
+          <div class="stat-user">
+            <NNumberAnimation :from="0" :to="stats.users.total" />
+            <span class="stat-user-sub">启用 {{ stats.users.active }}</span>
+          </div>
         </NStatistic>
       </NCard>
-      <NCard size="small" class="stat-card">
-        <NStatistic label="启用中">
-          <NNumberAnimation :from="0" :to="stats.users.active" />
-        </NStatistic>
-      </NCard>
-      <NCard size="small" class="stat-card">
-        <NStatistic label="内容总数">
-          <NNumberAnimation :from="0" :to="stats.contents" />
-        </NStatistic>
+      <NCard size="small" class="stat-card stat-card-link">
+        <div
+          class="stat-link"
+          role="button"
+          tabindex="0"
+          @click="goQueue"
+          @keydown.enter="goQueue"
+        >
+          <NStatistic label="内容总数">
+            <div class="stat-link-inner">
+              <NNumberAnimation :from="0" :to="stats.contents" />
+              <svg class="stat-link-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="9 18 15 12 9 6" />
+              </svg>
+            </div>
+          </NStatistic>
+          <div class="stat-link-hint">前往发布队列</div>
+        </div>
       </NCard>
       <NCard size="small" class="stat-card">
         <NStatistic label="累计花费">
@@ -1411,6 +1430,56 @@ onMounted(load)
 
 .stat-card {
   text-align: center;
+}
+
+/* 用户卡片：总数 + 启用数合并 */
+.stat-user {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.stat-user-sub {
+  font-size: 12px;
+  color: var(--n-text-color-3, #999);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 内容卡片：可点击跳转到发布队列 */
+.stat-card-link {
+  cursor: pointer;
+  transition: box-shadow 0.15s ease, transform 0.15s ease;
+}
+
+.stat-card-link:hover {
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
+}
+
+.stat-card-link:active {
+  transform: translateY(1px);
+}
+
+.stat-link {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  outline: none;
+}
+
+.stat-link-inner {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.stat-link-icon {
+  color: var(--n-text-color-3, #999);
+}
+
+.stat-link-hint {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--n-text-color-3, #999);
 }
 
 /* 卡片 header 右侧：折叠按钮 + 主操作按钮并排 */
