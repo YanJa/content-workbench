@@ -18,6 +18,16 @@ export async function listQueue(params: ListQueueParams = {}): Promise<QueuePage
   return data
 }
 
+/** 查询某会话中已保存到队列的消息：返回 { msg_id: content_id } 映射。 */
+export async function fetchSavedMap(
+  conversationId: string,
+): Promise<Record<string, string>> {
+  const { data } = await http.get('/queue/saved-map', {
+    params: { conversation_id: conversationId },
+  })
+  return data.map ?? {}
+}
+
 export async function queueStats(): Promise<QueueStats> {
   const { data } = await http.get('/queue/stats')
   return data

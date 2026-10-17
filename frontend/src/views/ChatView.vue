@@ -32,7 +32,7 @@ import ActionBtn from '@/components/ActionBtn.vue'
 import IconTextBtn from '@/components/IconTextBtn.vue'
 import { usePermGate } from '@/composables/usePermGate'
 import { estimateUsage } from '@/api/usage'
-import { saveToQueue } from '@/api/queue'
+import { saveToQueue, fetchSavedMap } from '@/api/queue'
 import type { UsageBreakdown } from '@/api/usage'
 import type { Platform } from '@/types'
 import MarkdownView from '@/components/MarkdownView.vue'
@@ -236,6 +236,13 @@ function onMsgScroll() {
 // 主动跟一次 active——否则「当前看到哪条提问」会停在旧值甚至空值。
 watch(() => chat.messages.length, () => nextTick(onMsgScroll))
 watch(() => chat.currentId, () => nextTick(onMsgScroll))
+// 会话切换时恢复「已保存到队列」状态（含刷新/从队列跳回的场景）
+watch(
+  () => chat.currentId,
+  (id) => {
+    if (id) void refreshSavedMap()
+  },
+)
 
 const canSend = computed(
   () =>
@@ -338,6 +345,25 @@ const saveTitle = ref('')
 const saveSubmitting = ref(false)
 /** msg.id → content_id：记录哪些消息已保存到队列，操作栏据此显示「去队列」 */
 const savedMap = ref<Record<string, string>>({})
+
+/**
+ * 从后端恢复本会话的「已入队」状态。
+ *
+ * savedMap 原来只存内存：刷新页面、或从队列页跳回对话后就丢了，
+ * 用户会误以为没保存过而重复入队。现在会话切换时按 conversation_id
+ * 拉一次 {msg_id → content_id} 映射重建状态。
+ */
+async function refreshSavedMap() {
+  const convId = chat.currentId
+  if (!convId) return
+  try {
+    const map = await fetchSavedMap(convId)
+    // 响应期间用户可能已切到别的会话，旧结果不能覆盖新会话的状态
+    if (chat.currentId === convId) savedMap.value = map
+  } catch {
+    /* 状态恢复失败不影响对话使用 */
+  }
+}
 
 /** 从 Markdown 正文里猜一个标题：优取 `# 标题`，其次取第一行非空文本。 */
 function guessTitle(md: string): string {

@@ -83,6 +83,34 @@ async def list_items(
     return {"items": out, "total": total, "page": page, "page_size": page_size}
 
 
+@router.get("/saved-map")
+async def saved_map(
+    conversation_id: str = Query(...),
+    db: AsyncSession = Depends(get_db),
+    owner: str = Depends(current_owner_id),
+):
+    """查询某会话里哪些 AI 回复已保存到队列。
+
+    返回 `{map: {msg_id: content_id}}`，对话页加载会话时据此重建
+    「已入队 / 去队列查看」状态，避免刷新或跳回后状态丢失导致重复入队。
+    """
+    rows = (
+        await db.execute(
+            select(Content.id, Content.meta).where(
+                Content.owner == owner,
+                Content.conversation_id == conversation_id,
+                Content.meta.isnot(None),
+            )
+        )
+    ).all()
+    m: dict[str, str] = {}
+    for cid, meta in rows:
+        mid = (meta or {}).get("msg_id")
+        if mid:
+            m[mid] = cid
+    return {"map": m}
+
+
 @router.get("/stats")
 async def stats(
     db: AsyncSession = Depends(get_db), owner: str = Depends(current_owner_id)
