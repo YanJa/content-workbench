@@ -185,14 +185,16 @@ function jump(id: string) {
   height: 100%;
 }
 
-/* marker 沿整条对话高度均匀分布；空间-evenly 保证首尾不贴边 */
+/* marker 紧凑排布：固定间距从顶部往下排，而不是沿整条对话高度
+   space-evenly 摊开 —— 提问少时摊开会把间隔拉得很长，看起来散乱 */
 .qnav-track {
   height: 100%;
   display: flex;
   flex-direction: column;
-  justify-content: space-evenly;
+  justify-content: flex-start;
+  gap: 4px;
   align-items: center;
-  padding: 6px 0;
+  padding: 8px 0;
   overflow: hidden;
 }
 
