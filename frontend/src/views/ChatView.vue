@@ -654,9 +654,16 @@ async function restoreFromQueue() {
               </div>
 
               <!-- AI 回复的操作栏：复制 / 保存到队列（排版在队列页做） -->
+              <!-- 已保存到队列的消息：隐藏「保存到队列」，只留「去队列查看」，避免重复入队 -->
               <div v-if="m.role === 'assistant' && !m.streaming && m.content" class="msg-actions">
                 <ActionBtn name="copy" tip="复制" @click="copyMessage(m.content)" />
-                <ActionBtn name="inbox" tip="保存到队列" type="primary" @click="openSaveModal(m)" />
+                <ActionBtn
+                  v-if="!savedMap[m.id]"
+                  name="inbox"
+                  tip="保存到队列"
+                  type="primary"
+                  @click="openSaveModal(m)"
+                />
                 <ActionBtn
                   v-if="savedMap[m.id]"
                   name="eye"
