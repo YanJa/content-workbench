@@ -230,6 +230,7 @@ const columns = computed<DataTableColumns<QueueItem>>(() => [
 
 import { h, type VNode } from 'vue'
 import { actionBtn } from '@/utils/actionBtn'
+import IconTextBtn from '@/components/IconTextBtn.vue'
 
 /**
  * 「回到对话」：跳回来源会话并定位到那条 AI 回复。
@@ -497,9 +498,9 @@ const filters: { label: string; value: 'all' | QueueStatus }[] = [
     >
       <div class="queue-return-bar">
         <span>已定位到你从对话里保存的那条内容</span>
-        <NButton size="small" type="primary" ghost @click="goChatFromBar">
-          ← 返回对话
-        </NButton>
+        <IconTextBtn name="arrow-left" size="small" type="primary" ghost @click="goChatFromBar">
+          返回对话
+        </IconTextBtn>
       </div>
     </NAlert>
 
@@ -524,8 +525,8 @@ const filters: { label: string; value: 'all' | QueueStatus }[] = [
             <NTag size="small" type="warning" :bordered="false">
               待发布 {{ queue.stats.by_status?.ready ?? 0 }}
             </NTag>
-            <NButton size="small" @click="onExport">导出清单</NButton>
-            <NButton size="small" @click="queue.refresh()">刷新</NButton>
+            <IconTextBtn name="download" size="small" @click="onExport">导出清单</IconTextBtn>
+            <IconTextBtn name="reset" size="small" @click="queue.refresh()">刷新</IconTextBtn>
           </NSpace>
         </div>
       </template>
@@ -582,7 +583,7 @@ const filters: { label: string; value: 'all' | QueueStatus }[] = [
       <template #footer>
         <NSpace justify="end">
           <NButton @click="checkVisible = false">关闭</NButton>
-          <NButton type="primary" :loading="pushing" @click="saveCheck">保存进度</NButton>
+          <IconTextBtn name="check" type="primary" :loading="pushing" @click="saveCheck">保存进度</IconTextBtn>
         </NSpace>
       </template>
     </NModal>

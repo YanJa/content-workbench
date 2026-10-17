@@ -25,6 +25,7 @@ import {
 } from 'naive-ui'
 
 import * as usageApi from '@/api/usage'
+import IconTextBtn from '@/components/IconTextBtn.vue'
 import type { PriceRow, TopConversation, UsageRecord, UsageSeriesItem } from '@/api/usage'
 
 // ------------------------------------------------------------------ 状态
@@ -378,7 +379,7 @@ const pageCount = computed(() => Math.max(1, Math.ceil(recordsTotal.value / PAGE
       </div>
       <div class="head-right">
         <NSelect v-model:value="days" :options="RANGES" size="small" class="range" />
-        <NButton size="small" quaternary @click="refresh">刷新</NButton>
+        <IconTextBtn name="reset" size="small" quaternary @click="refresh">刷新</IconTextBtn>
       </div>
     </div>
 
@@ -731,7 +732,7 @@ const pageCount = computed(() => Math.max(1, Math.ceil(recordsTotal.value / PAGE
 
       <NEmpty v-else-if="!loading" description="这段时间还没有 AI 调用记录" class="empty">
         <template #extra>
-          <NButton size="small" @click="days = 0">看看全部</NButton>
+          <IconTextBtn name="calendar" size="small" @click="days = 0">看看全部</IconTextBtn>
         </template>
       </NEmpty>
     </NSpin>

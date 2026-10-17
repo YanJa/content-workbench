@@ -32,6 +32,7 @@ import { checkHealth } from '@/api/http'
 import { listTools } from '@/api/tools'
 import { getApiBase, isCustomApiBase, setApiBase } from '@/api/config'
 import { useAuthStore } from '@/stores/auth'
+import IconTextBtn from '@/components/IconTextBtn.vue'
 import {
   checkWeChatAccount,
   createWeChatAccount,
@@ -491,10 +492,10 @@ const envColumns: DataTableColumns<EnvRow> = [
             size="small"
             @keydown.enter="applyApiBase"
           />
-          <NButton size="small" type="primary" @click="applyApiBase">应用</NButton>
-          <NButton size="small" :disabled="!usingCustom" @click="resetApiBase">
+          <IconTextBtn name="check" type="primary" @click="applyApiBase">应用</IconTextBtn>
+          <IconTextBtn name="reset" :disabled="!usingCustom" @click="resetApiBase">
             恢复默认
-          </NButton>
+          </IconTextBtn>
         </div>
         <div class="api-base-hint">
           当前生效：<code>{{ apiBaseSaved }}</code>
@@ -524,7 +525,7 @@ const envColumns: DataTableColumns<EnvRow> = [
         <div class="api-base-hint" style="margin-top: 6px; opacity: 0.75">
           注册时间：{{ createdAtText }}。内容、发布队列、公众号账号、AI
           用量、复刻音色都按登录身份隔离，互相不可见。
-          <NButton size="tiny" style="margin-left: 8px" @click="onLogout">退出登录</NButton>
+          <IconTextBtn name="power" size="tiny" style="margin-left: 8px" @click="onLogout">退出登录</IconTextBtn>
         </div>
 
         <!-- 我的配额：按钮级权限管控的几个花钱功能，还剩多少一眼可见 -->
@@ -562,9 +563,9 @@ const envColumns: DataTableColumns<EnvRow> = [
               style="width: 340px"
               placeholder="一句话简介（如：专注 AI 观察与干货）"
             />
-            <NButton size="small" type="primary" :loading="authorSaving" @click="saveAuthor">
+            <IconTextBtn name="check" type="primary" :loading="authorSaving" @click="saveAuthor">
               保存
-            </NButton>
+            </IconTextBtn>
           </div>
         </NSpin>
         <div class="api-base-hint" style="margin-top: 8px; opacity: 0.75">
@@ -606,7 +607,7 @@ const envColumns: DataTableColumns<EnvRow> = [
             </NDescriptionsItem>
           </NDescriptions>
 
-          <NButton size="small" style="margin-top: 12px" @click="refresh">重新检测</NButton>
+          <IconTextBtn name="reset" style="margin-top: 12px" @click="refresh">重新检测</IconTextBtn>
         </NCard>
 
         <NCard size="small" :title="`可用工具（${tools.length}）`">
@@ -632,7 +633,7 @@ const envColumns: DataTableColumns<EnvRow> = [
 
       <NCard size="small" title="公众号管理" style="margin-top: 16px">
         <template #header-extra>
-          <NButton size="tiny" type="primary" @click="openCreate">添加公众号</NButton>
+          <IconTextBtn name="plus" size="tiny" type="primary" @click="openCreate">添加公众号</IconTextBtn>
         </template>
         <NAlert type="info" :bordered="false" style="margin-bottom: 12px">
           <div style="font-size: 12.5px; line-height: 1.7">
@@ -703,9 +704,9 @@ const envColumns: DataTableColumns<EnvRow> = [
                 alt="公众号二维码"
                 style="width: 76px; height: 76px; object-fit: cover; border-radius: 6px"
               />
-              <NButton size="small" :loading="qrUploading" :disabled="!editId" @click="qrPick">
+              <IconTextBtn name="upload" size="small" :loading="qrUploading" :disabled="!editId" @click="qrPick">
                 {{ currentQrAccount?.qrcode_set ? '重新上传' : '上传二维码' }}
-              </NButton>
+              </IconTextBtn>
               <NText v-if="!editId" depth="3" style="font-size: 12px">
                 先保存账号，再传二维码
               </NText>
@@ -726,9 +727,9 @@ const envColumns: DataTableColumns<EnvRow> = [
         <template #footer>
           <div style="display:flex;justify-content:flex-end;gap:8px">
             <NButton size="small" @click="editShow = false">取消</NButton>
-            <NButton size="small" type="primary" :loading="saving" @click="saveAccount">
+            <IconTextBtn name="check" type="primary" :loading="saving" @click="saveAccount">
               保存
-            </NButton>
+            </IconTextBtn>
           </div>
         </template>
       </NModal>

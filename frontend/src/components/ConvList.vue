@@ -9,6 +9,7 @@ import { ref } from 'vue'
 import { NButton, NEmpty, NInput, NPopconfirm, NScrollbar } from 'naive-ui'
 
 import type { Conversation } from '@/types'
+import IconTextBtn from '@/components/IconTextBtn.vue'
 import ActionBtn from '@/components/ActionBtn.vue'
 import IconSvg from '@/components/IconSvg.vue'
 
@@ -73,7 +74,7 @@ function onItemClick(c: Conversation) {
   <div class="conv-list">
     <div v-if="showHeader" class="conv-header">
       <span>会话</span>
-      <NButton size="tiny" type="primary" @click="emit('new')">新建</NButton>
+      <IconTextBtn name="plus" size="tiny" type="primary" @click="emit('new')">新建</IconTextBtn>
     </div>
     <NScrollbar class="conv-scroll">
       <NEmpty v-if="!conversations.length" size="small" description="还没有会话" />

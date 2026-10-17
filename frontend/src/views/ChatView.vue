@@ -29,6 +29,7 @@ import { useChatStore } from '@/stores/chat'
 import { useQueueStore } from '@/stores/queue'
 import { useAuthStore } from '@/stores/auth'
 import ActionBtn from '@/components/ActionBtn.vue'
+import IconTextBtn from '@/components/IconTextBtn.vue'
 import { usePermGate } from '@/composables/usePermGate'
 import { estimateUsage } from '@/api/usage'
 import { saveToQueue } from '@/api/queue'
@@ -499,7 +500,7 @@ async function restoreFromQueue() {
     <div class="chat-main">
       <!-- 从队列页「回到对话」跳来时的闭环入口：一键回去看刚保存的内容 -->
       <div v-if="returnContentId" class="chat-return-bar">
-        <NButton size="tiny" quaternary @click="backToQueue">← 返回发布队列</NButton>
+        <IconTextBtn name="arrow-left" size="tiny" quaternary @click="backToQueue">返回发布队列</IconTextBtn>
         <span class="chat-return-hint">回到刚保存的那条内容</span>
       </div>
 
@@ -762,7 +763,7 @@ async function restoreFromQueue() {
         <template #header>
           <div class="drawer-head">
             <span>会话</span>
-            <NButton size="tiny" type="primary" @click="onNewConversation">新建</NButton>
+            <IconTextBtn name="plus" size="tiny" type="primary" @click="onNewConversation">新建</IconTextBtn>
           </div>
         </template>
         <ConvList

@@ -45,6 +45,7 @@ import type { JobStatus, RenderJob } from '@/types'
 import VoiceClonePanel from '@/components/VoiceClonePanel.vue'
 import ActionBtn from '@/components/ActionBtn.vue'
 import IconSvg from '@/components/IconSvg.vue'
+import IconTextBtn from '@/components/IconTextBtn.vue'
 import { listCloneVoices } from '@/api/tools'
 import type { CloneVoice } from '@/api/tools'
 import { useAuthStore } from '@/stores/auth'
@@ -675,7 +676,8 @@ onBeforeUnmount(stopPoll)
             </NFormItem>
 
             <NSpace>
-              <NButton
+              <IconTextBtn
+                name="send"
                 type="primary"
                 :loading="submitting"
                 :disabled="renderGate.blocked.value"
@@ -688,8 +690,8 @@ onBeforeUnmount(stopPoll)
                       ? '提交渲染'
                       : `提交渲染（剩 ${renderGate.left.value}）`
                 }}
-              </NButton>
-              <NButton :disabled="!script.trim()" @click="plainScript = ''">清空</NButton>
+              </IconTextBtn>
+              <IconTextBtn name="close" :disabled="!script.trim()" @click="plainScript = ''">清空</IconTextBtn>
               <NButton v-if="pptVisualScenes?.length" quaternary @click="pptVisualScenes = null">
                 退出分页模式
               </NButton>
@@ -708,9 +710,9 @@ onBeforeUnmount(stopPoll)
             :custom-request="() => {}"
             @change="onPptUpload"
           >
-            <NButton size="small" :loading="pptParsing" :disabled="pptGate.blocked.value">
+            <IconTextBtn name="file" size="small" :loading="pptParsing" :disabled="pptGate.blocked.value">
               {{ pptParsing ? '解析中…' : '上传 PPT，解析成口播稿' }}
-            </NButton>
+            </IconTextBtn>
           </NUpload>
           <div v-if="pptGate.reason" class="hint gate-tip">⚠ {{ pptGate.reason }}</div>
           <div class="hint" style="margin-top: 10px">
@@ -742,15 +744,12 @@ onBeforeUnmount(stopPoll)
               </template>
               <template v-else>
                 <div class="job-title" :title="job.title">{{ job.title }}</div>
-                <NButton
-                  text
-                  size="tiny"
-                  title="修改任务名称"
+                <ActionBtn
+                  name="edit"
+                  tip="修改任务名称"
                   :disabled="job.status === 'running' || job.status === 'queued'"
                   @click="startRename"
-                >
-                  ✎
-                </NButton>
+                />
               </template>
               <NTag size="small" :type="statusMeta[job.status].type" :bordered="false">
                 {{ statusMeta[job.status].label }}
@@ -831,7 +830,7 @@ onBeforeUnmount(stopPoll)
           <template #header>
             <div class="hist-head">
               <span>历史任务（共 {{ totalJobs }}）</span>
-              <NButton size="tiny" quaternary @click="refreshList">刷新</NButton>
+              <IconTextBtn name="reset" size="tiny" quaternary @click="refreshList">刷新</IconTextBtn>
             </div>
           </template>
 

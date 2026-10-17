@@ -77,6 +77,7 @@ import type { QuotaConf, QuotaPeriod, Role } from '@/api/auth'
 import { useAuthStore } from '@/stores/auth'
 import { useRouter } from 'vue-router'
 import { actionBtn } from '@/utils/actionBtn'
+import IconTextBtn from '@/components/IconTextBtn.vue'
 
 const message = useMessage()
 const dialog = useDialog()
@@ -922,7 +923,7 @@ onMounted(load)
             </template>
             {{ collapsedCards.accounts ? '展开' : '折叠' }}
           </NTooltip>
-          <NButton size="small" type="primary" @click="showCreate = true">新建账号</NButton>
+          <IconTextBtn name="plus" type="primary" @click="showCreate = true">新建账号</IconTextBtn>
         </div>
       </template>
       <div v-show="!collapsedCards.accounts">
@@ -1024,9 +1025,9 @@ onMounted(load)
         </div>
 
         <div class="card-foot">
-          <NButton size="small" type="primary" :loading="savingTemplate" @click="onSaveMemberTemplate">
+          <IconTextBtn name="check" type="primary" :loading="savingTemplate" @click="onSaveMemberTemplate">
             保存模板
-          </NButton>
+          </IconTextBtn>
           <span class="foot-hint">
             改这里会影响所有没有被单独覆盖过的成员；被单独覆盖的人按个人配置走。
           </span>
@@ -1085,9 +1086,9 @@ onMounted(load)
           </template>
         </div>
         <div class="card-foot">
-          <NButton size="small" type="primary" :loading="savingTemplate" @click="onSaveAdminQuota">
+          <IconTextBtn name="check" type="primary" :loading="savingTemplate" @click="onSaveAdminQuota">
             保存配额
-          </NButton>
+          </IconTextBtn>
         </div>
       </div>
     </NCard>
@@ -1136,9 +1137,9 @@ onMounted(load)
             placeholder="次数上限（空=不限）"
             style="width: 160px"
           />
-          <NButton size="small" type="primary" :loading="creatingInvite" @click="onCreateInvite">
+          <IconTextBtn name="plus" type="primary" :loading="creatingInvite" @click="onCreateInvite">
             生成邀请码
-          </NButton>
+          </IconTextBtn>
         </div>
         <NSpin :show="inviteLoading" style="margin-top: 12px">
           <NDataTable
@@ -1185,9 +1186,9 @@ onMounted(load)
       <template #footer>
         <div class="modal-foot">
           <NButton size="small" @click="showCreate = false">取消</NButton>
-          <NButton size="small" type="primary" :loading="creating" @click="onCreate">
+          <IconTextBtn name="plus" type="primary" :loading="creating" @click="onCreate">
             创建
-          </NButton>
+          </IconTextBtn>
         </div>
       </template>
     </NModal>
@@ -1270,9 +1271,9 @@ onMounted(load)
       <template #footer>
         <div class="modal-foot">
           <NButton size="small" :disabled="savingEdit" @click="showEdit = false">取消</NButton>
-          <NButton size="small" type="primary" :loading="savingEdit" @click="onSaveEdit">
+          <IconTextBtn name="check" type="primary" :loading="savingEdit" @click="onSaveEdit">
             保存
-          </NButton>
+          </IconTextBtn>
         </div>
       </template>
     </NModal>
@@ -1300,9 +1301,9 @@ onMounted(load)
       <template #footer>
         <div class="modal-foot">
           <NButton size="small" :disabled="resettingPwd" @click="showResetPwd = false">取消</NButton>
-          <NButton size="small" type="primary" :loading="resettingPwd" @click="onResetPwd">
+          <IconTextBtn name="key" type="primary" :loading="resettingPwd" @click="onResetPwd">
             重置
-          </NButton>
+          </IconTextBtn>
         </div>
       </template>
     </NModal>
