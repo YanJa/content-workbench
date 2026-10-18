@@ -165,3 +165,21 @@ SUMMARY_PROMPT = """请把以下对话压缩成简洁摘要，保留：
 对话内容：
 {content}
 """
+
+# 「工具使用纪律」段的起始标记。BASE_SYSTEM 里这段固定在最后，
+# 从标记处一刀切掉即可（见 strip_tool_discipline）。
+_TOOL_DISCIPLINE_MARK = "工具使用纪律"
+
+
+def strip_tool_discipline(system_prompt: str) -> str:
+    """剥掉 system prompt 里的「工具使用纪律」段。
+
+    给不支持 function calling 的供应商（如 Cloudflare Workers AI 的 llama 系）
+    用：那段通篇在讲 check_compliance 怎么调、入队工具怎么防，模型没有工具
+    可调时会照着字面意思纠结，甚至把「纪律」当任务要求复述出来。
+    一刀切干净，比在 prompt 里补一句「你没有工具」更可靠。
+    """
+    idx = system_prompt.find(_TOOL_DISCIPLINE_MARK)
+    if idx == -1:
+        return system_prompt
+    return system_prompt[:idx].rstrip()

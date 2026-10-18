@@ -130,6 +130,13 @@ class Settings(BaseSettings):
     # 复用 deploy/proxy-guard.sh 的 SSH -D 隧道，出口即那台固定公网 IP 机器）。
     # 留空 = 直连。只在直连 api.cloudflare.com 不稳定 / 被限流时才需要开。
     CLOUDFLARE_PROXY: str = ""
+    # ---------- AI 对话：Cloudflare Workers AI（可选对话供应商） ----------
+    # 对话模型 id。用户在设置页选的模型优先，这里只是「没选过」时的兜底。
+    # 备选：@cf/meta/llama-3.1-8b-instruct（默认）/ @cf/qwen/qwen1.5-14b-chat-awq
+    # 可用清单见 GET /api/settings/cloudflare-models（需先配好上面两项凭证）。
+    # 注意：CF 模型不支持 function calling，切到 CF 后对话内的工具
+    # （查队列/推草稿箱等）自动停用；计费走兜底估价（用量页显示「按模型估价」）。
+    CLOUDFLARE_CHAT_MODEL: str = "@cf/meta/llama-3.1-8b-instruct"
 
     # ---------- 封面图（模板化，与上面的 AI 生图是两条独立通道） ----------
     # 封面脚本：HTML 模板 + 无头浏览器截图，出「文字确定、品牌统一」的头图。

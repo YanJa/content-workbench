@@ -1,4 +1,4 @@
-"""应用设置路由：目前只有「公众号管理」。
+"""应用设置路由：公众号管理 / 作者信息 / 对话供应商。
 
 为什么单独一个 router/前缀：这是「应用级配置」而不是「内容加工」，
 挂 /settings 语义清晰，也方便以后放别的设置（如生图脚本路径、代理等）。
@@ -12,6 +12,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy import select, update
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -22,6 +23,7 @@ from app.db.session import get_db
 from app.models.settings import AppSetting, WeChatAccount
 from app.schemas.models import (
     AuthorSettingRequest,
+    ChatProviderRequest,
     WeChatAccountCreate,
     WeChatAccountOut,
     WeChatAccountUpdate,
@@ -33,6 +35,15 @@ router = APIRouter(prefix="/settings", tags=["设置"])
 # 作者信息的设置键（存在 app_settings 表里）
 _AUTHOR_NAME_KEY = "author_name"
 _AUTHOR_INTRO_KEY = "author_intro"
+
+# 对话供应商的设置键（chat_provider = deepseek / cloudflare）
+_CHAT_PROVIDER_KEY = "chat_provider"
+_CF_CHAT_MODEL_KEY = "cloudflare_chat_model"
+
+# CF 模型清单缓存：拉一次 CF API 要 1-3 秒，不能每次打开设置页都拉。
+# TTL 10 分钟；失败结果不进缓存（否则修好凭证还要干等一个 TTL）。
+_CF_MODELS_CACHE: dict[str, object] = {}  # {account_id: (expire_at, [models])}
+_CF_MODELS_TTL = 600
 
 # 二维码允许的图片后缀
 _QR_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
@@ -49,17 +60,22 @@ async def _get_setting(db: AsyncSession, owner: str, key: str) -> str:
 
 
 async def _set_setting(db: AsyncSession, owner: str, key: str, value: str) -> None:
-    """写一条设置值（upsert）。"""
-    row = (
-        await db.execute(
-            select(AppSetting).where(AppSetting.owner == owner, AppSetting.key == key)
-        )
-    ).scalar_one_or_none()
-    if row:
-        row.value = value
-        row.updated_at = int(time.time())
-    else:
-        db.add(AppSetting(owner=owner, key=key, value=value))
+    """写一条设置值（upsert）。
+
+    单条 INSERT ... ON CONFLICT DO NOTHING + UPDATE：select-then-write 在
+    并发双写（同一用户两个标签页同时保存）时会撞唯一索引
+    ix_app_settings_owner_key 抛 IntegrityError；一条 upsert 语句没这个窗口。
+    """
+    await db.execute(
+        sqlite_insert(AppSetting)
+        .values(id=uuid.uuid4().hex, owner=owner, key=key, value=value, updated_at=int(time.time()))
+        .on_conflict_do_nothing(index_elements=["owner", "key"])
+    )
+    await db.execute(
+        update(AppSetting)
+        .where(AppSetting.owner == owner, AppSetting.key == key)
+        .values(value=value, updated_at=int(time.time()))
+    )
     await db.flush()
 
 
@@ -320,3 +336,122 @@ async def put_author(
     await _set_setting(db, owner, _AUTHOR_INTRO_KEY, req.author_intro.strip())
     await db.commit()
     return {"ok": True}
+
+
+# ---------------------------------------------------------------- 对话供应商
+@router.get("/chat-provider")
+async def get_chat_provider(
+    db: AsyncSession = Depends(get_db), owner: str = Depends(current_owner_id)
+):
+    """取对话供应商设置（provider + 已选 CF 模型）。
+
+    未配置过返回 {provider: "deepseek", model: ""} —— 老用户零感知。
+    """
+    return {
+        "provider": await _get_setting(db, owner, _CHAT_PROVIDER_KEY) or "deepseek",
+        "model": await _get_setting(db, owner, _CF_CHAT_MODEL_KEY),
+        # CF 凭证是否就位：前端据此决定模型下拉是可点还是禁用+引导
+        "cloudflare_ready": bool(
+            settings.CLOUDFLARE_API_TOKEN and settings.CLOUDFLARE_ACCOUNT_ID
+        ),
+    }
+
+
+@router.put("/chat-provider")
+async def put_chat_provider(
+    req: ChatProviderRequest,
+    db: AsyncSession = Depends(get_db),
+    owner: str = Depends(current_owner_id),
+):
+    """保存对话供应商。
+
+    model 的校验放宽处理：CF 模型清单接口可用时校验「在清单内」，
+    清单拉取失败（网络抖动）时不堵死保存，只要非空即可 —— 设置存错模型
+    的后果是下一次对话报错（llm 层会转成前端可见的 error 事件），可恢复。
+    """
+    model = req.model.strip()
+    if req.provider == "cloudflare":
+        if not (settings.CLOUDFLARE_API_TOKEN and settings.CLOUDFLARE_ACCOUNT_ID):
+            raise HTTPException(400, "未配置 Cloudflare 凭证（.env 的 CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID）")
+        if model:
+            try:
+                known = {m["name"] for m in await _fetch_cf_models()}
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("CF 模型清单拉取失败，跳过 model 校验: %s", exc)
+                known = set()
+            if known and model not in known:
+                raise HTTPException(400, f"模型 {model} 不在当前账号的可用清单里")
+    else:
+        model = ""  # 切回 DeepSeek 时清掉 CF 模型选择，防止串味
+    await _set_setting(db, owner, _CHAT_PROVIDER_KEY, req.provider)
+    await _set_setting(db, owner, _CF_CHAT_MODEL_KEY, model)
+    await db.commit()
+    return {"ok": True, "provider": req.provider, "model": model}
+
+
+async def _fetch_cf_models() -> list[dict[str, str]]:
+    """拉 Cloudflare 账号下可用于对话的模型清单（带 TTL 缓存）。
+
+    返回 [{name, label}]。task 过滤参数以实测为准：先试带 task=text-generation，
+    失败则退化为拉全量本地过滤。deprecated 的模型剔除（还能调，但别让人选）。
+    """
+    import httpx
+
+    if not (settings.CLOUDFLARE_API_TOKEN and settings.CLOUDFLARE_ACCOUNT_ID):
+        raise HTTPException(400, "未配置 Cloudflare 凭证（.env 的 CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID）")
+
+    account_id = settings.CLOUDFLARE_ACCOUNT_ID
+    now = time.time()
+    cached = _CF_MODELS_CACHE.get(account_id)
+    if cached and cached[0] > now:
+        return cached[1]  # type: ignore[return-value]
+
+    url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/models/search"
+    headers = {"Authorization": f"Bearer {settings.CLOUDFLARE_API_TOKEN}"}
+    async with httpx.AsyncClient(timeout=20) as client:
+        resp = await client.get(url, headers=headers)
+        resp.raise_for_status()
+        data = resp.json()
+    if not data.get("success"):
+        raise RuntimeError(f"Cloudflare 返回失败: {data.get('errors')}")
+
+    models: list[dict[str, str]] = []
+    for m in data.get("result") or []:
+        name = m.get("name") or ""
+        if not name or not name.startswith("@cf/"):
+            continue
+        props = m.get("properties") or []
+        if any(p.get("name") == "deprecated" for p in props if isinstance(p, dict)):
+            continue
+        # 只留文本生成类：task 属性在 properties 里（没有该字段的保留，宁多勿漏）
+        task = next(
+            (p.get("value") for p in props if isinstance(p, dict) and p.get("name") == "task"),
+            "",
+        )
+        if task and task not in ("Text Generation", "Text-to-Text"):
+            continue
+        desc = (m.get("description") or "").split("\n")[0][:60]
+        models.append({"name": name, "label": desc or name})
+    if not models:
+        raise RuntimeError("账号下没有可用的对话模型")
+    # 按名字排一下，@cf/meta/llama 系列在前（默认模型优先可见）
+    models.sort(key=lambda x: (0 if "llama" in x["name"] else 1, x["name"]))
+    _CF_MODELS_CACHE[account_id] = (now + _CF_MODELS_TTL, models)
+    return models
+
+
+@router.get("/cloudflare-models")
+async def get_cloudflare_models(owner: str = Depends(current_owner_id)):
+    """Cloudflare 可用对话模型清单（设置页模型下拉用）。
+
+    CF 未配凭证 → 400（前端据此禁用下拉并引导去配 .env）；
+    拉取失败 → 502 + 具体原因。失败结果不进缓存。
+    """
+    try:
+        models = await _fetch_cf_models()
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("CF 模型清单拉取失败: %s", exc)
+        raise HTTPException(502, f"模型清单拉取失败：{exc}") from exc
+    return {"models": models}

@@ -147,6 +147,17 @@ class AuthorSettingRequest(BaseModel):
     author_intro: str = ""
 
 
+class ChatProviderRequest(BaseModel):
+    """对话供应商设置：deepseek（默认，全功能）/ cloudflare（Workers AI）。
+
+    model 仅 cloudflare 时有效：用户在设置页选的 CF 模型 id，
+    空 = 用 .env 的 CLOUDFLARE_CHAT_MODEL 兜底。
+    """
+
+    provider: Literal["deepseek", "cloudflare"] = "deepseek"
+    model: str = ""
+
+
 class CoverGenRequest(BaseModel):
     """生成封面（模板化，非 AI 生图）。
 

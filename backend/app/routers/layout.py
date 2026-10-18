@@ -384,8 +384,12 @@ async def generate_cover(
 
 # ---------------------------------------------------------------- 图片静态服务
 @router.get("/image-providers")
-async def image_providers() -> dict[str, bool]:
-    """文内配图可用通道能力位（前端据此决定显示哪些生成方式）。"""
+async def image_providers(owner: str = Depends(current_owner_id)) -> dict[str, bool]:
+    """文内配图可用通道能力位（前端据此决定显示哪些生成方式）。
+
+    不读 owner，但挂守卫依赖：能力探测接口同样不该对未登录流量敞开
+    （会泄露部署配置，test_every_api_endpoint_is_guarded 也要求全端点有守卫）。
+    """
     return {
         "script": imagegen.script_configured(),
         "cloudflare": imagegen.cloudflare_configured(),

@@ -71,6 +71,31 @@ def _tool_result_for_llm(name: str, result: dict[str, Any]) -> str:
     return raw
 
 
+def _strip_tool_traces(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """剥掉消息列表里的工具痕迹，供不支持 function calling 的模型用。
+
+    build_context 对「带 tool_calls 的 assistant 历史行」会展开成：
+      assistant(content="", tool_calls=[...]) + role:"tool"(tool_call_id=...)
+    OpenAI 系模型认这对结构；llama 等模型收到 role:tool 直接 400。
+    处理规则：
+      - role == "tool" 的消息：丢（纯工具结果，对无工具模型无意义）
+      - assistant 带 tool_calls 且有正文：保留为普通 assistant 文本消息
+      - assistant 带 tool_calls 但无正文：丢（那一轮整条都是工具动作）
+      - 其余消息原样保留（system / user / 普通 assistant）
+    """
+    out: list[dict[str, Any]] = []
+    for m in messages:
+        role = m.get("role")
+        if role == "tool":
+            continue
+        if role == "assistant" and m.get("tool_calls"):
+            if m.get("content"):
+                out.append({"role": "assistant", "content": m["content"]})
+            continue
+        out.append(m)
+    return out
+
+
 async def run_chat(
     db: AsyncSession,
     ctx: dict[str, Any],
@@ -92,7 +117,18 @@ async def run_chat(
 
     llm = get_llm()
     tools = registry.schemas()
+    # 对话供应商：deepseek（默认，全功能）/ cloudflare（Workers AI，见下）
+    provider = ctx.get("provider") or "deepseek"
+    model_override = ctx.get("model_override") or None
     convo = list(messages)
+    if provider == "cloudflare":
+        # CF 的 llama 系模型不支持 function calling：① 不带 tools（工具循环
+        # 自然不会触发，pending_tools 恒为空）；② 历史消息里的工具痕迹必须剥掉
+        # —— build_context 会把带 tool_calls 的 assistant 行展开成
+        # 「assistant(tool_calls) + role:tool」消息对，llama 收到会 400。
+        # 有正文的工具轮次保留正文（那是有效对话内容），纯工具轮次整条丢弃。
+        tools = None
+        convo = _strip_tool_traces(convo)
     sink = make_sink(
         db,
         conversation_id=ctx.get("conversation_id"),
@@ -107,7 +143,14 @@ async def run_chat(
         pending_tools: list[dict[str, Any]] = []
         finish_reason = ""
 
-        async for evt in llm.stream_call(convo, task=task, tools=tools or None, usage_sink=sink):
+        async for evt in llm.stream_call(
+            convo,
+            task=task,
+            tools=tools or None,
+            usage_sink=sink,
+            provider=provider,
+            model_override=model_override,
+        ):
             etype = evt["type"]
 
             if etype == "delta":

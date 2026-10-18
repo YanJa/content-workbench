@@ -80,3 +80,28 @@ export async function updateAuthorInfo(patch: AuthorInfo): Promise<{ ok: boolean
   const { data } = await http.put('/settings/author', patch)
   return data
 }
+
+/** 对话供应商：deepseek（默认，全功能）/ cloudflare（Workers AI）。 */
+export interface ChatProviderInfo {
+  provider: 'deepseek' | 'cloudflare'
+  model: string
+  cloudflare_ready: boolean
+}
+
+export async function getChatProvider(): Promise<ChatProviderInfo> {
+  const { data } = await http.get('/settings/chat-provider')
+  return data
+}
+
+export async function updateChatProvider(
+  patch: { provider: 'deepseek' | 'cloudflare'; model?: string },
+): Promise<{ ok: boolean; provider: string; model: string }> {
+  const { data } = await http.put('/settings/chat-provider', patch)
+  return data
+}
+
+/** Cloudflare 账号下可用于对话的模型清单（[{name, label}]）。 */
+export async function getCloudflareModels(): Promise<{ name: string; label: string }[]> {
+  const { data } = await http.get('/settings/cloudflare-models')
+  return data.models ?? []
+}

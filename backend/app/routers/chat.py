@@ -6,6 +6,7 @@ from collections.abc import AsyncGenerator
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -14,8 +15,9 @@ from app.core import quota as quota_mod
 from app.core.rbac import TOOL_PERM, load_permissions, require_use
 from app.core.tenant import current_owner_id, current_user
 from app.db.session import SessionLocal, get_db
+from app.models.settings import AppSetting
 from app.models.user import User
-from app.prompts.platforms import build_system_prompt
+from app.prompts.platforms import build_system_prompt, strip_tool_discipline
 from app.schemas.models import (
     ChatRequest,
     ConversationCreate,
@@ -36,6 +38,28 @@ router = APIRouter(prefix="/chat", tags=["对话"])
 def _sse(event: dict) -> str:
     """把事件包装成 SSE 格式。"""
     return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+
+async def _load_chat_provider(db: AsyncSession, owner: str) -> tuple[str, str]:
+    """读用户的对话供应商设置。
+
+    返回 (provider, model_override)。provider ∈ deepseek / cloudflare；
+    model_override 是用户在设置页选的 CF 模型 id（空 = 用 env 默认）。
+    设置从未写过时默认 deepseek —— 老用户零感知。
+    """
+    rows = (
+        await db.execute(
+            select(AppSetting).where(
+                AppSetting.owner == owner,
+                AppSetting.key.in_(("chat_provider", "cloudflare_chat_model")),
+            )
+        )
+    ).scalars().all()
+    kv = {r.key: (r.value or "") for r in rows}
+    provider = kv.get("chat_provider") or "deepseek"
+    if provider not in ("deepseek", "cloudflare"):
+        provider = "deepseek"
+    return provider, kv.get("cloudflare_chat_model") or ""
 
 
 @router.post("/stream")
@@ -77,9 +101,13 @@ async def chat_stream(
         await conv_svc.maybe_summarize(db, conv, llm)
 
         # 构造上下文
+        provider, cf_model = await _load_chat_provider(db, owner)
         system_prompt = build_system_prompt(
             req.platform, topic=req.topic, audience=req.audience
         )
+        if provider == "cloudflare":
+            # CF 模型没有工具可用：system 里的「工具使用纪律」段只会干扰它
+            system_prompt = strip_tool_discipline(system_prompt)
         messages = await conv_svc.build_context(db, conv, system_prompt)
 
         ctx = {
@@ -87,6 +115,10 @@ async def chat_stream(
             "owner": owner,
             "conversation_id": conv.id,
             "scene": req.platform or conv.scene or "chat",
+            # 对话供应商（deepseek / cloudflare）+ 用户选的 CF 模型（空=env 默认）。
+            # 只作用于对话轮次；摘要压缩（maybe_summarize）固定走 DeepSeek。
+            "provider": provider,
+            "model_override": cf_model or None,
         }
 
         # 本轮 assistant 消息的累积器。全部攒着，流结束后一次性落库 ——

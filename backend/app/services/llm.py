@@ -40,6 +40,25 @@ class ModelRoute:
     reason: str = ""
 
 
+# Cloudflare Workers AI 对话通道的参数。
+# 为什么单独一份而不是复用 MODEL_ROUTES：
+#   1. CF 的 llama 系模型输出上限远低于 DeepSeek（16384 直接 400）；
+#   2. CF 模型没有思维链，温度按普通对话模型给；
+#   3. CF 端点不支持 stream_options.include_usage，流式 usage 常缺，
+#      走「估价」路径（total_tokens=0 → Usage.estimated=True）。
+_CF_MAX_TOKENS = 4096
+_CF_TEMPERATURE = 0.7
+
+
+def _cf_route(model: str) -> ModelRoute:
+    return ModelRoute(
+        model=model,
+        temperature=_CF_TEMPERATURE,
+        max_tokens=_CF_MAX_TOKENS,
+        reason="Cloudflare Workers AI 对话（OpenAI 兼容端点 /ai/v1）",
+    )
+
+
 # 模型路由表：改这里就能全局切换，业务代码不用动。
 #
 # ⚠️ max_tokens 为什么给这么大：
@@ -132,7 +151,15 @@ def is_peak_hour() -> bool:
 
 
 class LLMClient:
-    """大模型客户端。"""
+    """大模型客户端。
+
+    provider（对话供应商）维度：
+      - "deepseek"（默认）：主模型 DeepSeek + 可选 FALLBACK_* 兜底，支持工具调用；
+      - "cloudflare"：Cloudflare Workers AI（OpenAI 兼容端点
+        /client/v4/accounts/{id}/ai/v1）。不支持 function calling、
+        不支持流式 usage，失败不兜底（直接抛错让上层转 SSE error 事件）。
+    非对话任务（排版/摘要/标签）固定走 DeepSeek，不暴露 provider 参数。
+    """
 
     def __init__(self) -> None:
         self._primary = AsyncOpenAI(
@@ -147,6 +174,17 @@ class LLMClient:
                 base_url=settings.FALLBACK_BASE_URL,
                 timeout=settings.LLM_TIMEOUT,
             )
+        # Cloudflare Workers AI：凭证齐才建（与生图通道共用同一对凭证）
+        self._cloudflare: AsyncOpenAI | None = None
+        if settings.CLOUDFLARE_API_TOKEN and settings.CLOUDFLARE_ACCOUNT_ID:
+            self._cloudflare = AsyncOpenAI(
+                api_key=settings.CLOUDFLARE_API_TOKEN,
+                base_url=(
+                    f"https://api.cloudflare.com/client/v4/accounts/"
+                    f"{settings.CLOUDFLARE_ACCOUNT_ID}/ai/v1"
+                ),
+                timeout=settings.LLM_TIMEOUT,
+            )
 
     # ---------------- 非流式 ----------------
     async def chat(
@@ -156,9 +194,29 @@ class LLMClient:
         tools: list[dict[str, Any]] | None = None,
         model_override: str | None = None,
         usage_sink: UsageSink | None = None,
+        provider: str = "deepseek",
     ) -> ChatResult:
         route = MODEL_ROUTES[task]
         model = model_override or route.model
+
+        if provider == "cloudflare":
+            # CF 通道：独立路由参数、不支持 tools、失败不兜底
+            if self._cloudflare is None:
+                raise RuntimeError(
+                    "未配置 Cloudflare（CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID）"
+                )
+            if tools:
+                logger.warning("Cloudflare 模型不支持工具调用，本次已忽略 tools")
+            cf_model = model_override or settings.CLOUDFLARE_CHAT_MODEL
+            cf = _cf_route(cf_model)
+            started = time.perf_counter()
+            try:
+                result = await self._call(self._cloudflare, cf.model, messages, cf, None)
+            except Exception as exc:  # noqa: BLE001
+                await self._emit(usage_sink, task, cf.model, Usage(), started, failed=True)
+                raise exc
+            await self._emit(usage_sink, task, result.model or cf.model, result.usage, started)
+            return result
 
         if settings.ENABLE_PEAK_GUARD and is_peak_hour():
             logger.warning("当前为高峰计费时段，成本翻倍。建议把批量任务移到低谷。")
@@ -275,6 +333,8 @@ class LLMClient:
         task: TaskType = "copywriting",
         tools: list[dict[str, Any]] | None = None,
         usage_sink: UsageSink | None = None,
+        provider: str = "deepseek",
+        model_override: str | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """流式调用，逐块产出事件。
 
@@ -284,28 +344,42 @@ class LLMClient:
             {"type": "tool_calls", "tool_calls": [...]} 本轮的完整工具调用（收尾时一次性给出）
             {"type": "usage", "usage": Usage}
             {"type": "finish", "finish_reason": "..."}
+            {"type": "error", "message": "..."}      调用失败（SSE 已 200，只能这样告诉前端）
 
-        为什么要流式：
-            非流式要等模型把整篇写完（实测 30 秒以上），前端会一直空白。
-            流式后首字延迟能压到 1-2 秒，体感完全不同。
-
-        ⚠️ 关于 reasoning_content：
-            deepseek-flash / deepseek-v4-pro 都是推理模型，会先流式吐
-            `reasoning_content`（思维链），吐完之后才吐 `content`（正式回答）。
-            两者必须分开处理：
-              - 思维链不能当正文（否则用户看到一堆「我们需要回答用户…」）
-              - 思维链也占用 max_tokens（实测 800 字文章能烧掉 1100+ reasoning tokens），
-                所以 max_tokens 必须留足，否则正文会被截断成空。
-
-        工具调用的增量拼接：
-            OpenAI 兼容协议里，tool_calls 是按 index 分片下发的，
-            arguments 会被切成很多小段。必须按 index 累积再解析。
+        provider="cloudflare" 时走 Cloudflare Workers AI：无 tools、无
+        stream_options（include_usage）、usage 缺失走估价。详见 chat() 同款注释。
         """
         route = MODEL_ROUTES.get(task, MODEL_ROUTES["copywriting"])
-        model = route.model
 
-        kwargs: dict[str, Any] = {
-            "model": model,
+        if provider == "cloudflare":
+            if self._cloudflare is None:
+                yield {
+                    "type": "error",
+                    "message": "未配置 Cloudflare（CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID）",
+                }
+                yield {"type": "finish", "finish_reason": "error"}
+                return
+            if tools:
+                logger.warning("Cloudflare 模型不支持工具调用，本次已忽略 tools")
+            cf = _cf_route(model_override or settings.CLOUDFLARE_CHAT_MODEL)
+            kwargs: dict[str, Any] = {
+                "model": cf.model,
+                "messages": messages,
+                "temperature": cf.temperature,
+                "max_tokens": cf.max_tokens,
+                "stream": True,
+                # 注意：不传 stream_options —— CF 的 /ai/v1 兼容端点不认识它，带了 400
+            }
+            if settings.ENABLE_PEAK_GUARD and is_peak_hour():
+                logger.warning("当前为高峰计费时段，成本翻倍。建议把批量任务移到低谷。")
+            async for evt in self._run_stream(
+                self._cloudflare, kwargs, task, cf.model, usage_sink
+            ):
+                yield evt
+            return
+
+        kwargs = {
+            "model": route.model,
             "messages": messages,
             "temperature": route.temperature,
             "max_tokens": route.max_tokens,
@@ -320,62 +394,95 @@ class LLMClient:
         if settings.ENABLE_PEAK_GUARD and is_peak_hour():
             logger.warning("当前为高峰计费时段，成本翻倍。建议把批量任务移到低谷。")
 
+        async for evt in self._run_stream(self._primary, kwargs, task, route.model, usage_sink):
+            yield evt
+
+    async def _run_stream(
+        self,
+        client: AsyncOpenAI,
+        kwargs: dict[str, Any],
+        task: TaskType,
+        model: str,
+        usage_sink: UsageSink | None,
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """开流 → 逐 chunk 产出事件 → 收尾。CF 与 DeepSeek 共用。
+
+        异常处理：SSE 一旦返回 200 就改不了状态码，模型侧报错（凭证失效、
+        模型名写错、超长）如果直接冒泡，前端只看到「流断了」。这里统一转成
+        {"type": "error"} 事件 + finish，前端 NAlert 能展示具体原因。
+
+        ⚠️ 关于 reasoning_content：
+            deepseek-flash / deepseek-v4-pro 都是推理模型，会先流式吐
+            `reasoning_content`（思维链），吐完之后才吐 `content`（正式回答）。
+            CF 模型没有这个字段（getattr 兜底 None），行为自动降级。
+
+        工具调用的增量拼接：
+            OpenAI 兼容协议里，tool_calls 是按 index 分片下发的，
+            arguments 会被切成很多小段。必须按 index 累积再解析。
+        """
         # 按 index 累积工具调用分片
         acc: dict[int, dict[str, Any]] = {}
         finish_reason = ""
         usage = Usage()
         started = time.perf_counter()
 
-        stream = await self._primary.chat.completions.create(**kwargs)
-        async for chunk in stream:
-            # 注意：带 usage 的收尾 chunk 通常仍有 1 条 choices（finish_reason=stop），
-            # 所以必须在 choices 判空之前先查 usage，否则会整段丢掉。
-            if getattr(chunk, "usage", None):
-                p_details = getattr(chunk.usage, "prompt_tokens_details", None)
-                c_details = getattr(chunk.usage, "completion_tokens_details", None)
-                usage = Usage(
-                    prompt_tokens=chunk.usage.prompt_tokens or 0,
-                    completion_tokens=chunk.usage.completion_tokens or 0,
-                    total_tokens=chunk.usage.total_tokens or 0,
-                    reasoning_tokens=getattr(c_details, "reasoning_tokens", 0) or 0,
-                    cached_tokens=getattr(p_details, "cached_tokens", 0) or 0,
-                )
-
-            if not chunk.choices:
-                continue
-
-            choice = chunk.choices[0]
-            delta = choice.delta
-
-            if choice.finish_reason:
-                finish_reason = choice.finish_reason
-
-            if delta is None:
-                continue
-
-            # 思维链增量：单独发事件，不和正文混在一起
-            reasoning = getattr(delta, "reasoning_content", None)
-            if reasoning:
-                yield {"type": "reasoning", "content": reasoning}
-
-            # 正文增量
-            if delta.content:
-                yield {"type": "delta", "content": delta.content}
-
-            # 工具调用增量
-            if delta.tool_calls:
-                for tc in delta.tool_calls:
-                    idx = tc.index if tc.index is not None else 0
-                    slot = acc.setdefault(
-                        idx, {"id": "", "name": "", "arguments": "", "index": idx}
+        try:
+            stream = await client.chat.completions.create(**kwargs)
+            async for chunk in stream:
+                # 注意：带 usage 的收尾 chunk 通常仍有 1 条 choices（finish_reason=stop），
+                # 所以必须在 choices 判空之前先查 usage，否则会整段丢掉。
+                if getattr(chunk, "usage", None):
+                    p_details = getattr(chunk.usage, "prompt_tokens_details", None)
+                    c_details = getattr(chunk.usage, "completion_tokens_details", None)
+                    usage = Usage(
+                        prompt_tokens=chunk.usage.prompt_tokens or 0,
+                        completion_tokens=chunk.usage.completion_tokens or 0,
+                        total_tokens=chunk.usage.total_tokens or 0,
+                        reasoning_tokens=getattr(c_details, "reasoning_tokens", 0) or 0,
+                        cached_tokens=getattr(p_details, "cached_tokens", 0) or 0,
                     )
-                    if tc.id:
-                        slot["id"] = tc.id
-                    if tc.function:
-                        if tc.function.name:
-                            slot["name"] = tc.function.name
-                        if tc.function.arguments:
-                            slot["arguments"] += tc.function.arguments
+
+                if not chunk.choices:
+                    continue
+
+                choice = chunk.choices[0]
+                delta = choice.delta
+
+                if choice.finish_reason:
+                    finish_reason = choice.finish_reason
+
+                if delta is None:
+                    continue
+
+                # 思维链增量：单独发事件，不和正文混在一起
+                reasoning = getattr(delta, "reasoning_content", None)
+                if reasoning:
+                    yield {"type": "reasoning", "content": reasoning}
+
+                # 正文增量
+                if delta.content:
+                    yield {"type": "delta", "content": delta.content}
+
+                # 工具调用增量
+                if delta.tool_calls:
+                    for tc in delta.tool_calls:
+                        idx = tc.index if tc.index is not None else 0
+                        slot = acc.setdefault(
+                            idx, {"id": "", "name": "", "arguments": "", "index": idx}
+                        )
+                        if tc.id:
+                            slot["id"] = tc.id
+                        if tc.function:
+                            if tc.function.name:
+                                slot["name"] = tc.function.name
+                            if tc.function.arguments:
+                                slot["arguments"] += tc.function.arguments
+        except Exception as exc:  # noqa: BLE001
+            logger.error("流式调用失败(%s): %s", model, exc)
+            await self._emit(usage_sink, task, model, usage, started, failed=True)
+            yield {"type": "error", "message": f"模型调用失败：{exc}"}
+            yield {"type": "finish", "finish_reason": "error"}
+            return
 
         # 收尾：把累积的分片解析成完整工具调用
         tool_calls: list[dict[str, Any]] = []

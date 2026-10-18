@@ -580,6 +580,16 @@ curl -X POST localhost:8000/api/video/render -H 'Content-Type: application/json'
 | GET | `/api/settings/wechat/qrcodes/{account_id}/{filename}` | 二维码静态服务（**须带 `?owner=`**，跨租户 404） |
 | GET | `/api/settings/author` | 取作者默认信息 `{author_name, author_intro}`（未配置返回空串） |
 | PUT | `/api/settings/author` | 保存作者默认信息 `{author_name, author_intro}`，排版时用于替换占位符 |
+| GET | `/api/settings/chat-provider` | 取对话供应商 `{provider: "deepseek"\|"cloudflare", model, cloudflare_ready}`；未配置返回 `deepseek` |
+| PUT | `/api/settings/chat-provider` | 保存对话供应商 `{provider, model}`；`model` 仅 cloudflare 有效，选了清单外模型 400（清单接口不可用时放宽为非空即可）；切回 deepseek 自动清空 model |
+| GET | `/api/settings/cloudflare-models` | Cloudflare 可用对话模型清单 `{models: [{name, label}]}`（TTL 缓存 10 分钟）；未配凭证 400，拉取失败 502 |
+
+**对话供应商（`chat-provider`）**：`deepseek`（默认）全功能——思维链、工具调用、精确计费；
+`cloudflare`（Workers AI）免费额度大，但**模型不支持 function calling**：切过去后对话内的
+工具（查队列/推草稿箱等）自动停用，历史消息里的工具痕迹会在发给模型前剥离，system prompt
+里的「工具使用纪律」段也会剥掉；流式响应不带 token 用量，用量页按「估价」展示。只影响
+对话轮次——摘要压缩、排版、话题标签等后台任务固定走 DeepSeek。CF 凭证与生图通道共用
+`.env` 里的 `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID`（Workers AI 权限两者通用）。
 
 **关注引导字段**（`WeChatAccountOut`）：除原有字段外新增
 `gzh_name`（对外号名，替换 `{{号名}}`）、`slogan`（关注卡副标，替换 `{{slogan}}`）、

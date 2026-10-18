@@ -15,6 +15,9 @@ import {
   NDescriptions,
   NDescriptionsItem,
   NDivider,
+  NRadioButton,
+  NRadioGroup,
+  NSelect,
   NSpin,
   NTag,
   NText,
@@ -38,9 +41,12 @@ import {
   createWeChatAccount,
   deleteWeChatAccount,
   getAuthorInfo,
+  getChatProvider,
+  getCloudflareModels,
   listWeChatAccounts,
   setDefaultWeChatAccount,
   updateAuthorInfo,
+  updateChatProvider,
   updateWeChatAccount,
   uploadWeChatQrcode,
   type WeChatAccountPayload,
@@ -157,6 +163,7 @@ async function refresh() {
     tools.value = toolList
     void loadWeChat()
     void loadAuthor()
+    void loadChatProvider()
   } catch (e) {
     err.value = (e as Error).message
   } finally {
@@ -269,6 +276,77 @@ async function saveAuthor() {
     message.error(`保存失败：${(e as Error).message}`)
   } finally {
     authorSaving.value = false
+  }
+}
+
+// ---------------------------------------------------------------- AI 对话供应商
+// deepseek（默认，全功能）/ cloudflare（Workers AI）。只影响对话轮次，
+// 摘要压缩/排版/标签等后台任务固定走 DeepSeek。
+type ChatProvider = 'deepseek' | 'cloudflare'
+
+const chatProvider = ref<ChatProvider>('deepseek')
+const chatModel = ref('')
+const cfReady = ref(false)
+const cfModels = ref<{ name: string; label: string }[]>([])
+const cfModelsLoading = ref(false)
+const cfModelsErr = ref('')
+const providerSaving = ref(false)
+
+async function loadChatProvider() {
+  try {
+    const p = await getChatProvider()
+    chatProvider.value = p.provider === 'cloudflare' ? 'cloudflare' : 'deepseek'
+    chatModel.value = p.model || ''
+    cfReady.value = p.cloudflare_ready
+    // 已是 CF 供应商且凭证就位 → 顺手把模型清单拉上，下拉直接有值
+    if (chatProvider.value === 'cloudflare' && cfReady.value) void loadCfModels()
+  } catch (e) {
+    console.warn('加载对话供应商失败', (e as Error).message)
+  }
+}
+
+async function loadCfModels() {
+  cfModelsLoading.value = true
+  cfModelsErr.value = ''
+  try {
+    cfModels.value = await getCloudflareModels()
+    // 已存的模型不在清单里（换账号/模型下线）→ 兜底插一条，别让下拉显示空、
+    // 用户一保存又把它冲掉
+    if (chatModel.value && !cfModels.value.some((m) => m.name === chatModel.value)) {
+      cfModels.value = [
+        { name: chatModel.value, label: `${chatModel.value}（已不在线）` },
+        ...cfModels.value,
+      ]
+    }
+  } catch (e) {
+    cfModelsErr.value = (e as Error).message || '拉取失败'
+  } finally {
+    cfModelsLoading.value = false
+  }
+}
+
+function onProviderChange(v: string) {
+  chatProvider.value = v === 'cloudflare' ? 'cloudflare' : 'deepseek'
+  if (chatProvider.value === 'cloudflare') {
+    if (cfReady.value && !cfModels.value.length && !cfModelsLoading.value) void loadCfModels()
+  } else {
+    // 切回 DeepSeek 清掉 CF 模型选择，防止把 CF 模型名留给默认通道
+    chatModel.value = ''
+  }
+}
+
+async function saveChatProvider() {
+  providerSaving.value = true
+  try {
+    await updateChatProvider({
+      provider: chatProvider.value,
+      model: chatProvider.value === 'cloudflare' ? chatModel.value : '',
+    })
+    message.success('已保存，下一轮对话生效')
+  } catch (e) {
+    message.error(`保存失败：${(e as Error).message}`)
+  } finally {
+    providerSaving.value = false
   }
 }
 
@@ -573,6 +651,53 @@ const envColumns: DataTableColumns<EnvRow> = [
           <code v-text="AUTHOR_PH_NAME" /> 和 <code v-text="AUTHOR_PH_INTRO" />
           会自动替换成这里填的值。留空则不替换（保留占位符提醒你去填）。
           加工排版面板里也能临时改这一篇的作者信息。
+        </div>
+      </NCard>
+
+      <!-- AI 对话供应商：DeepSeek（默认，全功能）/ Cloudflare Workers AI（免费额度大，
+           但不支持对话内工具调用、计费按估价）。只影响对话，后台任务仍走 DeepSeek。 -->
+      <NCard size="small" title="AI 对话" style="margin-bottom: 16px">
+        <NSpin :show="cfModelsLoading">
+          <div class="author-form">
+            <NRadioGroup :value="chatProvider" size="small" @update:value="onProviderChange">
+              <NRadioButton value="deepseek">DeepSeek（默认）</NRadioButton>
+              <NRadioButton value="cloudflare">Cloudflare Workers AI</NRadioButton>
+            </NRadioGroup>
+            <NSelect
+              v-if="chatProvider === 'cloudflare'"
+              v-model:value="chatModel"
+              size="small"
+              style="width: 340px"
+              :options="cfModels.map((m) => ({ label: m.label, value: m.name }))"
+              :loading="cfModelsLoading"
+              :disabled="!cfReady"
+              placeholder="选择对话模型"
+              filterable
+            />
+            <IconTextBtn name="check" type="primary" :loading="providerSaving" @click="saveChatProvider">
+              保存
+            </IconTextBtn>
+          </div>
+        </NSpin>
+        <div class="api-base-hint" style="margin-top: 8px; opacity: 0.75">
+          <template v-if="chatProvider === 'cloudflare'">
+            <template v-if="cfReady">
+              <b>Cloudflare 模型不支持对话内工具</b>（查队列、推草稿箱等需切回
+              DeepSeek），用量按估价计费；中文创作效果弱于 DeepSeek，严肃成稿建议默认通道。
+              <span v-if="cfModelsErr" style="color: var(--app-amber-text)">
+                模型清单拉取失败：{{ cfModelsErr }}（不影响已保存的选择）
+              </span>
+            </template>
+            <template v-else>
+              尚未配置 Cloudflare 凭证：请在 <code>backend/.env</code> 填
+              <code>CLOUDFLARE_API_TOKEN</code> 与 <code>CLOUDFLARE_ACCOUNT_ID</code>
+              并重启后端（获取方式见 .env.example 里的注释）。
+            </template>
+          </template>
+          <template v-else>
+            DeepSeek 全功能通道：支持思维链、工具调用与精确计费。切换供应商对下一轮对话生效，
+            历史消息不受影响；摘要压缩、排版、话题标签等后台任务固定走 DeepSeek。
+          </template>
         </div>
       </NCard>
 
