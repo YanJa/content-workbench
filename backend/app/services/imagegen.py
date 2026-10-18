@@ -132,7 +132,11 @@ async def generate_image(
 
 
 async def _run_cloudflare(prompt: str, n: int, out_dir: Path) -> list[Path]:
-    """调 Cloudflare Workers AI 文生图，把返回的 base64 图存盘并返回路径列表。"""
+    """调 Cloudflare Workers AI 文生图，把返回的 base64 图存盘并返回路径列表。
+
+    默认直连 api.cloudflare.com；配了 CLOUDFLARE_PROXY（socks5/http）则走固定
+    出口（SSH -D 隧道那头那台机器），用于直连不稳定/被限流的场景。
+    """
     import httpx
 
     url = (
@@ -144,8 +148,13 @@ async def _run_cloudflare(prompt: str, n: int, out_dir: Path) -> list[Path]:
         "Content-Type": "application/json",
     }
     logger.info("调 Cloudflare 文生图: %s (n=%d)", settings.CLOUDFLARE_IMAGE_MODEL, n)
+    client_kw: dict = {"timeout": settings.CLOUDFLARE_IMAGE_TIMEOUT}
+    proxy = (settings.CLOUDFLARE_PROXY or "").strip()
+    if proxy:
+        # 固定出口代理（SSH -D 隧道），只在直连 api.cloudflare.com 不稳定时开启
+        client_kw["proxy"] = proxy
     try:
-        async with httpx.AsyncClient(timeout=settings.CLOUDFLARE_IMAGE_TIMEOUT) as client:
+        async with httpx.AsyncClient(**client_kw) as client:
             resp = await client.post(url, headers=headers, json={"prompt": prompt})
             resp.raise_for_status()
             data = resp.json()

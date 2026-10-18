@@ -126,6 +126,10 @@ class Settings(BaseSettings):
     # 文生图模型（Cloudflare Workers AI 模型 id）
     CLOUDFLARE_IMAGE_MODEL: str = "@cf/black-forest-labs/flux-1-schnell"
     CLOUDFLARE_IMAGE_TIMEOUT: int = 120
+    # 可选：Cloudflare 请求的固定出口代理（形如 socks5://127.0.0.1:10800，
+    # 复用 deploy/proxy-guard.sh 的 SSH -D 隧道，出口即那台固定公网 IP 机器）。
+    # 留空 = 直连。只在直连 api.cloudflare.com 不稳定 / 被限流时才需要开。
+    CLOUDFLARE_PROXY: str = ""
 
     # ---------- 封面图（模板化，与上面的 AI 生图是两条独立通道） ----------
     # 封面脚本：HTML 模板 + 无头浏览器截图，出「文字确定、品牌统一」的头图。
