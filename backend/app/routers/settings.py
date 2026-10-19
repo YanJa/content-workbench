@@ -17,10 +17,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.logging import logger
+from app.core.rbac import require_admin
 from app.core.security import link_url
 from app.core.tenant import current_owner_id, link_auth
 from app.db.session import get_db
 from app.models.settings import AppSetting, WeChatAccount
+from app.models.user import User
 from app.schemas.models import (
     AuthorSettingRequest,
     ChatProviderRequest,
@@ -362,6 +364,10 @@ async def put_chat_provider(
     req: ChatProviderRequest,
     db: AsyncSession = Depends(get_db),
     owner: str = Depends(current_owner_id),
+    # 供应商切换收归管理员：Cloudflare 通道不支持对话内工具、计费按估价，
+    # 让每个普通成员随手切，出问题（对话里调不了工具、用量对不上账）时
+    # 定位成本高。GET 仍然全员开放 —— 谁都需要知道自己当前在哪个通道上。
+    _admin: User = Depends(require_admin),
 ):
     """保存对话供应商。
 

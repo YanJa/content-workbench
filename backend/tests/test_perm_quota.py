@@ -640,3 +640,38 @@ def test_admin_list_includes_permissions_and_usage(env):
     assert "chat.send" in rows["bob"]["permissions"]
     # admin 那一行也是全权限
     assert set(rows["admin"]["permissions"]) == set(PERMISSION_KEYS)
+
+
+# ---------------------------------------------------------------- 对话供应商权限
+def test_chat_provider_put_requires_admin(env):
+    """PUT /settings/chat-provider 收归管理员（member 403），GET 全员开放。
+
+    背景：Cloudflare 通道不支持对话内工具、计费按估价，普通成员随手切
+    出问题难定位。个人中心里 member 看到的是只读卡片。
+    """
+    client = TestClient(app)
+    admin = _admin_token(client)
+    member = _register(client, "alice").json()["token"]
+
+    # GET 全员开放：谁都需要知道自己当前在哪个通道上
+    r = client.get("/api/settings/chat-provider", headers=_auth(member))
+    assert r.status_code == 200
+    assert r.json()["provider"] == "deepseek"
+
+    # member 写 → 403，且设置不被改动
+    r = client.put(
+        "/api/settings/chat-provider",
+        json={"provider": "cloudflare"},
+        headers=_auth(member),
+    )
+    assert r.status_code == 403, r.text
+    assert client.get("/api/settings/chat-provider", headers=_auth(member)).json()["provider"] == "deepseek"
+
+    # admin 写 → 200 并落库（deepseek 方向不依赖 CF 凭证，测试环境无 .env 也能过）
+    r = client.put(
+        "/api/settings/chat-provider",
+        json={"provider": "deepseek", "model": ""},
+        headers=_auth(admin),
+    )
+    assert r.status_code == 200, r.text
+    assert client.get("/api/settings/chat-provider", headers=_auth(admin)).json()["provider"] == "deepseek"

@@ -196,7 +196,14 @@ async function saveAuthor() {
 // ---------------------------------------------------------------- AI 对话供应商
 // deepseek（默认，全功能）/ cloudflare（Workers AI）。只影响对话轮次，
 // 摘要压缩/排版/标签等后台任务固定走 DeepSeek。
+//
+// **切换权收归管理员**（2026-10-19）：CF 通道不支持对话内工具、计费按
+// 估价，普通成员随手切的话，出问题（对话里调不了工具、用量对不上账）
+// 定位成本高。member 在这张卡上是只读的：控件全禁用 + 保存禁止，
+// 后端 PUT /settings/chat-provider 同样只放行 admin（403）。
 type ChatProvider = 'deepseek' | 'cloudflare'
+
+const providerReadonly = computed(() => !auth.isAdmin)
 
 const chatProvider = ref<ChatProvider>('deepseek')
 const chatModel = ref('')
@@ -250,6 +257,7 @@ function onProviderChange(v: string) {
 }
 
 async function saveChatProvider() {
+  if (providerReadonly.value) return // 双保险：按钮禁用了，函数这层也拦
   providerSaving.value = true
   try {
     await updateChatProvider({
@@ -420,11 +428,20 @@ onMounted(() => {
     </NCard>
 
     <!-- AI 对话供应商：DeepSeek（默认，全功能）/ Cloudflare Workers AI（免费额度大，
-         但不支持对话内工具调用、计费按估价）。只影响对话，后台任务仍走 DeepSeek。 -->
+         但不支持对话内工具调用、计费按估价）。只影响对话，后台任务仍走 DeepSeek。
+         切换权仅管理员（member 只读，后端同样 403）。 -->
     <NCard size="small" title="AI 对话">
+      <template #header-extra>
+        <NTag v-if="providerReadonly" size="small" :bordered="false" type="default">只读</NTag>
+      </template>
       <NSpin :show="cfModelsLoading">
         <div class="author-form">
-          <NRadioGroup :value="chatProvider" size="small" @update:value="onProviderChange">
+          <NRadioGroup
+            :value="chatProvider"
+            size="small"
+            :disabled="providerReadonly"
+            @update:value="onProviderChange"
+          >
             <NRadioButton value="deepseek">DeepSeek（默认）</NRadioButton>
             <NRadioButton value="cloudflare">Cloudflare Workers AI</NRadioButton>
           </NRadioGroup>
@@ -435,17 +452,26 @@ onMounted(() => {
             style="width: 340px"
             :options="cfModels.map((m) => ({ label: m.label, value: m.name }))"
             :loading="cfModelsLoading"
-            :disabled="!cfReady"
+            :disabled="!cfReady || providerReadonly"
             placeholder="选择对话模型"
             filterable
           />
-          <IconTextBtn name="check" type="primary" :loading="providerSaving" @click="saveChatProvider">
+          <IconTextBtn
+            name="check"
+            type="primary"
+            :loading="providerSaving"
+            :disabled="providerReadonly"
+            @click="saveChatProvider"
+          >
             保存
           </IconTextBtn>
         </div>
       </NSpin>
       <div class="api-base-hint" style="margin-top: 8px; opacity: 0.75">
-        <template v-if="chatProvider === 'cloudflare'">
+        <template v-if="providerReadonly">
+          对话供应商由管理员统一配置，此处只读。当前通道：<b>{{ chatProvider === 'cloudflare' ? 'Cloudflare Workers AI' : 'DeepSeek' }}</b>。
+        </template>
+        <template v-else-if="chatProvider === 'cloudflare'">
           <template v-if="cfReady">
             <b>Cloudflare 模型不支持对话内工具</b>（查队列、推草稿箱等需切回
             DeepSeek），用量按估价计费；中文创作效果弱于 DeepSeek，严肃成稿建议默认通道。
