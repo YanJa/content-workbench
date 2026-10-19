@@ -258,8 +258,25 @@ async def fetch_hot_once(force: bool = False) -> dict:
             }
         )
 
-    snap_id = await _record_snapshot(ok=True, error=None, count=len(parsed), calls=calls)
+    # 快照 + 话题 + 额度计数**同一个事务**落库。
+    #
+    # 曾经分成两个事务（先 _record_snapshot 再写话题），进程在两次 commit
+    # 之间被杀会留下「没有话题的孤儿快照」——实测踩到：重启 uvicorn 的
+    # 瞬间正好卡在这个窗口，审计表里多出一条 item_count=30 但 0 话题的
+    # 记录，额度计数也少 1。窗口只有毫秒级，但原子写不要钱：要么整批
+    # 落库，要么什么都没有，不会出现半个批次。
     async with SessionLocal() as session:
+        snap_id = uuid.uuid4().hex
+        session.add(
+            HotSnapshot(
+                id=snap_id,
+                fetched_at=now,
+                item_count=len(parsed),
+                ok=True,
+                error=None,
+                api_calls=calls,
+            )
+        )
         for row in parsed:
             session.add(HotTopic(id=uuid.uuid4().hex, snapshot_id=snap_id, **row))
         await _bump_usage(session, calls)
