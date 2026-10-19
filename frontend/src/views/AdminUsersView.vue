@@ -24,7 +24,7 @@
  * admin 那一层刻意只给配额不给权限勾选：管理员权限固定全开，接口层直接
  * 400。但配额照配 —— 那是成本闸门，不是权限。
  */
-import { computed, h, onMounted, ref } from 'vue'
+import { computed, h, nextTick, onMounted, ref, watch } from 'vue'
 import {
   NAlert,
   NButton,
@@ -738,15 +738,60 @@ async function onDeleteInvite(item: InviteCodeItem) {
   }
 }
 
+/** 产品名与一句话简介 —— 复制邀请码时附在码前面（2026-10-19 反馈：
+ *  只发一个裸邀请码，对方没有上下文，不知道这是什么、去哪注册）。
+ *  文案摘自 README 开头的能力概述；要改产品口径改这里一处即可。 */
+const PRODUCT_NAME = '内容运营工作台'
+const PRODUCT_BLURB =
+  'AI 多轮对话创作公众号 / 小红书 / 抖音三平台内容，发布队列与公众号草稿箱一键管理'
+
+/** 注册地址：跟当前访问地址走；本地调试（localhost）发给别人无意义，回落公网域名 */
+function inviteOrigin(): string {
+  const origin = typeof window !== 'undefined' ? window.location.origin : ''
+  return /^https?:\/\/(localhost|127\.)/.test(origin) ? 'https://cwb.draftpaper.ltd' : origin
+}
+
+/** 合成可直接粘贴到微信 / 钉钉的邀请注册文案 */
+function buildInviteText(code: string): string {
+  return [
+    `【${PRODUCT_NAME}】${PRODUCT_BLURB}`,
+    '',
+    `邀请码：${code}`,
+    `注册地址：${inviteOrigin()}`,
+    '',
+    '打开注册地址，输入邀请码即可加入。',
+  ].join('\n')
+}
+
+// 剪贴板写入失败时的回退弹窗（HTTP 环境 / 权限被拒）：只读文本框 + 自动全选
+const showInviteTextModal = ref(false)
+const inviteTextDraft = ref('')
+
 async function onCopyInvite(code: string) {
+  const text = buildInviteText(code)
   try {
-    await navigator.clipboard.writeText(code)
-    message.success('已复制到剪贴板')
+    await navigator.clipboard.writeText(text)
+    message.success(`已复制邀请文案（${code}）`)
   } catch {
-    // 剪贴板 API 在非 https / 权限被拒时会失败，退回提示手动复制
-    message.info(`请手动复制：${code}`)
+    // 剪贴板 API 在非 https / 权限被拒时会失败 —— 多行文案没法用 toast 展示，
+    // 弹只读 textarea 并全选，用户一次 Ctrl+C 即可
+    inviteTextDraft.value = text
+    showInviteTextModal.value = true
   }
 }
+
+// 回退弹窗打开即全选：用户打开就能直接 Ctrl+C，不用再手动拖选
+// 用模板 ref 定位，避免 document.querySelector 误伤其他弹窗里的输入框
+const inviteTextInputRef = ref<InstanceType<typeof NInput> | null>(null)
+function selectInviteText() {
+  const el = inviteTextInputRef.value?.$el.querySelector('textarea')
+  el?.focus()
+  el?.select()
+}
+watch(showInviteTextModal, (open) => {
+  if (!open) return
+  nextTick(selectInviteText)
+})
 
 /** 开始编辑某条邀请码的渠道名 */
 function startEditNote(item: InviteCodeItem) {
@@ -799,7 +844,7 @@ const inviteColumns: DataTableColumns<InviteCodeItem> = [
           },
           { default: () => row.code },
         ),
-        actionBtn('copy', '复制邀请码', () => onCopyInvite(row.code)),
+        actionBtn('copy', '复制邀请文案', () => onCopyInvite(row.code)),
       ]),
   },
   {
@@ -1212,6 +1257,31 @@ onMounted(async () => {
         </div>
       </div>
     </NCard>
+
+    <!-- 剪贴板写入失败的回退：只读文本框 + 自动全选，一次 Ctrl+C 带走 -->
+    <NModal
+      v-model:show="showInviteTextModal"
+      preset="card"
+      title="复制邀请文案"
+      style="width: 520px"
+      :auto-focus="false"
+    >
+      <NInput
+        ref="inviteTextInputRef"
+        :value="inviteTextDraft"
+        type="textarea"
+        readonly
+        :rows="7"
+        style="font-family: inherit"
+        @update:value="(v: string) => (inviteTextDraft = v)"
+      />
+      <template #footer>
+        <div style="display: flex; justify-content: flex-end; gap: 8px">
+          <NButton size="small" @click="showInviteTextModal = false">关闭</NButton>
+          <NButton size="small" type="primary" @click="selectInviteText">全选</NButton>
+        </div>
+      </template>
+    </NModal>
 
     <NModal v-model:show="showCreate" preset="card" title="新建账号" style="width: 420px">
       <NForm label-placement="top">
