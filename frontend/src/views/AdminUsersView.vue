@@ -521,9 +521,16 @@ const columns = computed<DataTableColumns<AdminUser>>(() => [
   {
     title: '用户名',
     key: 'username',
+    // ⚠️ 必须给 width：fixed 布局下没有 width 的列会瓜分表格剩余空间 ——
+    // 其余 8 列全是固定 width，剩余全进了用户名列，截图里它一家独占
+    // 200px+（2026-10-19 反馈「web 端用户名列就很宽」）。
+    // ⚠️ 也别配 minWidth：naive 会把 minWidth 原样写进 col 的 min-width，
+    // 容器窄于列宽总和时 fixed 布局压缩列，min-width 先于 width 触底
+    // （1440 视口下 1138 容器，width:150 被 minWidth:140 钳成 140 实测）。
+    // minWidth 缺省时 naive 用 width 兜底，行为一致。
+    // 150 够放「admin + 我」，长用户名 ellipsis 兜底。
+    width: 150,
     // 移动端列会变窄：用 ellipsis 截断 + 原生 title 显示全名，避免长用户名换行撑高整行
-    minWidth: 140,
-    maxWidth: 220,
     render: (row) =>
       h('div', { style: 'display:flex;align-items:center;gap:6px;min-width:0' }, [
         h(
