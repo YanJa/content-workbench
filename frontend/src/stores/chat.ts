@@ -60,6 +60,25 @@ export const useChatStore = defineStore('chat', () => {
     messages.value = []
   }
 
+  /**
+   * 清空全部状态（登出/切换用户时调用）。
+   *
+   * 2026-10-19 实测 bug：登出只清了 auth store，本 store 的 messages /
+   * currentId / conversations 原样保留 —— 下个用户登录进对话页，看到的是
+   * 上家的提问与回答（会话列表却是新的，因为列表按 owner 重新拉过）。
+   * 更危险的是残留的 currentId 属于上家，此时发消息会把 conversation_id
+   * 指向上家的会话。所以登出必须整体重置，顺带中断进行中的流式请求。
+   */
+  function reset() {
+    controller?.abort()
+    controller = null
+    streaming.value = false
+    conversations.value = []
+    currentId.value = null
+    messages.value = []
+    platform.value = null
+  }
+
   async function removeConversation(id: string) {
     await convApi.deleteConversation(id)
     if (currentId.value === id) newConversation()
@@ -220,6 +239,7 @@ export const useChatStore = defineStore('chat', () => {
     loadConversations,
     openConversation,
     newConversation,
+    reset,
     removeConversation,
     renameConversation,
     send,

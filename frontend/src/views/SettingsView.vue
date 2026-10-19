@@ -35,6 +35,7 @@ import { checkHealth } from '@/api/http'
 import { listTools } from '@/api/tools'
 import { getApiBase, isCustomApiBase, setApiBase } from '@/api/config'
 import { useAuthStore } from '@/stores/auth'
+import { useChatStore } from '@/stores/chat'
 import IconTextBtn from '@/components/IconTextBtn.vue'
 import {
   checkWeChatAccount,
@@ -70,6 +71,7 @@ const model = computed(() => import.meta.env.VITE_MODEL_LABEL || 'deepseek-flash
 
 const router = useRouter()
 const auth = useAuthStore()
+const chat = useChatStore()
 
 // 走 vite dev server 时 /api 已由 proxy 转发到后端，手动指定地址是噪音；
 // 只有生产构建（dist 静态部署、没有 dev proxy）时才需要暴露这个配置。
@@ -129,6 +131,8 @@ function fmtReset(ts: number): string {
 }
 
 function onLogout() {
+  // 同 AppShell 登出：chat store 整体重置，防止下个用户看到上家对话
+  chat.reset()
   auth.logout()
   void router.replace('/login')
 }

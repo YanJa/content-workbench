@@ -27,6 +27,7 @@ import GuideTour from '@/components/GuideTour.vue'
 import { checkHealth } from '@/api/http'
 import { useQueueStore } from '@/stores/queue'
 import { useAuthStore } from '@/stores/auth'
+import { useChatStore } from '@/stores/chat'
 import { useOnboardingStore } from '@/stores/onboarding'
 import { useThemeStore } from '@/stores/theme'
 
@@ -35,6 +36,7 @@ const router = useRouter()
 const queue = useQueueStore()
 const onboarding = useOnboardingStore()
 const auth = useAuthStore()
+const chat = useChatStore()
 const theme = useThemeStore()
 const dialog = useDialog()
 
@@ -126,6 +128,9 @@ function onLogout() {
     positiveText: '退出',
     negativeText: '取消',
     onPositiveClick: () => {
+      // chat store 整体重置：否则下个用户登录进来会看到上家的对话
+      // （会话列表是按 owner 拉的所以正常，只有对话区残留 —— 2026-10-19 实测）
+      chat.reset()
       auth.logout()
       void router.replace('/login')
     },

@@ -471,7 +471,13 @@ watch(
 onMounted(async () => {
   syncViewport()
   window.addEventListener('resize', syncViewport)
-  void chat.loadConversations()
+  await chat.loadConversations()
+  // 兜底：currentId 指向的会话不属于当前用户（切换用户残留、会话被删），
+  // 打开也是 404 —— 直接回到空会话。登出时 chat.reset() 是主防线，
+  // 这里防的是「带 conversation_id 深链接打开」等边角路径。
+  if (chat.currentId && !chat.conversations.some((c) => c.id === chat.currentId)) {
+    chat.newConversation()
+  }
   await restoreFromQueue()
 })
 onBeforeUnmount(() => {
