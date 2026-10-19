@@ -525,13 +525,18 @@ const columns = computed<DataTableColumns<AdminUser>>(() => [
     minWidth: 140,
     maxWidth: 220,
     render: (row) =>
-      h('div', { style: 'display:flex;align-items:center;gap:6px' }, [
+      h('div', { style: 'display:flex;align-items:center;gap:6px;min-width:0' }, [
         h(
           'span',
           {
             title: row.username,
+            // ⚠️ 不能给这个 span 加 flex:1 —— 列宽被 minWidth 撑到 140 时，
+            // flex:1 会让 span 盒子占满剩余空间，把后面的「我 / 已停用」tag
+            // 推到列右缘：admin 这种短用户名行会出现「admin …30px… 我」的
+            // 大间隔（2026-10-19 用户截图反馈）。截断交给 max-width +
+            // ellipsis，tag 用 flex-shrink:0 保持紧跟用户名。
             style:
-              'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0',
+              'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:130px;min-width:0',
           },
           { default: () => row.username },
         ),
@@ -552,7 +557,10 @@ const columns = computed<DataTableColumns<AdminUser>>(() => [
       row.id === myId.value
         ? roleTag(row.role)
         : h(NSelect, {
-            size: 'small',
+            // 移动端用 tiny：small 的 select 高 28px，加 td padding 把行撑到
+            // 45px，窄屏一屏看不了几行（2026-10-19 反馈）。tiny 22px，
+            // 行高回落到和邀请码表一致的 38px 左右。桌面仍用 small。
+            size: isMobile.value ? 'tiny' : 'small',
             value: row.role,
             options: ROLE_OPTIONS,
             disabled: row.role === 'admin' && activeAdminCount.value <= 1,
@@ -566,6 +574,25 @@ const columns = computed<DataTableColumns<AdminUser>>(() => [
     width: 260,
     render: (row) => {
       const hint = quotaResetHint(row)
+      // 移动端：两行文字（摘要 + 重置时间）压成一行（ellipsis + title 全称），
+      // 窄屏横滚表格里两行文字会把行撑到 45-78px，一屏看不了两行用户
+      // （2026-10-19 反馈）。重置按钮保留 —— 单行高度内不撑行，且弹窗里
+      // 没有替代入口，去掉移动端就没法重置了。
+      if (isMobile.value) {
+        return h('div', { style: 'display:flex;align-items:center;gap:8px;min-width:0' }, [
+          h(
+            NText,
+            {
+              depth: 3,
+              title: hint ? `${quotaSummary(row)}（${hint}）` : quotaSummary(row),
+              style:
+                'font-size:12px;line-height:1.4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1',
+            },
+            { default: () => quotaSummary(row) },
+          ),
+          actionBtn('reset', '重置用量', () => onResetQuota(row), { disabled: resetting.value }),
+        ])
+      }
       return h('div', { style: 'display:flex;align-items:center;gap:8px' }, [
         h('div', { style: 'flex:1;min-width:0' }, [
           h(
@@ -837,7 +864,21 @@ const inviteColumns: DataTableColumns<InviteCodeItem> = [
   },
 ]
 
-onMounted(load)
+// 移动端断点与 AppShell 保持一致（768px）：账号表格在窄屏下走「单行摘要」
+// 渲染，避免两行配额文字把行撑高。初始值在 script 顶层就算好 —— 首渲染
+// 早于 onMounted，等挂载后再赋值会让移动端先闪一帧桌面布局。
+const isMobile = ref(
+  typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches,
+)
+
+onMounted(async () => {
+  const mq = window.matchMedia('(max-width: 767px)')
+  isMobile.value = mq.matches
+  mq.addEventListener('change', (e) => {
+    isMobile.value = e.matches
+  })
+  await load()
+})
 </script>
 
 <template>

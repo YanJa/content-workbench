@@ -10,7 +10,10 @@ node_modules/
 dist/
 
 # 运行时数据与敏感配置（sqlite 库、JWT secret、API key、上传产物）
-backend/data/
+# data/ 匹配任意层级 —— security.py 写的是相对路径 ./data/secret.key，
+# 从哪个目录误启动 uvicorn 就会在哪落一个，必须全层级拦住
+# （2026-10-19：曾因在 frontend/ 下误跑后端，把 secret.key 带进 git）
+data/
 .env
 backend/.env
 
