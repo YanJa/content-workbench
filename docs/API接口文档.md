@@ -487,6 +487,50 @@ ffmpeg -y -i out.mp4 -map 0:s:0 extracted.srt
 
 ---
 
+## 知乎热榜
+
+热榜由**后台定时任务**每半小时抓一次落库（`services/zhihu.py` 的 `loop_hot_fetch`，挂 lifespan），
+对话页「不知道写什么」时从本地库读给用户看。**用户浏览不消耗知乎额度**，额度只在抓取时花。
+
+| 方法 | 路径 | 权限 | 说明 |
+|---|---|---|---|
+| GET | `/api/zhihu/hot?limit=&sort=trend\|rank` | 登录即可 | 当前热榜 + 趋势信号，读本地库 |
+| POST | `/api/zhihu/refresh` | 仅管理员 | 手动抓一次（`force`，跳水位保护），**消耗 1 次共享额度** |
+| GET | `/api/zhihu/status` | 仅管理员 | 连通性 + 额度自查（会消耗 1 次额度） |
+
+`GET /api/zhihu/hot` 响应（节选）：
+
+```json
+{
+  "ok": true,
+  "fetched_at": 1792419858,
+  "interval_minutes": 30,
+  "items": [
+    {
+      "question_id": "question_525603632",
+      "title": "能不能建议修改火车开车前五分钟停止检票？",
+      "url": "https://www.zhihu.com/question/525603632",
+      "summary": "……平台白送的约 200 字摘要，可能为 null……",
+      "thumbnail_url": null,
+      "rank": 8,
+      "climb": 4,
+      "is_new": true,
+      "staying_hours": 0.3,
+      "seen_times": 1,
+      "heat_score": 0.533
+    }
+  ]
+}
+```
+
+字段口径（前端**只展示、不复刻计算**）：
+
+- `climb`：与上一次成功抓取的名次差，正数 = 在往上冲；`is_new`：今天首次进榜；`staying_hours`：首次进榜距今小时数（越大越是长线议题，不抢时效）；
+- `heat_score = 爬升分*0.6 + 名次分*0.4`（默认 `sort=trend` 按它排）——「正在冲」的权重高于「名次高」，因为后者用户自己看榜单就知道；
+- `ok=false` 时响应带 `configured`（是否配了 `ZHIHU_ACCESS_SECRET`）与 `error`，前端据此显示「未配置 / 准备中」弱提示，不当成故障弹错。
+
+---
+
 ## 声音复刻
 
 「提取我的声音」= 声音复刻（voice cloning）。用户传一段自己的录音，系统抽取出
