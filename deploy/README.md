@@ -22,6 +22,29 @@ bash deploy/install-autostart.sh --uninstall # 停止并移除
 所以「真·开机自启」在当前沙箱形态下做不到，退而求其次：
 **一次命令重建全部托管关系**，比手动起三个进程省事得多。
 
+#### ⚠️ 运行期也会被冲掉（2026-10-19 实测，比休眠更隐蔽）
+
+tmpfs 不只在「容器启动」时重建——平台 `workspace-init/init` 在**运行期也会反复跑**
+（实测 10-19 当天 09:32 容器启动跑过一次、09:49 又跑过一次，伴随 editor-sdk /
+sync-server 一起重启）。每次冲掉后：
+
+| 现象 | 说明 |
+|---|---|
+| `cwb-*` 四个 program 从 supervisord **整体消失** | 连 uvicorn 都被 stop，不只是隧道 |
+| 站点 502 | 代理机 18080 无监听，nginx 回源失败 |
+| supervisord 主进程 uptime 正常 | **看不出重启过**，容易误判 |
+
+对策是 `cwb-autorestore.sh` 看门狗（独立 setsid 进程，不挂 supervisord，平台
+reload 动不了它），每 20s 巡检 `cwb.conf` 是否还在 include 目录、`cwb-tunnel`
+是否还在 supervisord 里，缺任何一个就自动重跑 `install-autostart.sh`（幂等）：
+
+```bash
+setsid bash deploy/cwb-autorestore.sh >/tmp/cwb-autorestore.log 2>&1 &
+```
+
+> 局限说清楚：看门狗治的是「运行期被冲掉」；**沙箱休眠/容器重启照样会杀它**，
+> 那种情况仍需手动跑一次 `install-autostart.sh`（见下文）。
+
 ### ⚠️ 沙箱休眠会杀掉长渲染任务（实测踩过）
 
 沙箱**在闲置或资源紧张时会休眠重启**。实测 2026-10-15 晚上：复刻音色渲染跑了 70 分钟、
