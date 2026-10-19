@@ -25,10 +25,12 @@ import json
 import re
 import shutil
 import time
+import uuid
 from collections import defaultdict
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -38,7 +40,7 @@ from app.core import invite as invite_mod
 from app.core.logging import logger
 from app.core.rbac import ROLE_MEMBER
 from app.core.security import create_token, hash_password, link_url, verify_password
-from app.core.tenant import current_user
+from app.core.tenant import current_user, link_auth
 from app.db.session import get_db
 from app.models.content import Content, QueueItem
 from app.models.conversation import Conversation
@@ -66,6 +68,14 @@ class UserOut(BaseModel):
     id: str
     username: str
     created_at: int
+    # 展示资料（2026-10-19 用户中心上线补的）。都可空 = 用户没填过，
+    # 前端一律 nickname || username 兜底。email 不用于登录。
+    nickname: str | None = None
+    email: str | None = None
+    # 头像签名直链（HMAC 隔离，见 core/security.link_url）。NULL = 未设置，
+    # 前端渲染「用户名首字母」圆徽。路径恒定 avatars/<uid>.jpg —— 上传时
+    # 后端统一裁剪转码，原格式原尺寸不落地。
+    avatar_url: str | None = None
     # 角色与停用状态：前端据此决定菜单显隐（role）与是否踢回登录页
     role: str = ROLE_MEMBER
     is_active: bool = True
@@ -88,6 +98,14 @@ class TokenOut(BaseModel):
     claimed: dict | None = None
 
 
+def _avatar_url(user: User) -> str | None:
+    """头像签名直链。没设置返回 None（前端回落首字母圆徽）。"""
+    if not user.avatar:
+        return None
+    path = f"{settings.API_PREFIX}/auth/avatar/{user.id}.jpg"
+    return link_url(path, user.id)
+
+
 async def _user_out(user: User, db: AsyncSession | None = None) -> UserOut:
     """用户信息出参。
 
@@ -99,6 +117,9 @@ async def _user_out(user: User, db: AsyncSession | None = None) -> UserOut:
         id=user.id,
         username=user.username,
         created_at=user.created_at,
+        nickname=user.nickname,
+        email=user.email,
+        avatar_url=_avatar_url(user),
         role=user.role,
         is_active=user.is_active,
         invite_code=user.invite_code,
@@ -366,3 +387,163 @@ async def me(user: User = Depends(current_user), db: AsyncSession = Depends(get_
     不会多开一条连接。
     """
     return await _user_out(user, db)
+
+
+# ---------------------------------------------------------------- 个人资料
+# 邮箱格式：宽松版（本地 @ 域名，域名至少一个点）。刻意不引 email-validator
+# 之类的库 —— 这里的邮箱只是联系方式，不用于登录、不发验证信，
+# 格式离谱到收不到信的程度由用户自己承担。
+_EMAIL_RE = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
+
+
+class ProfileUpdate(BaseModel):
+    """个人中心保存的资料。两个字段都可空：
+
+    - 不传（None）= 不改这一项；
+    - 传空串 = 清空（回到「未设置」，前端显示名回落 username）；
+    - 用户名（username）**不可改** —— 它是登录凭据，改了引用它的地方
+      （别人分享的直链不带用户名，但管理员后台按用户名定位人）都会断。
+    """
+
+    nickname: str | None = Field(default=None, max_length=64)
+    email: str | None = Field(default=None, max_length=128)
+
+
+@router.put("/profile", response_model=UserOut)
+async def update_profile(
+    req: ProfileUpdate,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """改自己的昵称 / 邮箱。只动当前登录用户（`current_user` 就是凭据），
+    不接受 id 参数 —— 改别人资料是用户管理（admin）的职责。
+    """
+    nickname = req.nickname.strip() if req.nickname is not None else None
+    email = req.email.strip() if req.email is not None else None
+
+    if nickname is not None:
+        user.nickname = nickname or None
+    if email is not None:
+        if email and not _EMAIL_RE.fullmatch(email):
+            raise HTTPException(422, "邮箱格式不正确")
+        if email:
+            # 查重排除自己：没改邮箱重复保存不该被 409 挡住
+            taken = (
+                await db.execute(select(User.id).where(User.email == email, User.id != user.id))
+            ).first()
+            if taken:
+                raise HTTPException(409, "该邮箱已被其他账号使用")
+        user.email = email or None
+
+    await db.commit()
+    logger.info("用户更新个人资料: %s (id=%s)", user.username, user.id)
+    return await _user_out(user, db)
+
+
+# ---------------------------------------------------------------- 头像
+# 为什么上传后要重做：用户会传手机相机直出的 4MB 照片（还带 EXIF 方向），
+# 直接落地既占存储又拖慢每一个渲染头像的页面。统一裁成 256×256 JPEG：
+# 尺寸恒定（文件名就能用 uid，换图天然覆盖）、体积 ~10-20KB、
+# 没有 EXIF/透明度这些跨端幺蛾子。
+_AVATAR_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
+_AVATAR_MAX_BYTES = 2 * 1024 * 1024  # 2MB：原图上限，裁完只会更小
+_AVATAR_SIZE = 256
+_AVATAR_JPEG_Q = 85
+
+
+def _process_avatar(data: bytes) -> bytes:
+    """任意受支持格式的图片字节 → 256×256 居中裁剪 JPEG 字节。
+
+    透明通道先贴白底再转 RGB —— JPEG 没有 alpha，直接转会把透明像素
+    变成黑色（naive-ui 顶栏是深色主题的话尤其明显）。
+    """
+    import io
+
+    from PIL import Image, ImageOps
+
+    try:
+        img = Image.open(io.BytesIO(data))
+        img = ImageOps.exif_transpose(img)  # 手机照片不带这步会躺倒
+        img.load()
+    except Exception as exc:  # noqa: BLE001 —— Pillow 的异常类型太杂，统一挡
+        raise HTTPException(400, "图片解析失败，请换一张试试") from exc
+
+    if img.mode in ("RGBA", "LA", "P"):
+        img = img.convert("RGBA")
+        bg = Image.new("RGBA", img.size, (255, 255, 255, 255))
+        img = Image.alpha_composite(bg, img)
+    img = img.convert("RGB")
+
+    w, h = img.size
+    side = min(w, h)
+    left, top = (w - side) // 2, (h - side) // 2
+    img = img.crop((left, top, left + side, top + side))
+    if side > _AVATAR_SIZE:
+        img = img.resize((_AVATAR_SIZE, _AVATAR_SIZE), Image.LANCZOS)
+
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=_AVATAR_JPEG_Q)
+    return buf.getvalue()
+
+
+@router.post("/avatar", response_model=UserOut)
+async def upload_avatar(
+    file: UploadFile = File(...),
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """上传/更换自己的头像。裁成 256×256 JPEG 存 `avatars/<uid>.jpg`。
+
+    文件名固定用 uid：换图直接覆盖，**不需要先删旧的**（也不会攒下一堆
+    历史文件）。只动当前登录用户 —— 改别人头像是用户管理的事，这里没有
+    id 参数可传。
+    """
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in _AVATAR_SUFFIXES:
+        raise HTTPException(400, "头像仅支持 png / jpg / webp 格式")
+
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "上传文件为空")
+    if len(data) > _AVATAR_MAX_BYTES:
+        raise HTTPException(400, "图片超过 2MB，请压缩后再传")
+
+    out_dir = Path(settings.UPLOAD_DIR) / "avatars"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / f"{user.id}.jpg").write_bytes(_process_avatar(data))
+
+    user.avatar = f"avatars/{user.id}.jpg"
+    await db.commit()
+    logger.info("用户更新头像: %s (id=%s)", user.username, user.id)
+    return await _user_out(user, db)
+
+
+@router.delete("/avatar", response_model=UserOut)
+async def delete_avatar(user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    """删除头像，回到「用户名首字母」圆徽。文件删不删无所谓紧要
+    （uid 固定名，下次上传直接覆盖），但还是清一下，省得磁盘里躺着
+    没人引用的图。"""
+    if user.avatar:
+        try:
+            (Path(settings.UPLOAD_DIR) / user.avatar).unlink(missing_ok=True)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("删除头像文件失败 %s: %s", user.avatar, exc)
+        user.avatar = None
+        await db.commit()
+        logger.info("用户删除头像: %s (id=%s)", user.username, user.id)
+    return await _user_out(user, db)
+
+
+@router.get("/avatar/{user_id}.jpg")
+async def serve_avatar(user_id: str, owner: str = Depends(link_auth)):
+    """头像静态服务（HMAC 签名直链隔离，同二维码那套，见 core/security.link_url）。
+
+    路径带 uid 文件名而不是任意文件名：用户只能签自己的头像 URL
+    （link_url 绑 uid），拿到别人的链接也过不了签名。
+    """
+    if not re.fullmatch(r"[0-9a-f]{32}", user_id):
+        raise HTTPException(404, "头像不存在")
+    f = Path(settings.UPLOAD_DIR) / "avatars" / f"{user_id}.jpg"
+    if not f.exists() or not f.is_file():
+        raise HTTPException(404, "头像不存在")
+    return FileResponse(f, media_type="image/jpeg")

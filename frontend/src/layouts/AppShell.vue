@@ -18,6 +18,7 @@ import {
   NMenu,
   NBadge,
   NButton,
+  NDropdown,
   useDialog,
   type MenuOption,
 } from 'naive-ui'
@@ -61,7 +62,7 @@ const NAV: NavItem[] = [
   { key: 'queue', icon: 'queue', label: '发布队列', perm: 'menu.queue' },
   { key: 'video', icon: 'video', label: '视频生产', perm: 'menu.video' },
   { key: 'usage', icon: 'usage', label: 'AI 用量', perm: 'menu.usage' },
-  { key: 'settings', icon: 'activity', label: '系统状态', perm: 'menu.settings' },
+  { key: 'settings', icon: 'activity', label: '系统设置', perm: 'menu.settings' },
   { key: 'admin-users', icon: 'users', label: '用户管理', adminOnly: true },
 ]
 
@@ -135,6 +136,28 @@ function onLogout() {
       void router.replace('/login')
     },
   })
+}
+
+/**
+ * 顶栏用户区：头像 + 昵称（回落用户名）合成一个下拉入口，
+ * 「个人中心」与「退出登录」收在里面 —— 顶栏就那么大点地方，
+ * 摊两个按钮既挤又和信息架构上的「用户级功能」不搭。
+ */
+const userDisplayName = computed(() => auth.user?.nickname || auth.user?.username || '')
+
+const userAvatarText = computed(() => (userDisplayName.value[0] || '?').toUpperCase())
+
+const userMenuOptions: MenuOption[] = [
+  { key: 'profile', label: '个人中心' },
+  { key: 'logout', label: '退出登录' },
+]
+
+function onUserMenuSelect(key: string) {
+  if (key === 'profile') {
+    void router.push({ name: 'profile' })
+  } else if (key === 'logout') {
+    onLogout()
+  }
 }
 
 /** 手动重看引导：清掉「已看过」标记再打开。 */
@@ -240,10 +263,20 @@ onMounted(async () => {
                     {{ llmReady ? 'AI 已就绪' : 'AI 未配置' }}
                   </span>
                 </NBadge>
-                <span class="user-name" :title="`账号：${auth.user?.username ?? ''}`">
-                  {{ auth.user?.username }}
-                </span>
-                <NButton size="small" quaternary @click="onLogout">退出</NButton>
+                <NDropdown :options="userMenuOptions" trigger="hover" @select="onUserMenuSelect">
+                  <NButton size="small" quaternary class="user-trigger">
+                    <img
+                      v-if="auth.user?.avatar_url"
+                      class="user-avatar"
+                      :src="auth.user.avatar_url"
+                      alt="头像"
+                    />
+                    <span v-else class="user-avatar">{{ userAvatarText }}</span>
+                    <span class="user-name" :title="`账号：${auth.user?.username ?? ''}`">
+                      {{ userDisplayName }}
+                    </span>
+                  </NButton>
+                </NDropdown>
                 <NButton
                   size="small"
                   quaternary
@@ -406,7 +439,7 @@ onMounted(async () => {
   padding: 2px 6px;
 }
 
-/* 头部当前账号名 + 退出（用户模块） */
+/* 头部当前账号（昵称优先，回落用户名）+ 退出（用户模块） */
 .user-name {
   font-size: 12px;
   color: var(--app-text-2);
@@ -414,6 +447,28 @@ onMounted(async () => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 用户下拉触发器：头像圆点 + 名字，hover 出菜单 */
+.user-trigger {
+  gap: 10px;
+  align-items: center;
+}
+
+.user-avatar {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: linear-gradient(135deg, var(--app-primary), var(--app-purple));
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: #fff;
+  /* 上传的头像图：裁好的方图，cover 保平安（极端比例下也不变形） */
+  object-fit: cover;
 }
 
 /* 注：认证页（登录/注册）是顶层路由，不套这层壳，

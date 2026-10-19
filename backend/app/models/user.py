@@ -11,6 +11,11 @@
 头像 / 部门）：这个工作台是单人自用 + 邀请制小团队的工具，不是 To C 产品。
 字段按需再加，表越简单迁移越省事 —— 角色是因为要做 RBAC 才加的，
 停用是为了「保留数据但收回门禁」而加的，其余仍然没有。
+
+2026-10-19 又补了 nickname / email：用户中心（顶栏下拉 → 个人中心）要
+改自己的资料。两个都可空 —— 存量用户没填过，用户名仍是唯一登录凭据；
+email **不用于登录、不做唯一索引**（NULL 在 SQLite/Postgres 里本就允许多条，
+强制唯一得建部分索引，应用层查重就够：个人中心保存时查一次重名）。
 """
 from __future__ import annotations
 
@@ -36,6 +41,19 @@ class User(Base):
     username: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     # bcrypt 哈希固定 60 字符（$2b$ + 成本因子 + 22 位 salt + 31 位摘要）
     password_hash: Mapped[str] = mapped_column(String(60))
+
+    # 昵称（展示用）：顶栏、个人中心显示它而不是 username。可空 = 未设置，
+    # 前端一律 `nickname || username` 兜底。**不唯一** —— 重名无所谓，
+    # 数据隔离靠 id 不靠名字。
+    nickname: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+    # 头像（展示用）：存**相对 UPLOAD_DIR 的路径** `avatars/<uid>.jpg`，
+    # 可空 = 未设置（前端回落成「用户名首字母」圆徽）。上传时由后端统一
+    # 居中裁剪成 256×256 JPEG（见 routers/auth.py 的 /auth/avatar），
+    # 所以路径后缀恒定 .jpg —— 不保留用户上传的原格式/原尺寸。
+    avatar: Mapped[str | None] = mapped_column(String(256), nullable=True, default=None)
+    # 邮箱（联系方式）：不用于登录、不建唯一索引（NULL 可重复），保存时
+    # 应用层查重（见 routers/auth.py 的 PUT /auth/profile）。
+    email: Mapped[str | None] = mapped_column(String(128), nullable=True, default=None)
 
     # 角色：只有 'admin' / 'member' 两级，常量见 app/core/rbac.py。
     # 这里 default 写字面量而不 import rbac —— rbac 依赖 models，

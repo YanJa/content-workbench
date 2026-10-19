@@ -54,7 +54,21 @@ const router = createRouter({
           path: 'settings',
           name: 'settings',
           component: () => import('@/views/SettingsView.vue'),
-          meta: { title: '系统状态', desc: '服务健康、工具清单、配置检查', icon: '⚙', perm: 'menu.settings' },
+          meta: {
+            title: '系统设置',
+            desc: '服务健康、工具清单、凭证与环境变量',
+            icon: '⚙',
+            perm: 'menu.settings',
+          },
+        },
+        // 个人中心：**刻意不进侧栏菜单**。它是按用户走的（顶栏头像下拉进入），
+        // 不是按功能模块走的 —— 侧栏那一列是「活儿」，这里是「我是谁」。
+        // 也不挂 perm：所有人都该能改自己的资料。
+        {
+          path: 'profile',
+          name: 'profile',
+          component: () => import('@/views/ProfileView.vue'),
+          meta: { title: '个人中心', desc: '账号资料、偏好与个人配额', icon: '👤' },
         },
         {
           path: 'admin/users',

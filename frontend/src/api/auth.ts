@@ -39,6 +39,21 @@ export interface AuthUser {
   id: string
   username: string
   created_at: number
+  /**
+   * 昵称（展示用）。未设置时为 null —— 顶栏 / 个人中心一律
+   * `nickname || username` 兜底。**不唯一**，数据隔离靠 id。
+   */
+  nickname: string | null
+  /**
+   * 头像签名直链（后端裁剪成的 256×256 JPEG，HMAC 隔离）。null = 未设置，
+   * 顶栏 / 个人中心渲染「用户名首字母」圆徽。
+   */
+  avatar_url: string | null
+  /**
+   * 邮箱（联系方式）。不用于登录、不唯一索引。null = 未设置；
+   * 后端保存时查重（被别的账号占了会 409）。
+   */
+  email: string | null
   /** 角色：决定侧栏菜单显隐与管理端点能否调用 */
   role: Role
   /** 停用后所有 Bearer 请求当场 401，不等令牌过期 */
@@ -53,6 +68,8 @@ export interface AuthUser {
   quotas: Record<string, QuotaConf>
   /** 各功能本周期用量：{ feature: QuotaUsage } */
   usage: Record<string, QuotaUsage>
+  /** 注册时用的邀请码。空 = 首用户 / 代建 / 预置 admin */
+  invite_code: string | null
 }
 
 /** 首用户注册时的存量认领摘要（后端 `_claim_legacy_data` 返回） */
@@ -92,5 +109,34 @@ export async function register(
 
 export async function getMe(): Promise<AuthUser> {
   const { data } = await http.get<AuthUser>('/auth/me')
+  return data
+}
+
+/** 个人中心保存资料。传了哪个字段就改哪个；空串 = 清空（回落用户名）。 */
+export async function updateProfile(patch: {
+  nickname?: string
+  email?: string
+}): Promise<AuthUser> {
+  const { data } = await http.put<AuthUser>('/auth/profile', patch)
+  return data
+}
+
+/**
+ * 上传/更换头像。后端会居中裁剪成 256×256 JPEG（透明贴白底），
+ * 原格式原尺寸不落地。限制：png/jpg/webp、≤2MB。
+ */
+export async function uploadAvatar(file: File): Promise<AuthUser> {
+  const form = new FormData()
+  form.append('file', file)
+  const { data } = await http.post<AuthUser>('/auth/avatar', form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 60000,
+  })
+  return data
+}
+
+/** 删除头像，回到「用户名首字母」圆徽。 */
+export async function deleteAvatar(): Promise<AuthUser> {
+  const { data } = await http.delete<AuthUser>('/auth/avatar')
   return data
 }

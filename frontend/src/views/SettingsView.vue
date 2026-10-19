@@ -1,12 +1,12 @@
 <script setup lang="ts">
 /**
- * 系统状态页。
- * 把「服务能不能跑」「AI 配没配」「有哪些工具」「哪些操作要人工确认」
- * 这几件事摊开给运营同学看，出问题能自己定位。
+ * 系统设置页。
+ * 只讲「这套系统怎么样」—— 服务健康、可用工具、公众号凭证、环境变量
+ * 对照、成本提示。**和「我」相关的设置**（账号资料、使用配额、作者
+ * 信息、AI 对话偏好）在个人中心（顶栏头像下拉进入），不在这里。
  */
 import { computed, h, onMounted, ref } from 'vue'
 import { actionBtn } from '@/utils/actionBtn'
-import { useRouter } from 'vue-router'
 import {
   NAlert,
   NBadge,
@@ -15,9 +15,6 @@ import {
   NDescriptions,
   NDescriptionsItem,
   NDivider,
-  NRadioButton,
-  NRadioGroup,
-  NSelect,
   NSpin,
   NTag,
   NText,
@@ -34,20 +31,13 @@ import {
 import { checkHealth } from '@/api/http'
 import { listTools } from '@/api/tools'
 import { getApiBase, isCustomApiBase, setApiBase } from '@/api/config'
-import { useAuthStore } from '@/stores/auth'
-import { useChatStore } from '@/stores/chat'
 import IconTextBtn from '@/components/IconTextBtn.vue'
 import {
   checkWeChatAccount,
   createWeChatAccount,
   deleteWeChatAccount,
-  getAuthorInfo,
-  getChatProvider,
-  getCloudflareModels,
   listWeChatAccounts,
   setDefaultWeChatAccount,
-  updateAuthorInfo,
-  updateChatProvider,
   updateWeChatAccount,
   uploadWeChatQrcode,
   type WeChatAccountPayload,
@@ -69,10 +59,6 @@ const err = ref('')
 
 const model = computed(() => import.meta.env.VITE_MODEL_LABEL || 'deepseek-flash')
 
-const router = useRouter()
-const auth = useAuthStore()
-const chat = useChatStore()
-
 // 走 vite dev server 时 /api 已由 proxy 转发到后端，手动指定地址是噪音；
 // 只有生产构建（dist 静态部署、没有 dev proxy）时才需要暴露这个配置。
 const showApiBase = import.meta.env.PROD
@@ -83,59 +69,6 @@ const apiBaseSaved = ref(getApiBase())
 const apiBaseMsg = ref('')
 
 const usingCustom = computed(() => isCustomApiBase())
-
-// ---- 账号（用户模块：数据归属 = 登录身份，见 backend/app/core/tenant.py）----
-const createdAtText = computed(() => {
-  const ts = auth.user?.created_at
-  if (!ts) return '-'
-  return new Date(ts * 1000).toLocaleString('zh-CN', { hour12: false })
-})
-
-interface QuotaRow {
-  feature: string
-  label: string
-  used: number
-  limit: number | null
-  unlimited: boolean
-  left: number | null
-  periodLabel: string
-  resetText: string
-}
-
-/**
- * 我的配额。只列**设了上限**的功能 —— 五个全列出来大半是「不限」，
- * 反而把真正有用的信息淹了。
- */
-const quotaRows = computed<QuotaRow[]>(() => {
-  const out: QuotaRow[] = []
-  for (const [feature, snap] of Object.entries(auth.usage)) {
-    if (!snap || snap.unlimited) continue
-    out.push({
-      feature,
-      label: snap.label,
-      used: snap.used,
-      limit: snap.limit,
-      unlimited: false,
-      left: snap.left,
-      periodLabel: snap.period === 'month' ? '每月' : '每日',
-      resetText: fmtReset(snap.reset_at),
-    })
-  }
-  return out
-})
-
-function fmtReset(ts: number): string {
-  const d = new Date(ts * 1000)
-  const p = (n: number) => String(n).padStart(2, '0')
-  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
-}
-
-function onLogout() {
-  // 同 AppShell 登出：chat store 整体重置，防止下个用户看到上家对话
-  chat.reset()
-  auth.logout()
-  void router.replace('/login')
-}
 
 function applyApiBase() {
   const next = setApiBase(apiBaseInput.value)
@@ -166,8 +99,6 @@ async function refresh() {
     health.value = healthData as Health
     tools.value = toolList
     void loadWeChat()
-    void loadAuthor()
-    void loadChatProvider()
   } catch (e) {
     err.value = (e as Error).message
   } finally {
@@ -242,115 +173,6 @@ async function loadWeChat() {
     console.warn('加载公众号列表失败', (e as Error).message)
   } finally {
     wechatLoading.value = false
-  }
-}
-
-// ---------------------------------------------------------------- 作者信息
-const authorName = ref('')
-const authorIntro = ref('')
-const authorLoading = ref(false)
-const authorSaving = ref(false)
-
-// 占位符字面量（放常量里，避免模板里写 `{{...}}` 被 Vue 当插值解析）
-const AUTHOR_PH_NAME = '{{作者名}}'
-const AUTHOR_PH_INTRO = '{{一句话简介}}'
-
-async function loadAuthor() {
-  authorLoading.value = true
-  try {
-    const a = await getAuthorInfo()
-    authorName.value = a.author_name || ''
-    authorIntro.value = a.author_intro || ''
-  } catch (e) {
-    console.warn('加载作者信息失败', (e as Error).message)
-  } finally {
-    authorLoading.value = false
-  }
-}
-
-async function saveAuthor() {
-  authorSaving.value = true
-  try {
-    await updateAuthorInfo({
-      author_name: authorName.value.trim(),
-      author_intro: authorIntro.value.trim(),
-    })
-    message.success('已保存')
-  } catch (e) {
-    message.error(`保存失败：${(e as Error).message}`)
-  } finally {
-    authorSaving.value = false
-  }
-}
-
-// ---------------------------------------------------------------- AI 对话供应商
-// deepseek（默认，全功能）/ cloudflare（Workers AI）。只影响对话轮次，
-// 摘要压缩/排版/标签等后台任务固定走 DeepSeek。
-type ChatProvider = 'deepseek' | 'cloudflare'
-
-const chatProvider = ref<ChatProvider>('deepseek')
-const chatModel = ref('')
-const cfReady = ref(false)
-const cfModels = ref<{ name: string; label: string }[]>([])
-const cfModelsLoading = ref(false)
-const cfModelsErr = ref('')
-const providerSaving = ref(false)
-
-async function loadChatProvider() {
-  try {
-    const p = await getChatProvider()
-    chatProvider.value = p.provider === 'cloudflare' ? 'cloudflare' : 'deepseek'
-    chatModel.value = p.model || ''
-    cfReady.value = p.cloudflare_ready
-    // 已是 CF 供应商且凭证就位 → 顺手把模型清单拉上，下拉直接有值
-    if (chatProvider.value === 'cloudflare' && cfReady.value) void loadCfModels()
-  } catch (e) {
-    console.warn('加载对话供应商失败', (e as Error).message)
-  }
-}
-
-async function loadCfModels() {
-  cfModelsLoading.value = true
-  cfModelsErr.value = ''
-  try {
-    cfModels.value = await getCloudflareModels()
-    // 已存的模型不在清单里（换账号/模型下线）→ 兜底插一条，别让下拉显示空、
-    // 用户一保存又把它冲掉
-    if (chatModel.value && !cfModels.value.some((m) => m.name === chatModel.value)) {
-      cfModels.value = [
-        { name: chatModel.value, label: `${chatModel.value}（已不在线）` },
-        ...cfModels.value,
-      ]
-    }
-  } catch (e) {
-    cfModelsErr.value = (e as Error).message || '拉取失败'
-  } finally {
-    cfModelsLoading.value = false
-  }
-}
-
-function onProviderChange(v: string) {
-  chatProvider.value = v === 'cloudflare' ? 'cloudflare' : 'deepseek'
-  if (chatProvider.value === 'cloudflare') {
-    if (cfReady.value && !cfModels.value.length && !cfModelsLoading.value) void loadCfModels()
-  } else {
-    // 切回 DeepSeek 清掉 CF 模型选择，防止把 CF 模型名留给默认通道
-    chatModel.value = ''
-  }
-}
-
-async function saveChatProvider() {
-  providerSaving.value = true
-  try {
-    await updateChatProvider({
-      provider: chatProvider.value,
-      model: chatProvider.value === 'cloudflare' ? chatModel.value : '',
-    })
-    message.success('已保存，下一轮对话生效')
-  } catch (e) {
-    message.error(`保存失败：${(e as Error).message}`)
-  } finally {
-    providerSaving.value = false
   }
 }
 
@@ -591,119 +413,8 @@ const envColumns: DataTableColumns<EnvRow> = [
         </div>
       </NCard>
 
-      <!-- 账号：所有内容/队列/公众号账号/用量都按登录身份隔离 -->
-      <NCard size="small" title="账号" style="margin-bottom: 16px">
-        <div class="api-base-hint">
-          当前账号：<code>{{ auth.user?.username }}</code>
-          <NTag
-            size="tiny"
-            :bordered="false"
-            :type="auth.isAdmin ? 'warning' : 'default'"
-            style="margin-left: 6px"
-          >
-            {{ auth.isAdmin ? '管理员' : '普通成员' }}
-          </NTag>
-        </div>
-        <div class="api-base-hint" style="margin-top: 6px; opacity: 0.75">
-          注册时间：{{ createdAtText }}。内容、发布队列、公众号账号、AI
-          用量、复刻音色都按登录身份隔离，互相不可见。
-          <IconTextBtn name="power" size="tiny" style="margin-left: 8px" @click="onLogout">退出登录</IconTextBtn>
-        </div>
-
-        <!-- 我的配额：按钮级权限管控的几个花钱功能，还剩多少一眼可见 -->
-        <div v-if="quotaRows.length" class="quota-list">
-          <div class="quota-list-title">我的使用配额</div>
-          <div v-for="q in quotaRows" :key="q.feature" class="quota-line">
-            <span class="quota-name">{{ q.label }}</span>
-            <span v-if="q.unlimited" class="quota-val muted">不限</span>
-            <span v-else class="quota-val" :class="{ danger: q.left === 0 }">
-              {{ q.used }} / {{ q.limit }}
-              <span class="quota-period">（{{ q.periodLabel }}，{{ q.resetText }} 重置）</span>
-            </span>
-          </div>
-          <div class="quota-note">
-            超额会被直接拦下（HTTP 429）。次数按北京时间计算，提交即预扣 ——
-            异步任务（渲染/排版/复刻）资源在提交时就已经花出去了，失败不退还；
-            只有推送草稿能同步判成败，失败会自动退还。
-          </div>
-        </div>
-      </NCard>
-
-      <!-- 作者信息：排版时自动替换正文里的 {{作者名}} / {{一句话简介}} 占位符 -->
-      <NCard size="small" title="作者信息" style="margin-bottom: 16px">
-        <NSpin :show="authorLoading">
-          <div class="author-form">
-            <NInput
-              v-model:value="authorName"
-              size="small"
-              style="width: 180px"
-              placeholder="作者名（如：甲木）"
-            />
-            <NInput
-              v-model:value="authorIntro"
-              size="small"
-              style="width: 340px"
-              placeholder="一句话简介（如：专注 AI 观察与干货）"
-            />
-            <IconTextBtn name="check" type="primary" :loading="authorSaving" @click="saveAuthor">
-              保存
-            </IconTextBtn>
-          </div>
-        </NSpin>
-        <div class="api-base-hint" style="margin-top: 8px; opacity: 0.75">
-          排版时，正文里的
-          <code v-text="AUTHOR_PH_NAME" /> 和 <code v-text="AUTHOR_PH_INTRO" />
-          会自动替换成这里填的值。留空则不替换（保留占位符提醒你去填）。
-          加工排版面板里也能临时改这一篇的作者信息。
-        </div>
-      </NCard>
-
-      <!-- AI 对话供应商：DeepSeek（默认，全功能）/ Cloudflare Workers AI（免费额度大，
-           但不支持对话内工具调用、计费按估价）。只影响对话，后台任务仍走 DeepSeek。 -->
-      <NCard size="small" title="AI 对话" style="margin-bottom: 16px">
-        <NSpin :show="cfModelsLoading">
-          <div class="author-form">
-            <NRadioGroup :value="chatProvider" size="small" @update:value="onProviderChange">
-              <NRadioButton value="deepseek">DeepSeek（默认）</NRadioButton>
-              <NRadioButton value="cloudflare">Cloudflare Workers AI</NRadioButton>
-            </NRadioGroup>
-            <NSelect
-              v-if="chatProvider === 'cloudflare'"
-              v-model:value="chatModel"
-              size="small"
-              style="width: 340px"
-              :options="cfModels.map((m) => ({ label: m.label, value: m.name }))"
-              :loading="cfModelsLoading"
-              :disabled="!cfReady"
-              placeholder="选择对话模型"
-              filterable
-            />
-            <IconTextBtn name="check" type="primary" :loading="providerSaving" @click="saveChatProvider">
-              保存
-            </IconTextBtn>
-          </div>
-        </NSpin>
-        <div class="api-base-hint" style="margin-top: 8px; opacity: 0.75">
-          <template v-if="chatProvider === 'cloudflare'">
-            <template v-if="cfReady">
-              <b>Cloudflare 模型不支持对话内工具</b>（查队列、推草稿箱等需切回
-              DeepSeek），用量按估价计费；中文创作效果弱于 DeepSeek，严肃成稿建议默认通道。
-              <span v-if="cfModelsErr" style="color: var(--app-amber-text)">
-                模型清单拉取失败：{{ cfModelsErr }}（不影响已保存的选择）
-              </span>
-            </template>
-            <template v-else>
-              尚未配置 Cloudflare 凭证：请在 <code>backend/.env</code> 填
-              <code>CLOUDFLARE_API_TOKEN</code> 与 <code>CLOUDFLARE_ACCOUNT_ID</code>
-              并重启后端（获取方式见 .env.example 里的注释）。
-            </template>
-          </template>
-          <template v-else>
-            DeepSeek 全功能通道：支持思维链、工具调用与精确计费。切换供应商对下一轮对话生效，
-            历史消息不受影响；摘要压缩、排版、话题标签等后台任务固定走 DeepSeek。
-          </template>
-        </div>
-      </NCard>
+      <!-- 用户级设置（账号资料 / 使用配额 / 作者信息 / AI 对话偏好）
+           已搬到「个人中心」—— 顶栏头像下拉进入 -->
 
       <div class="grid">
         <NCard size="small" title="服务健康">
@@ -916,13 +627,6 @@ const envColumns: DataTableColumns<EnvRow> = [
   color: var(--app-success-text);
 }
 
-.author-form {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  flex-wrap: wrap;
-}
-
 .grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -951,57 +655,7 @@ const envColumns: DataTableColumns<EnvRow> = [
   color: var(--app-text);
 }
 
-/* 我的配额 */
-.quota-list {
-  margin-top: 14px;
-  padding-top: 12px;
-  border-top: 1px solid var(--app-border-60);
-}
-
-.quota-list-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--app-text-2);
-  margin-bottom: 8px;
-}
-
-.quota-line {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  font-size: 13px;
-  line-height: 1.9;
-}
-
-.quota-name {
-  min-width: 72px;
-  color: var(--app-text-2);
-}
-
-.quota-val {
-  font-variant-numeric: tabular-nums;
-}
-
-.quota-val.danger {
-  color: #d03050;
-  font-weight: 600;
-}
-
-.quota-val.muted {
-  color: var(--app-text-3);
-}
-
-.quota-period {
-  font-size: 12px;
-  color: var(--app-text-3);
-}
-
-.quota-note {
-  margin-top: 8px;
-  font-size: 12px;
-  color: var(--app-text-3);
-  line-height: 1.7;
-}
+/* 我的配额 / 作者信息 / AI 对话偏好的样式随卡片搬去了 ProfileView.vue */
 
 @media (max-width: 900px) {
   .grid {

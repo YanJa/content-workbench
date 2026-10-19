@@ -92,6 +92,13 @@ _SQLITE_COLUMN_PATCHES: dict[str, dict[str, str]] = {
         "quota_override": "JSON",
         # 邀请码来源（渠道统计）。可空，老用户 / 代建 / 预置 admin 都是 NULL。
         "invite_code": "VARCHAR(64)",
+        # 用户中心资料三件套（2026-10-19）：昵称 / 头像 / 邮箱。
+        # 都可空 —— 存量用户没填过，老行自然是 NULL，前端回落用户名。
+        # ⚠️ 加模型字段后必须来这里注册一行，否则老库不会补列，
+        # 启动即 500（no such column）。无 Alembic，这是唯一的迁移口。
+        "nickname": "VARCHAR(64)",
+        "avatar": "VARCHAR(256)",
+        "email": "VARCHAR(128)",
     },
 }
 
