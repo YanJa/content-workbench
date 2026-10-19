@@ -497,6 +497,8 @@ ffmpeg -y -i out.mp4 -map 0:s:0 extracted.srt
 | GET | `/api/zhihu/hot?limit=&sort=trend\|rank` | 登录即可 | 当前热榜 + 趋势信号，读本地库 |
 | POST | `/api/zhihu/refresh` | 仅管理员 | 手动抓一次（`force`，跳水位保护），**消耗 1 次共享额度** |
 | GET | `/api/zhihu/status` | 仅管理员 | 连通性 + 额度自查（会消耗 1 次额度） |
+| GET | `/api/zhihu/usage` | 仅管理员 | 后台「知乎热点」卡片数据源，**只读本地库不花钱** |
+| PUT | `/api/zhihu/secret` | 仅管理员 | 在线设置 Access Secret，保存即生效（免重启），顺手抓一次验票 |
 
 `GET /api/zhihu/hot` 响应（节选）：
 
@@ -528,6 +530,31 @@ ffmpeg -y -i out.mp4 -map 0:s:0 extracted.srt
 - `climb`：与上一次成功抓取的名次差，正数 = 在往上冲；`is_new`：今天首次进榜；`staying_hours`：首次进榜距今小时数（越大越是长线议题，不抢时效）；
 - `heat_score = 爬升分*0.6 + 名次分*0.4`（默认 `sort=trend` 按它排）——「正在冲」的权重高于「名次高」，因为后者用户自己看榜单就知道；
 - `ok=false` 时响应带 `configured`（是否配了 `ZHIHU_ACCESS_SECRET`）与 `error`，前端据此显示「未配置 / 准备中」弱提示，不当成故障弹错。
+
+`GET /api/zhihu/usage` 响应（管理后台「知乎热点」卡片，本地数据零消耗）：
+
+```json
+{
+  "ok": true,
+  "configured": true,
+  "masked": "****aaea",
+  "used": 6,
+  "quota": 100,
+  "safe_limit": 88,
+  "safe_to_fetch": true,
+  "remaining": 94,
+  "interval_minutes": 30,
+  "last_fetch_at": 1792420360,
+  "last_ok": true,
+  "last_item_count": 30
+}
+```
+
+`PUT /api/zhihu/secret` 请求体 `{"secret": "……"}`（**留空 = 清除凭证**），响应同 `usage` 结构外加 `fetch` 字段（保存后立即抓取的结果：`{"ok": true, "saved": 30}`）。要点：
+
+- **DB 优先**：保存的值落 `app_settings` 表（`owner=system`），启动时加载覆盖 `.env`；后台保存过之后 `.env` 的 `ZHIHU_ACCESS_SECRET` 就不再生效，直到后台清空该行；
+- 明文只进不出：响应只回 `masked`（后 4 位），请求体的 secret 永不明文回传；
+- 保存即生效不用重启：内存 `settings` 实例直接换值，已待命的抓取循环 5 分钟内自动感知启动。
 
 ---
 
