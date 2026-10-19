@@ -31,6 +31,8 @@ import {
 import { checkHealth } from '@/api/http'
 import { listTools } from '@/api/tools'
 import { getApiBase, isCustomApiBase, setApiBase } from '@/api/config'
+import { fetchZhihuUsage, saveZhihuSecret, type ZhihuUsage } from '@/api/zhihu'
+import { useAuthStore } from '@/stores/auth'
 import IconTextBtn from '@/components/IconTextBtn.vue'
 import {
   checkWeChatAccount,
@@ -56,6 +58,8 @@ const health = ref<Health | null>(null)
 const tools = ref<ToolInfo[]>([])
 const loading = ref(true)
 const err = ref('')
+
+const auth = useAuthStore()
 
 const model = computed(() => import.meta.env.VITE_MODEL_LABEL || 'deepseek-flash')
 
@@ -99,12 +103,62 @@ async function refresh() {
     health.value = healthData as Health
     tools.value = toolList
     void loadWeChat()
+    void loadZhihu()
   } catch (e) {
     err.value = (e as Error).message
   } finally {
     loading.value = false
   }
 }
+
+// ---------------------------------------------------------------- 知乎热点
+// 额度余量 + 在线配 Access Secret（2026-10-19 管理后台需求）。
+// 两个端点都是 require_admin，卡片同样按 isAdmin 门控 —— 双保险，
+// 非管理员连那个注定 403 的请求都不会发出。
+const zhihuUsage = ref<ZhihuUsage | null>(null)
+const zhihuLoading = ref(false)
+const zhihuSecretInput = ref('')
+const zhihuSaving = ref(false)
+
+async function loadZhihu() {
+  if (!auth.isAdmin) return
+  zhihuLoading.value = true
+  try {
+    zhihuUsage.value = await fetchZhihuUsage()
+  } catch {
+    /* 额度面板加载失败不该拖垮整个系统设置页，静默留空 */
+  } finally {
+    zhihuLoading.value = false
+  }
+}
+
+async function saveSecret() {
+  zhihuSaving.value = true
+  try {
+    zhihuUsage.value = await saveZhihuSecret(zhihuSecretInput.value)
+    zhihuSecretInput.value = ''
+    const f = zhihuUsage.value.fetch
+    if (f?.ok) message.success(`凭证已保存，顺手抓到 ${f.saved ?? 0} 条热点`)
+    else if (f && !f.ok) message.error(`凭证已保存，但抓取失败：${f.error || '未知错误'}`)
+    else message.success('凭证已清除，热点灵感将停更')
+  } catch (e) {
+    message.error(`保存失败：${(e as Error).message}`)
+  } finally {
+    zhihuSaving.value = false
+  }
+}
+
+const zhihuLastFetch = computed(() => {
+  const u = zhihuUsage.value
+  if (!u || !u.last_fetch_at) return '从未抓取'
+  const d = new Date(u.last_fetch_at * 1000)
+  const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+  const label =
+    d.toDateString() === new Date().toDateString()
+      ? `今天 ${hm}`
+      : `${d.getMonth() + 1}/${d.getDate()} ${hm}`
+  return u.last_ok ? `${label} · 成功 ${u.last_item_count} 条` : `${label} · 失败`
+})
 
 onMounted(refresh)
 
@@ -348,6 +402,7 @@ const ENV_ROWS: EnvRow[] = [
   { key: 'REDIS_URL', required: false, desc: '留空自动降级内存缓存，多实例部署必须配' },
   { key: 'WECHAT_APP_ID', required: false, desc: '公众号 AppID，不配则草稿箱推送不可用' },
   { key: 'WECHAT_APP_SECRET', required: false, desc: '公众号密钥，与 AppID 成对出现' },
+  { key: 'ZHIHU_ACCESS_SECRET', required: false, desc: '知乎开放平台密钥；也可在上方「知乎热点」卡片里在线设置（DB 优先）' },
   { key: 'ENABLE_TOOLS', required: false, desc: '是否开启 Function Calling，默认开' },
   { key: 'TOOL_REQUIRE_CONFIRM', required: false, desc: '需要人工确认的工具名单，逗号分隔' },
 ]
@@ -574,6 +629,79 @@ const envColumns: DataTableColumns<EnvRow> = [
         </template>
       </NModal>
 
+      <!-- 知乎热点：额度可视 + 在线配 Access Secret。端点 require_admin，
+           卡片同样按 isAdmin 门控（双保险，非管理员不发出注定 403 的请求）。 -->
+      <NCard v-if="auth.isAdmin" size="small" title="知乎热点" style="margin-top: 16px">
+        <NSpin :show="zhihuLoading">
+          <NDescriptions :column="2" size="small" label-placement="left" bordered>
+            <NDescriptionsItem label="Access Secret">
+              <NTag
+                v-if="zhihuUsage?.configured"
+                size="small"
+                :bordered="false"
+                type="success"
+              >
+                已配置 {{ zhihuUsage.masked }}
+              </NTag>
+              <NTag v-else size="small" :bordered="false" type="warning">未配置</NTag>
+            </NDescriptionsItem>
+            <NDescriptionsItem label="今日额度（热榜）">
+              <template v-if="zhihuUsage">
+                已用 {{ zhihuUsage.used }} / {{ zhihuUsage.quota }}，剩余
+                <b>{{ zhihuUsage.remaining }}</b>
+              </template>
+              <span v-else>-</span>
+            </NDescriptionsItem>
+            <NDescriptionsItem label="自动抓取">
+              <NTag
+                size="small"
+                :bordered="false"
+                :type="zhihuUsage?.safe_to_fetch ? 'success' : 'warning'"
+              >
+                {{
+                  zhihuUsage?.safe_to_fetch
+                    ? `进行中（水位 ${zhihuUsage.safe_limit}）`
+                    : '已停（今日用量触达水位）'
+                }}
+              </NTag>
+            </NDescriptionsItem>
+            <NDescriptionsItem label="抓取间隔">
+              每 {{ zhihuUsage?.interval_minutes ?? 30 }} 分钟
+            </NDescriptionsItem>
+            <NDescriptionsItem label="上次抓取">
+              {{ zhihuLastFetch }}
+            </NDescriptionsItem>
+          </NDescriptions>
+
+          <NDivider style="margin: 4px 0 12px" />
+          <div class="zhihu-secret-row">
+            <NInput
+              v-model:value="zhihuSecretInput"
+              type="password"
+              show-password-on="click"
+              size="small"
+              placeholder="粘贴知乎开放平台的 Access Secret"
+              @keydown.enter="saveSecret"
+            />
+            <IconTextBtn
+              name="save"
+              type="primary"
+              size="small"
+              :loading="zhihuSaving"
+              @click="saveSecret"
+            >
+              保存并抓一次
+            </IconTextBtn>
+          </div>
+          <div class="tip">
+            同账号下所有 Secret 共享同一个每日额度池（在开放平台页面上的测试调用也扣）。
+            保存后立即抓一次热榜用于验证凭证，失败会显示在「上次抓取」里。
+            <b>留空保存 = 清除凭证</b>，热点灵感将停更。在后台保存过之后，
+            这里的值优先于 <code>.env</code> 的 <code>ZHIHU_ACCESS_SECRET</code>。
+          </div>
+        </NSpin>
+      </NCard>
+
       <NCard size="small" title="环境变量对照表" style="margin-top: 16px">
         <NDataTable
           :columns="envColumns"
@@ -625,6 +753,18 @@ const envColumns: DataTableColumns<EnvRow> = [
 
 .api-base-msg {
   color: var(--app-success-text);
+}
+
+/* 知乎 Secret 输入行：输入框吃满宽度，保存按钮不缩 */
+.zhihu-secret-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.zhihu-secret-row .n-input {
+  flex: 1;
+  min-width: 0;
 }
 
 .grid {

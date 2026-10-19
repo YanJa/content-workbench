@@ -63,6 +63,47 @@ export interface RefreshHotResult {
   error?: string
 }
 
+/** 额度与凭证状态（管理后台「知乎热点」卡片；仅管理员可读） */
+export interface ZhihuUsage {
+  /** 是否配了 Access Secret（.env 或管理后台任一道） */
+  configured: boolean
+  /** 脱敏预览（后 4 位），永不明文回传 */
+  masked: string
+  /** 今日已用次数 */
+  used: number
+  /** 每日总额度（热榜接口 100 次/天） */
+  quota: number
+  /** 今日剩余 */
+  remaining: number
+  /** 自动抓取的停用水位：用量达到它之后定时任务让路 */
+  safe_limit: number
+  safe_to_fetch: boolean
+  interval_minutes: number
+  /** 上次抓取时间（unix 秒），null = 从未抓过 */
+  last_fetch_at: number | null
+  last_ok: boolean | null
+  last_item_count: number
+  /** 仅 PUT /secret 的响应带：保存时顺手抓了一次的结果 */
+  fetch?: { ok: boolean; saved?: number; error?: string } | null
+}
+
+/** 拉取额度与凭证状态。只读本地库，不消耗知乎额度。 */
+export async function fetchZhihuUsage(): Promise<ZhihuUsage> {
+  const { data } = await http.get('/zhihu/usage')
+  return data
+}
+
+/**
+ * 设置 / 清除 Access Secret（传空串 = 清除）。
+ *
+ * 落库 + 改内存，不用重启后端；保存后立即抓一次热榜验证凭证对错。
+ * DB 优先于 .env：在后台保存过之后，.env 里的值就被覆盖了。
+ */
+export async function saveZhihuSecret(secret: string): Promise<ZhihuUsage> {
+  const { data } = await http.put('/zhihu/secret', { secret })
+  return data
+}
+
 /**
  * 手动抓一次热榜（仅管理员）。
  *
