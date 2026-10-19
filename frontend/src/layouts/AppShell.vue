@@ -449,26 +449,30 @@ onMounted(async () => {
   white-space: nowrap;
 }
 
-/* 用户下拉触发器：头像圆点 + 名字，hover 出菜单 */
+/* 用户下拉触发器：头像 + 名字，hover 出菜单 */
 .user-trigger {
-  gap: 10px;
   align-items: center;
 }
 
 .user-avatar {
-  width: 22px;
-  height: 22px;
+  width: 24px;
+  height: 24px;
   border-radius: 50%;
   flex-shrink: 0;
   background: linear-gradient(135deg, var(--app-primary), var(--app-purple));
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   color: #fff;
   /* 上传的头像图：裁好的方图，cover 保平安（极端比例下也不变形） */
   object-fit: cover;
+  /* ⚠️ 间距必须写在这层，不能写 .user-trigger 的 gap —— naive-ui 的
+     NButton 内部还有一层 .n-button__content 才是 flex 父级，设在外层
+     button 上的 gap 是死代码（computed 有值但不生效，2026-10-19 实测
+     visual_gap=0 才发现）。margin 在头像自己身上，与结构无关。 */
+  margin-right: 14px;
 }
 
 /* 注：认证页（登录/注册）是顶层路由，不套这层壳，
