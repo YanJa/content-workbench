@@ -425,6 +425,7 @@ class LLMClient:
         finish_reason = ""
         usage = Usage()
         started = time.perf_counter()
+        emitted = False
 
         try:
             stream = await client.chat.completions.create(**kwargs)
@@ -480,9 +481,21 @@ class LLMClient:
         except Exception as exc:  # noqa: BLE001
             logger.error("流式调用失败(%s): %s", model, exc)
             await self._emit(usage_sink, task, model, usage, started, failed=True)
+            emitted = True
             yield {"type": "error", "message": f"模型调用失败：{exc}"}
             yield {"type": "finish", "finish_reason": "error"}
             return
+        finally:
+            # 兜底记账：SSE 客户端断开（切页面/关标签页）时，取消以 CancelledError
+            # （BaseException，上面的 except Exception 抓不到）冒泡，正常收尾的
+            # 埋点会被整段跳过 —— 模型 token 已经烧了，账不能丢。
+            # 断开时 usage chunk（流尾才到）通常还没读到 → total=0 记一笔
+            # estimated 兜底：调用事实至少不丢，金额本来就是估价
+            # （CF 流式无 include_usage，完整消费时也是 estimated，语义一致）。
+            # 2026-10-19 实测：UI 端到端测试一切换页面就走到了这条路径。
+            if not emitted:
+                await self._emit(usage_sink, task, model, usage, started)
+                emitted = True
 
         # 收尾：把累积的分片解析成完整工具调用
         tool_calls: list[dict[str, Any]] = []
@@ -500,7 +513,10 @@ class LLMClient:
             )
 
         # 埋点在收尾处统一发一次（流式只有最后一个 chunk 带 usage）
-        await self._emit(usage_sink, task, model, usage, started)
+        # （正常路径下 finally 的兜底已经发过一次，这里跳过防双记）
+        if not emitted:
+            await self._emit(usage_sink, task, model, usage, started)
+            emitted = True
 
         yield {"type": "tool_calls", "tool_calls": tool_calls}
         yield {"type": "usage", "usage": usage}

@@ -97,6 +97,11 @@ async def step_generate(account_id: str, token: str, model: str, out: Path) -> b
     result = data.get("result") or {}
     images = result.get("images") if isinstance(result, dict) else None
     if not images:
+        # 兼容 flux-1-schnell 等模型的单数 image 字段
+        single = result.get("image") if isinstance(result, dict) else None
+        if isinstance(single, str) and single:
+            images = [single]
+    if not images:
         print(f"    ✗ 返回结构异常: {str(data)[:300]}")
         return False
     b64 = images[0]

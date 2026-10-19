@@ -161,12 +161,19 @@ async def _run_cloudflare(prompt: str, n: int, out_dir: Path) -> list[Path]:
     except httpx.HTTPError as exc:
         raise RuntimeError(f"Cloudflare 文生图请求失败：{exc}") from exc
 
-    # 响应形如 {"result": {"images": ["<base64>", ...]}}，部分模型可能嵌套一层
+    # 响应形如 {"result": {"images": ["<base64>", ...]}}，部分模型可能嵌套一层。
+    # 但实测 flux-1-schnell 返回的是单数字段 {"result": {"image": "<base64>"}}，
+    # 只认 images 数组会直接把好图当异常扔掉（2026-10-19 自检踩中）。
     result = data.get("result") or {}
     images_b64 = result.get("images") if isinstance(result, dict) else None
     if not images_b64:
         # 兼容有的模型直接返回 base64 列表
         images_b64 = data.get("images") if isinstance(data, dict) else None
+    if not images_b64:
+        # 兼容 flux-1-schnell 等模型的单数 image 字段
+        single = result.get("image") if isinstance(result, dict) else None
+        if isinstance(single, str) and single:
+            images_b64 = [single]
     if not images_b64:
         raise RuntimeError(f"Cloudflare 返回结构异常：{str(data)[:300]}")
 

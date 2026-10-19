@@ -132,11 +132,14 @@ class Settings(BaseSettings):
     CLOUDFLARE_PROXY: str = ""
     # ---------- AI 对话：Cloudflare Workers AI（可选对话供应商） ----------
     # 对话模型 id。用户在设置页选的模型优先，这里只是「没选过」时的兜底。
-    # 备选：@cf/meta/llama-3.1-8b-instruct（默认）/ @cf/qwen/qwen1.5-14b-chat-awq
-    # 可用清单见 GET /api/settings/cloudflare-models（需先配好上面两项凭证）。
+    # ⚠️ 2026-10-19 实测：曾经的默认 @cf/meta/llama-3.1-8b-instruct 已被 CF
+    # 弃用（2026-05-30 下线，请求会被 410 打回）。现默认换成同门 FP8 量化版。
+    # 中文创作场景更推荐 @cf/zai-org/glm-4.7-flash（实测中文明显更强，
+    # 但冷启动约 40s）；Free plan 不可用 deepseek-v4-flash（403）。
+    # 完整可用清单见 GET /api/settings/cloudflare-models（需先配好凭证）。
     # 注意：CF 模型不支持 function calling，切到 CF 后对话内的工具
     # （查队列/推草稿箱等）自动停用；计费走兜底估价（用量页显示「按模型估价」）。
-    CLOUDFLARE_CHAT_MODEL: str = "@cf/meta/llama-3.1-8b-instruct"
+    CLOUDFLARE_CHAT_MODEL: str = "@cf/meta/llama-3.1-8b-instruct-fp8"
 
     # ---------- 封面图（模板化，与上面的 AI 生图是两条独立通道） ----------
     # 封面脚本：HTML 模板 + 无头浏览器截图，出「文字确定、品牌统一」的头图。
