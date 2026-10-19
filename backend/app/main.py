@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import os
 from contextlib import asynccontextmanager
 
@@ -28,10 +29,13 @@ from app.routers import (
     tools,
     usage,
     voice_clone,
+    zhihu,
 )
 
 # 导入内置工具以完成注册（必须有这一句）
 from app.tools import builtin  # noqa: F401
+
+from app.services.zhihu import loop_hot_fetch  # noqa: E402
 
 
 @asynccontextmanager
@@ -71,6 +75,12 @@ async def lifespan(app: FastAPI):
     from app.services.layout import recover_stuck_processing
 
     await recover_stuck_processing()
+
+    # 知乎热点：后台定时抓取（对话页「不知道写啥」灵感卡片的数据源）。
+    # 任务内部自己判断有没有配凭证，没配会安静退出。注意它没有 sparsely
+    # 依赖上面任何一步，但 create_task 必须在 init_db 之后 —— 循环里第一件
+    # 事是查 HotSnapshot 表决定要不要补抓。
+    asyncio.create_task(loop_hot_fetch())
 
     if not settings.DEEPSEEK_API_KEY:
         logger.warning("未配置 DEEPSEEK_API_KEY，AI 功能将不可用。请在 .env 中填写。")
@@ -112,6 +122,7 @@ app.include_router(tools.video_router, prefix=settings.API_PREFIX)
 app.include_router(voice_clone.router, prefix=settings.API_PREFIX)
 app.include_router(usage.router, prefix=settings.API_PREFIX)
 app.include_router(admin.router, prefix=settings.API_PREFIX)
+app.include_router(zhihu.router, prefix=settings.API_PREFIX)
 
 
 @app.get("/", tags=["系统"])

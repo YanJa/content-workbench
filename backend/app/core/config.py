@@ -141,6 +141,34 @@ class Settings(BaseSettings):
     # （查队列/推草稿箱等）自动停用；计费走兜底估价（用量页显示「按模型估价」）。
     CLOUDFLARE_CHAT_MODEL: str = "@cf/meta/llama-3.1-8b-instruct-fp8"
 
+    # ---------- 知乎数据开放平台（热点灵感的数据源） ----------
+    # 在 https://developer.zhihu.com/profile 申请。鉴权是 Bearer + 秒级时间戳
+    # 双要素，缺任一都会被拒（2026-10-19 实测）。
+    #
+    # ⚠️ 安全：Access Secret 持有该账号的完整 API 权限，且同一账号下所有
+    # secret **共享同一额度池**（页面效果测试也扣这个池）。只放 .env，
+    # 永远不要写进前端、日志、代码或 git（.env 已在 .gitignore 覆盖）。
+    ZHIHU_ACCESS_SECRET: str = ""
+    # 热榜抓取间隔（分钟）。每天额度 100 次（邀测期免费池，以官方为准）：
+    #   30 分钟 = 48 次/天，留 ~50 次给实时查询与失败重试。
+    #   想更密集先把 _QUOTA_SAFETY 一起调高，别把池子烧穿。
+    ZHIHU_HOT_INTERVAL_MINUTES: int = 30
+    # 单次抓取条数上限（平台硬上限 30）
+    ZHIHU_HOT_LIMIT: int = 30
+    # 单次请求超时（秒）
+    ZHIHU_TIMEOUT: int = 15
+    # 每日调用水位保护：当天已成功调用达 _QUOTA_SAFETY 次后，定时抓取自动跳过。
+    # 宁可少抓一次，也不能把额度烧光导致后半程连实时查询都没有。
+    ZHIHU_DAILY_QUOTA: int = 100
+    ZHIHU_QUOTA_SAFETY: int = 88
+    # 屏蔽词（逗号/顿号/空格分隔均可）：命中的热榜条目不入库、不展示。热榜常有时政/社会
+    # 争议类内容，做内容运营的可以按自己账号调性过滤。
+    # 例：ZHIHU_BLOCK_KEYWORDS=总统,选举,战争 或 '总统 选举 战争'
+    ZHIHU_BLOCK_KEYWORDS: str = ""
+    # 可选：固定出口代理（形如 socks5://127.0.0.1:10800），一般不需要，
+    # 只在知乎接口对我们沙箱 IP 限流时才开。
+    ZHIHU_PROXY: str = ""
+
     # ---------- 封面图（模板化，与上面的 AI 生图是两条独立通道） ----------
     # 封面脚本：HTML 模板 + 无头浏览器截图，出「文字确定、品牌统一」的头图。
     # 默认指向项目自带的 backend/scripts/make-cover.py，留空则关闭封面通道。
