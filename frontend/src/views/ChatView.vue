@@ -30,9 +30,11 @@ import { useQueueStore } from '@/stores/queue'
 import { useAuthStore } from '@/stores/auth'
 import ActionBtn from '@/components/ActionBtn.vue'
 import IconTextBtn from '@/components/IconTextBtn.vue'
+import HotInspiration from '@/components/HotInspiration.vue'
 import { usePermGate } from '@/composables/usePermGate'
 import { estimateUsage } from '@/api/usage'
 import { saveToQueue, fetchSavedMap } from '@/api/queue'
+import { fetchHotList, refreshHot, type HotTopicItem } from '@/api/zhihu'
 import type { UsageBreakdown } from '@/api/usage'
 import type { Platform } from '@/types'
 import MarkdownView from '@/components/MarkdownView.vue'
@@ -310,6 +312,85 @@ function useQuickPrompt(q: string) {
   void onSend()
 }
 
+// ---------------------------------------------------------------- 热榜灵感
+// 「不知道写什么」是创作者最高频的卡点。知乎热榜每半小时抓一次落库，
+// 这里读本地库：零 LLM 成本、零知乎额度消耗。空白会话自动展示 Top 5，
+// 对话中途也能从工具栏「灵感」随时呼出（用户拍板的交互）。
+const hotItems = ref<HotTopicItem[]>([])
+const hotLoading = ref(false)
+const hotError = ref('')
+const hotFetchedAt = ref(0)
+/** undefined = 已配置；false = 后端明确说没配凭证（用于弱提示） */
+const hotConfigured = ref<boolean | undefined>(undefined)
+const inspireShow = ref(false)
+/** 抽屉展示全量（桌面 8 条），空白会话只露 Top 5，避免欢迎区被榜单淹没 */
+const hotTop5 = computed(() => hotItems.value.slice(0, 5))
+
+async function loadHot() {
+  hotLoading.value = true
+  hotError.value = ''
+  try {
+    const r = await fetchHotList(8)
+    // 响应期间用户可能已登出/切账号：这里没有请求间竞态要护（数据与身份无关），
+    // 但 loading 标志必须成对复位，否则按钮会一直转。
+    hotItems.value = r.items ?? []
+    hotFetchedAt.value = r.fetched_at ?? 0
+    hotConfigured.value = r.configured
+    if (!r.ok) hotError.value = r.error || '热点加载失败'
+  } catch (e) {
+    hotError.value = (e as Error).message
+  } finally {
+    hotLoading.value = false
+  }
+}
+
+/** 管理员手动刷新：真实消耗共享额度池，成功后把最新榜单读回来 */
+async function onRefreshHot() {
+  hotLoading.value = true
+  try {
+    const r = await refreshHot()
+    if (!r.ok) {
+      message.error(`刷新失败：${r.error || '未知错误'}`)
+      return
+    }
+    message.success(`已抓到 ${r.saved ?? 0} 条热点`)
+    await loadHot()
+  } catch (e) {
+    message.error(`刷新失败：${(e as Error).message}`)
+  } finally {
+    hotLoading.value = false
+  }
+}
+
+/**
+ * 「以此选题」：按当前平台拼一句**能自洽的提问**填进输入框。
+ *
+ * 两个刻意的选择：
+ *   - 不自动发送：热点只是起点，用户看完还能改，发了就改不了了；
+ *   - 平台感知：与快捷指令同一套口径，切了小红书就不能问出公众号句式。
+ */
+function topicPrompt(title: string): string {
+  const t = `「${title}」`
+  if (scene.value === 'gzh')
+    return `围绕知乎热榜话题${t}写一篇公众号文章，先给我 3 个不同的切入角度`
+  if (scene.value === 'xiaohongshu')
+    return `知乎热榜话题${t}很适合小红书，帮我写一篇观点笔记，标题要有点击欲`
+  if (scene.value === 'douyin')
+    return `把知乎热榜话题${t}拆成一条 60 秒口播脚本，前 3 秒要有钩子`
+  return `我想写知乎热榜话题${t}，帮我分析有哪些切入角度，各自适合什么平台`
+}
+
+function useHotTopic(t: HotTopicItem) {
+  input.value = topicPrompt(t.title)
+  inspireShow.value = false
+  // 聚焦输入框：抽屉/卡片点完，光标就该在用户要改的地方
+  void nextTick(() => {
+    document
+      .querySelector<HTMLTextAreaElement>('.composer textarea')
+      ?.focus()
+  })
+}
+
 function onKeydown(e: KeyboardEvent) {
   // Enter 发送，Shift+Enter 换行
   if (e.key === 'Enter' && !e.shiftKey) {
@@ -472,6 +553,9 @@ onMounted(async () => {
   syncViewport()
   window.addEventListener('resize', syncViewport)
   await chat.loadConversations()
+  // 热榜灵感：空白会话的展示数据 + 抽屉呼出入口，进页面就备好。
+  // 读本地库不烧额度，失败只留一条弱提示，不影响创作主流程。
+  void loadHot()
   // 兜底：currentId 指向的会话不属于当前用户（切换用户残留、会话被删），
   // 打开也是 404 —— 直接回到空会话。登出时 chat.reset() 是主防线，
   // 这里防的是「带 conversation_id 深链接打开」等边角路径。
@@ -563,6 +647,17 @@ async function restoreFromQueue() {
             <span class="toolbar-hint">
               平台会决定 AI 的写作规则与格式；留空则为通用对话
             </span>
+            <!-- 热榜灵感呼出入口：空白会话会自动展示，这里是「对话中途
+                 不知道写什么了」的常驻入口 -->
+            <IconTextBtn
+              class="inspire-btn"
+              name="magic"
+              size="small"
+              quaternary
+              @click="inspireShow = true"
+            >
+              灵感
+            </IconTextBtn>
             <div class="toolbar-spacer" />
             <NButton
               v-if="chat.streaming"
@@ -609,6 +704,19 @@ async function restoreFromQueue() {
                 </NButton>
               </div>
               <div class="quick-hint">点任意一个就直接开始生成</div>
+              <!-- 热榜灵感：数据来自本地库（后端每半小时抓一次），零 LLM 成本。
+                   只露 Top 5；更多从工具栏「灵感」呼出。 -->
+              <div class="welcome-hot-lead">不知道写什么？从知乎热榜找个选题</div>
+              <HotInspiration
+                class="welcome-hot"
+                :items="hotTop5"
+                :loading="hotLoading"
+                :error="hotError"
+                :fetched-at="hotFetchedAt"
+                :configured="hotConfigured"
+                @use="useHotTopic"
+                @refresh="onRefreshHot"
+              />
             </div>
           </div>
 
@@ -833,6 +941,23 @@ async function restoreFromQueue() {
         />
       </NDrawerContent>
     </NDrawer>
+
+    <!-- 热榜灵感抽屉：对话中途的呼出入口（与空白会话展示同一批数据）。
+         不用 NDrawerContent 的 title —— HotInspiration 自带头部
+         （标题 + 更新时间 + 管理员刷新），再套一层标题会重复。 -->
+    <NDrawer v-model:show="inspireShow" :width="isMobile ? '100%' : 420" placement="right">
+      <NDrawerContent closable>
+        <HotInspiration
+          :items="hotItems"
+          :loading="hotLoading"
+          :error="hotError"
+          :fetched-at="hotFetchedAt"
+          :configured="hotConfigured"
+          @use="useHotTopic"
+          @refresh="onRefreshHot"
+        />
+      </NDrawerContent>
+    </NDrawer>
   </div>
 </template>
 
@@ -937,9 +1062,15 @@ async function restoreFromQueue() {
   gap: 12px;
 }
 
+/* 工具栏提示语防挤压：加了「灵感」按钮后 flex 空间更紧，
+   让长提示省略号截断而不是换行把工具栏顶高 */
 .toolbar-hint {
   font-size: 11.5px;
   color: var(--app-text-3);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .toolbar-spacer {
@@ -996,6 +1127,23 @@ async function restoreFromQueue() {
   margin-top: 10px;
   font-size: 11.5px;
   color: var(--app-text-3);
+}
+
+/* 热榜灵感在欢迎区的引入语 + 容器：欢迎区整体居中，卡片本身左对齐，
+   限宽 560px 防止宽屏下一行一条太长不好扫读 */
+.welcome-hot-lead {
+  margin-top: 26px;
+  font-size: 12.5px;
+  color: var(--app-text-2);
+}
+
+.welcome-hot {
+  max-width: 560px;
+  margin: 10px auto 0;
+}
+
+.inspire-btn {
+  flex-shrink: 0;
 }
 
 .msg {
