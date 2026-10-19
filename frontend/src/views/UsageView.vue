@@ -62,6 +62,7 @@ const SCENE_LABEL: Record<string, string> = {
   douyin: '抖音',
   chat: '通用对话',
   summary: '历史压缩',
+  layout: '排版装配',
 }
 
 // ------------------------------------------------------------------ 格式化

@@ -36,6 +36,7 @@ from app.prompts.layout_prompt import LAYOUT_FIX_HINT, build_layout_messages
 from app.services.author import apply_author_placeholders, apply_placeholders
 from app.services.gzh_validate import validate_gzh_html
 from app.services.llm import get_llm
+from app.services.usage import make_sink
 
 # 最多让模型重修几次（每次把校验报错回喂）。2 次足够，再多是浪费 token。
 _MAX_FIX_ROUNDS = 2
@@ -97,7 +98,12 @@ def _image_manifest(images: list[dict[str, Any]] | None) -> str:
 _TOPIC_RE = re.compile(r"#([^#\s]{1,20})#")
 
 
-async def generate_topic_tags(markdown: str, on_progress: ProgressCb | None = None) -> list[str]:
+async def generate_topic_tags(
+    markdown: str,
+    db: AsyncSession,
+    owner: str = "default",
+    on_progress: ProgressCb | None = None,
+) -> list[str]:
     """按正文主题生成 2-3 个精准微信话题标签（#话题#）。
 
     仅作锦上添花：失败（限流/超时/解析不出）一律降级为空列表，绝不拖累排版。
@@ -120,7 +126,12 @@ async def generate_topic_tags(markdown: str, on_progress: ProgressCb | None = No
         {"role": "user", "content": markdown[:2000]},
     ]
     try:
-        result = await llm.chat(messages, task="lightweight")
+        result = await llm.chat(
+            messages,
+            task="lightweight",
+            # 这一笔之前完全没记账：话题标签也是真金白银的 LLM 调用
+            usage_sink=make_sink(db, owner=owner or "default", scene="layout"),
+        )
         text = (result.content or "").strip()
     except Exception as exc:  # noqa: BLE001
         logger.warning("生成话题标签失败（跳过）: %s", exc)
@@ -179,6 +190,8 @@ async def _llm_layout(
     markdown: str,
     theme_id: str,
     image_manifest: str,
+    db: AsyncSession,
+    owner: str = "default",
     on_progress: ProgressCb | None = None,
 ) -> tuple[str, list[str], list[str]]:
     """调 LLM 装配 HTML + 校验回修。返回 (html, errors, warnings)。"""
@@ -190,13 +203,16 @@ async def _llm_layout(
     theme_lib = load_theme_lib(theme_id)
     common_lib = load_common_lib()
     llm = get_llm()
+    # 排版是花钱大头（v4-pro 主调用 + 回修），必须记账 —— 之前这几笔完全没埋点，
+    # 导致 DeepSeek 官方账单里有、用量页看不见（用户对账发现 16-17 号差 8 元多）。
+    sink = make_sink(db, owner=owner or "default", scene="layout")
 
     messages = build_layout_messages(
         markdown, theme_lib, common_lib, image_manifest=image_manifest
     )
     tick(30, "AI 正在按主题装配排版…")
     # 用 reasoning（pro 模型）：排版是「理解结构 + 严格照规则装配」，质量优先
-    result = await llm.chat(messages, task="reasoning")
+    result = await llm.chat(messages, task="reasoning", usage_sink=sink)
     html = _clean_html(result.content or "")
     errors, warnings, _ = validate_gzh_html(html)
 
@@ -209,7 +225,7 @@ async def _llm_layout(
             {"role": "assistant", "content": html},
             {"role": "user", "content": LAYOUT_FIX_HINT.format(errors="\n".join(f"- {e}" for e in errors))},
         ]
-        result = await llm.chat(fix_messages, task="reasoning")
+        result = await llm.chat(fix_messages, task="reasoning", usage_sink=sink)
         html = _clean_html(result.content or "")
         errors, warnings, _ = validate_gzh_html(html)
 
@@ -412,7 +428,9 @@ async def layout_content(
     manifest = _image_manifest(images)
 
     tick(15, "正在准备主题组件库…")
-    html, errors, warnings = await _llm_layout(markdown, theme_id, manifest, on_progress=on_progress)
+    html, errors, warnings = await _llm_layout(
+        markdown, theme_id, manifest, db=db, owner=content.owner or "default", on_progress=on_progress
+    )
     # 把配图占位替换成真实图片
     html = _inject_images(html, images)
     # 关注卡处理：先剥离开头卡，再替换账号占位符、注入二维码。
@@ -432,7 +450,9 @@ async def layout_content(
     # 追加到文末（关注卡/二维码之后）。微信发布时会把 #话题# 自动识别成可点的话题入口，
     # 利于「搜一搜」发现与话题聚合；失败静默跳过，不拖累排版。
     if auto_tags and platform == "gzh":
-        tags = await generate_topic_tags(markdown, on_progress)
+        tags = await generate_topic_tags(
+            markdown, db=db, owner=content.owner or "default", on_progress=on_progress
+        )
         if tags:
             tag_html = " ".join(f"#{t}#" for t in tags)
             html += (
@@ -503,7 +523,11 @@ async def _layout_xiaohongshu(db: AsyncSession, content: Content) -> dict[str, A
         },
         {"role": "user", "content": content.body or ""},
     ]
-    result = await llm.chat(messages, task="lightweight")
+    result = await llm.chat(
+        messages,
+        task="lightweight",
+        usage_sink=make_sink(db, owner=content.owner or "default", scene="layout"),
+    )
     text = (result.content or "").strip()
 
     now = int(time.time())
