@@ -308,3 +308,159 @@ def test_unconfigured_secret_no_http_call(env, monkeypatch):
     monkeypatch.setattr(zhihu_mod, "fetch_raw_hot", _never)
     res = asyncio.run(zhihu_mod.fetch_hot_once())
     assert res["ok"] is False and res.get("skipped") is True
+
+
+# ------------------------------------------------------------------ 5 运行时凭证
+# 管理后台要能在线看额度、在线配 Secret（2026-10-19 需求）。这条主线验证：
+# 脱敏不回传明文、DB 优先于 .env（含「空行 = 显式清除」）、端点按 admin
+# 门控、保存即生效且顺手抓一次。
+
+def test_set_secret_masks_and_never_leaks_plaintext(env):
+    """设置后：configured=True、脱敏只给后 4 位、明文不出现在任何返回值里。"""
+    from app.models.settings import AppSetting
+
+    async def _run():
+        await zhihu_mod.set_runtime_secret("  abcd1234wxyz  ")  # 顺带验 strip
+        info = zhihu_mod.secret_info()
+        assert info == {"configured": True, "masked": "****wxyz"}
+        assert "abcd1234wxyz" not in str(info)
+        # 内存 settings 同步换（_headers 下一次调用就用新钥匙，不用重启）
+        assert zhihu_mod.settings.ZHIHU_ACCESS_SECRET == "abcd1234wxyz"
+        # DB 里确实落了一行
+        async with env() as s:
+            rows = (await s.execute(select(AppSetting))).scalars().all()
+        assert len(rows) == 1 and rows[0].value == "abcd1234wxyz"
+
+        # 清除：空串也要落库 —— DB 优先于 .env，否则 .env 旧值阴魂不散
+        await zhihu_mod.set_runtime_secret("")
+        assert zhihu_mod.secret_info() == {"configured": False, "masked": ""}
+        assert zhihu_mod.settings.ZHIHU_ACCESS_SECRET == ""
+
+    asyncio.run(_run())
+
+
+def test_load_runtime_secret_db_beats_env(env, monkeypatch):
+    """启动加载：DB 有行就以 DB 为准（含空行 = 显式清除）；没有行才用 .env。"""
+    from app.models.settings import AppSetting
+
+    async def _set(value):
+        """有则改、无则插（避免重复插撞 (owner,key) 唯一约束）。"""
+        async with env() as s:
+            row = (
+                await s.execute(
+                    select(AppSetting).where(
+                        AppSetting.owner == "system", AppSetting.key == "zhihu_access_secret"
+                    )
+                )
+            ).scalar_one_or_none()
+            if row:
+                row.value = value
+            else:
+                s.add(
+                    AppSetting(
+                        id="a1", owner="system", key="zhihu_access_secret", value=value
+                    )
+                )
+            await s.commit()
+
+    async def _clear():
+        async with env() as s:
+            for r in (await s.execute(select(AppSetting))).scalars().all():
+                await s.delete(r)
+            await s.commit()
+
+    # 场景 1：DB 有值 → 覆盖 .env
+    asyncio.run(_set("db-secret-0001"))
+    monkeypatch.setattr(zhihu_mod.settings, "ZHIHU_ACCESS_SECRET", "env-secret")
+    asyncio.run(zhihu_mod.load_runtime_secret())
+    assert zhihu_mod.settings.ZHIHU_ACCESS_SECRET == "db-secret-0001"
+
+    # 场景 2：DB 是空行 → 同样覆盖（管理员显式清除不能被 .env 翻案）
+    asyncio.run(_set(""))
+    asyncio.run(zhihu_mod.load_runtime_secret())
+    assert zhihu_mod.settings.ZHIHU_ACCESS_SECRET == ""
+
+    # 场景 3：DB 无行 → 保持 .env（没用过管理后台的老部署）
+    asyncio.run(_clear())
+    monkeypatch.setattr(zhihu_mod.settings, "ZHIHU_ACCESS_SECRET", "env-secret")
+    asyncio.run(zhihu_mod.load_runtime_secret())
+    assert zhihu_mod.settings.ZHIHU_ACCESS_SECRET == "env-secret"
+
+
+def _mk_users(Maker):
+    """直接插两个用户（省去注册流程），返回 (admin_id, member_id)。"""
+    from app.models.user import User
+
+    async def _run():
+        async with Maker() as s:
+            s.add(User(id="u_admin", username="u_admin", password_hash="x", role="admin"))
+            s.add(User(id="u_member", username="u_member", password_hash="x", role="member"))
+            await s.commit()
+
+    asyncio.run(_run())
+
+
+def test_usage_endpoint_admin_only(env):
+    """GET /zhihu/usage：游客 401、成员 403、管理员 200 且字段齐全。"""
+    from fastapi.testclient import TestClient
+
+    from app.core.security import create_token
+
+    _mk_users(env)
+    client = TestClient(app)
+
+    r = client.get("/api/zhihu/usage")
+    assert r.status_code == 401, r.text
+
+    r = client.get(
+        "/api/zhihu/usage", headers={"Authorization": f"Bearer {create_token('u_member')}"}
+    )
+    assert r.status_code == 403, r.text
+
+    r = client.get(
+        "/api/zhihu/usage", headers={"Authorization": f"Bearer {create_token('u_admin')}"}
+    )
+    assert r.status_code == 200, r.text
+    d = r.json()
+    for k in (
+        "configured", "masked", "used", "quota", "remaining", "safe_limit",
+        "safe_to_fetch", "interval_minutes", "last_fetch_at", "last_ok", "last_item_count",
+    ):
+        assert k in d, f"缺字段 {k}"
+    assert d["quota"] == 100 and d["remaining"] == 100  # 新库没用过
+    assert d["configured"] is True  # fixture 里预置了 test-secret
+
+
+def test_put_secret_applies_and_fetches(env, monkeypatch):
+    """PUT /zhihu/secret：保存即生效（内存 settings 换钥）且顺手抓一次验票。"""
+    from fastapi.testclient import TestClient
+
+    from app.core.security import create_token
+
+    called = {"n": 0}
+
+    async def _fake_fetch_raw(limit=None):
+        called["n"] += 1
+        return {"ok": True, "items": [_hot_item("实时热题", "999")]}
+
+    monkeypatch.setattr(zhihu_mod, "fetch_raw_hot", _fake_fetch_raw)
+    _mk_users(env)
+    client = TestClient(app)
+    h = {"Authorization": f"Bearer {create_token('u_admin')}"}
+
+    r = client.put("/api/zhihu/secret", json={"secret": "newkey1234567890"}, headers=h)
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d["configured"] is True and d["masked"] == "****7890"
+    assert "newkey1234567890" not in r.text  # 明文不回传
+    assert d["fetch"]["ok"] is True and d["fetch"]["saved"] == 1
+    assert called["n"] == 1
+    # 内存即时换钥：下一个 /zhihu/hot 抓取用的就是新 secret
+    assert zhihu_mod.settings.ZHIHU_ACCESS_SECRET == "newkey1234567890"
+
+    # 清除：空串 → configured False 且不再抓取（没有钥匙就不去敲门）
+    r = client.put("/api/zhihu/secret", json={"secret": ""}, headers=h)
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d["configured"] is False and d["fetch"] is None
+    assert called["n"] == 1

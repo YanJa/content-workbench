@@ -45,11 +45,13 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from app.core.config import settings
 from app.core.logging import logger
 from app.db.session import SessionLocal
+from app.models.settings import AppSetting
 from app.models.zhihu import HotSnapshot, HotTopic, ZhihuApiUsage
 
 API = "https://developer.zhihu.com"
@@ -156,19 +158,100 @@ async def _bump_usage(session, n: int = 1) -> None:
 
 
 async def usage_today() -> dict:
-    """当日额度使用情况（{used, quota, safe_to_fetch}）。"""
+    """当日额度使用情况。
+
+    `safe_limit` = 自动抓取的停用水位（用量达到它之后定时任务让路，把余量
+    留给手动刷新与连通性自检）；`remaining` = 池子里还剩多少，管理后台直接展示。
+    """
     async with SessionLocal() as session:
         row = (
             await session.execute(select(ZhihuApiUsage).where(ZhihuApiUsage.day == _today_key()))
         ).scalar_one_or_none()
         used = row.count if row else 0
     quota = max(1, settings.ZHIHU_DAILY_QUOTA)
+    safe_limit = min(settings.ZHIHU_QUOTA_SAFETY, quota)
     return {
         "used": used,
         "quota": quota,
+        "safe_limit": safe_limit,
         # 定时抓取的准入条件：留给实时查询与重试的余量还在
-        "safe_to_fetch": used < min(settings.ZHIHU_QUOTA_SAFETY, quota),
+        "safe_to_fetch": used < safe_limit,
+        "remaining": max(0, quota - used),
     }
+
+
+# ---------------------------------------------------------------- 运行时凭证
+# Access Secret 原来只能改 .env 再重启。管理后台要能在线设置（2026-10-19 的
+# 需求），所以多了一条 DB 通道：AppSetting 里存一份，启动时与 PUT 时覆盖到
+# settings 对象（pydantic-settings 的实例运行时可变，已实测）。
+#
+# 优先级：**DB 里有这一行（哪怕是空串）= 管理后台说了算；没有这一行 = 回退
+# .env**。这样「后台清空凭证」能真正生效，不会被 .env 里的旧值阴魂不散。
+_SECRET_OWNER = "system"
+_SECRET_KEY = "zhihu_access_secret"
+
+
+async def load_runtime_secret() -> None:
+    """启动时调用：DB 里存过的 secret 覆盖到 settings（DB 优先于 .env）。"""
+    async with SessionLocal() as session:
+        val = (
+            await session.execute(
+                select(AppSetting.value).where(
+                    AppSetting.owner == _SECRET_OWNER, AppSetting.key == _SECRET_KEY
+                )
+            )
+        ).scalar_one_or_none()
+    if val is not None:
+        settings.ZHIHU_ACCESS_SECRET = val
+
+
+async def set_runtime_secret(secret: str) -> None:
+    """设置（传空串 = 清除）并立即生效，不用重启后端。"""
+    secret = (secret or "").strip()
+    async with SessionLocal() as session:
+        # upsert 手法与 routers/settings.py 的 _set_setting 同源：先插
+        # （on_conflict_do_nothing）再 update。刻意不用通用 insert 的
+        # on_conflict_do_update —— 那是 sqlite 方言专属方法，项目还要兼容
+        # Postgres（见该文件注释）。
+        await session.execute(
+            sqlite_insert(AppSetting)
+            .values(
+                id=uuid.uuid4().hex,
+                owner=_SECRET_OWNER,
+                key=_SECRET_KEY,
+                value=secret,
+                updated_at=int(time.time()),
+            )
+            .on_conflict_do_nothing(index_elements=["owner", "key"])
+        )
+        await session.execute(
+            update(AppSetting)
+            .where(AppSetting.owner == _SECRET_OWNER, AppSetting.key == _SECRET_KEY)
+            .values(value=secret, updated_at=int(time.time()))
+        )
+        await session.commit()
+    settings.ZHIHU_ACCESS_SECRET = secret
+
+
+def secret_info() -> dict:
+    """凭证状态。**永远不回传明文**，只给脱敏预览（后 4 位）——
+    与公众号 secret 的 secret_set 布尔相比多给了 4 位，因为轮换密钥时
+    用户需要确认「我现在挂的是哪一把」。"""
+    s = (settings.ZHIHU_ACCESS_SECRET or "").strip()
+    return {"configured": bool(s), "masked": f"****{s[-4:]}" if s else ""}
+
+
+async def last_snapshot_info() -> dict:
+    """最近一次抓取批次（不论成败）：管理后台「上次抓取」用。"""
+    async with SessionLocal() as session:
+        snap = (
+            await session.execute(
+                select(HotSnapshot).order_by(HotSnapshot.fetched_at.desc()).limit(1)
+            )
+        ).scalar_one_or_none()
+    if not snap:
+        return {"fetched_at": None, "ok": None, "item_count": 0}
+    return {"fetched_at": snap.fetched_at, "ok": snap.ok, "item_count": snap.item_count}
 
 
 # ---------------------------------------------------------------- 单次抓取
@@ -400,15 +483,20 @@ async def hot_with_trend(limit: int = 20, lookback: int = 24) -> dict:
 async def loop_hot_fetch() -> None:
     """后台定时抓取循环（挂 lifespan，详见 main.py）。
 
-    三条纪律：
+    四条纪律：
       1. 循环体内吞掉一切异常 —— 一个热点定时器没资格把服务拖垮；
       2. 启动先补抓：距上次成功抓取超过间隔就立刻抓一次（这台沙箱会休眠，
          不补的话每次唤醒都要等满一个间隔才有数据）；
-      3. 没配凭证就安静退出，不刷日志、不占资源。
+      3. 没配凭证就**待命**而不是退出：secret 现在可以在管理后台运行时配置
+         （见 set_runtime_secret），启动时没配不代表待会不会配。空转成本
+         只是每 5 分钟读一次内存属性；
+      4. 抓取批次不论成败都写审计，漏采要能被发现。
     """
     if not _configured():
-        logger.info("[zhihu] 未配置 ZHIHU_ACCESS_SECRET，热点抓取任务不启动")
-        return
+        logger.info("[zhihu] 未配置 ZHIHU_ACCESS_SECRET，抓取任务待命（每 5 分钟探一次）")
+        while not _configured():
+            await asyncio.sleep(300)
+        logger.info("[zhihu] 凭证已配置，抓取任务启动")
 
     interval = max(1, settings.ZHIHU_HOT_INTERVAL_MINUTES) * 60
     await asyncio.sleep(25)  # 让 init_db / recover_* 先跑完
