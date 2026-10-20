@@ -460,7 +460,8 @@ onBeforeUnmount(() => {
     right: 12px;
     width: auto !important;
     top: auto !important;
-    bottom: calc(14px + env(safe-area-inset-bottom));
+    /* 抬高到移动底栏（60px + 安全区）之上，否则气泡会盖住底部导航 */
+    bottom: calc(74px + env(safe-area-inset-bottom));
   }
   /* 目标是底部导航等贴底元素时，气泡改贴顶，避免盖住高亮目标 */
   .guide-bubble.dock-top {
