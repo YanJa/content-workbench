@@ -79,9 +79,16 @@ Base URL：`/api`（前端 axios baseURL 同此）。交互式文档：后端启
   "env": "dev",
   "llm_configured": true,
   "redis": false,
-  "tools_enabled": true
+  "tools_enabled": true,
+  "model_flash": "deepseek-flash",
+  "model_pro": "deepseek-v4-pro",
+  "fallback_model": "",
+  "cf_chat_model": "@cf/meta/llama-3.1-8b-instruct-fp8",
+  "cf_configured": true
 }
 ```
+
+模型字段是**系统级 .env 配置**（探活不查库，保持轻量）：`model_flash` 管文案/轻任务/视觉，`model_pro` 管复杂推理，`fallback_model` 空 = 主模型失败不兜底。**用户当前实际在用的通道与模型**（在个人资料页改的，DB 优先）另见 `GET /api/settings/chat-provider`——「服务健康」卡片的「AI 模型」行是两者拼出来的。
 
 ---
 
