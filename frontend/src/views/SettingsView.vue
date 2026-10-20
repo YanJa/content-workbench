@@ -7,6 +7,7 @@
  */
 import { computed, h, onMounted, onUnmounted, ref } from 'vue'
 import { useVersionStore } from '@/stores/version'
+import { APP_VERSION } from '@/version/changelog'
 import { actionBtn } from '@/utils/actionBtn'
 import {
   NAlert,
@@ -825,7 +826,7 @@ const envColumns: DataTableColumns<EnvRow> = [
             <div class="about-ver">
               版本
               <NTag size="small" :bordered="false" type="primary">
-                v{{ version.current || '—' }}
+                v{{ version.current || APP_VERSION }}
               </NTag>
             </div>
           </div>
@@ -926,12 +927,14 @@ const envColumns: DataTableColumns<EnvRow> = [
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 12px;
 }
 
 .about-meta {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 12px;
   min-width: 0;
 }
@@ -940,6 +943,7 @@ const envColumns: DataTableColumns<EnvRow> = [
   font-size: 14px;
   font-weight: 600;
   color: var(--app-text);
+  white-space: nowrap;
 }
 
 .about-ver {
@@ -948,6 +952,7 @@ const envColumns: DataTableColumns<EnvRow> = [
   gap: 6px;
   font-size: 12px;
   color: var(--app-text-3);
+  white-space: nowrap;
 }
 
 /* 我的配额 / 作者信息 / AI 对话偏好的样式随卡片搬去了 ProfileView.vue */

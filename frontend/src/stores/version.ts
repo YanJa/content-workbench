@@ -19,7 +19,7 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 
-import { CHANGELOG, type ChangelogEntry } from '@/version/changelog'
+import { APP_VERSION, CHANGELOG, type ChangelogEntry } from '@/version/changelog'
 import { useOnboardingStore } from '@/stores/onboarding'
 
 const SEEN_KEY = 'cwb_version_seen'
@@ -71,19 +71,24 @@ export const useVersionStore = defineStore('version', () => {
     seen.value ? CHANGELOG.filter((e) => compareVersion(e.version, seen.value) > 0) : [],
   )
 
-  /** 收到后端版本后初始化：决定要不要弹「新功能」。 */
-  function init(version: string): void {
-    current.value = version
+  /** 收到后端版本后初始化：决定要不要弹「新功能」。
+   *
+   *  version 为空（后端旧代码没返回 / 探活失败）时兜底用前端 APP_VERSION，
+   *  保证 current 一定有值、关于卡片不会只剩一个 "v"。后端一旦返回
+   *  version，则以后端为准。 */
+  function init(version?: string): void {
+    const v = version || APP_VERSION
+    current.value = v
     const s = readSeen()
     if (!s) {
       // 没记录过：新用户（引导没看过）把当前版当基线；老用户种入旧版号。
-      const baseline = useOnboardingStore().done ? LEGACY_VERSION : version
+      const baseline = useOnboardingStore().done ? LEGACY_VERSION : v
       writeSeen(baseline)
       seen.value = baseline
       maybeShowWhatsNew()
     } else {
       seen.value = s
-      if (s !== version) maybeShowWhatsNew()
+      if (s !== v) maybeShowWhatsNew()
     }
   }
 

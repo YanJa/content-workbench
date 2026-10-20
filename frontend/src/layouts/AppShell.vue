@@ -186,10 +186,13 @@ onMounted(async () => {
   try {
     const h = await checkHealth()
     llmReady.value = h.llm_configured
-    // 拿到后端版本后初始化版本 store：决定要不要弹「新功能」提醒
-    if (h.version) version.init(h.version)
+    // 初始化版本 store：h.version 有则以后端为准，没有则 store 内部兜底到
+    // 前端 APP_VERSION —— 后端旧代码/未重启时不至于让版本号空着。
+    version.init(h.version)
   } catch {
     llmReady.value = false
+    // 探活失败也兜底初始化：至少展示前端已知版本，别让关于卡片只剩 "v"
+    version.init()
   }
   void queue.refresh()
   // 首次访问自动跑一遍引导：延迟一拍，等首屏与懒加载页面稳定下来再弹。

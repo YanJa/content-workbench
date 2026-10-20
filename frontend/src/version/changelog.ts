@@ -47,3 +47,14 @@ export const CHANGELOG: ChangelogEntry[] = [
     ],
   },
 ]
+
+/**
+ * 前端已知的最新版本号（= CHANGELOG 第一条）。
+ *
+ * 用途：**兜底**。版本号展示与「新版本提醒」本应以后端 /health 的 version
+ * 为准（单一来源），但后端可能没升级/没重启/探活失败——此时若界面上
+ * 版本号空着很难看。故前端用自己维护的这个值兜底，保证关于卡片永远有
+ * 版本可显。后端一旦返回 version，仍以后端为准（见 version store 的 init）。
+ */
+export const APP_VERSION = CHANGELOG[0].version
+
