@@ -5,7 +5,7 @@
  * 对照、成本提示。**和「我」相关的设置**（账号资料、使用配额、作者
  * 信息、AI 对话偏好）在个人中心（顶栏头像下拉进入），不在这里。
  */
-import { computed, h, onMounted, ref } from 'vue'
+import { computed, h, onMounted, onUnmounted, ref } from 'vue'
 import { actionBtn } from '@/utils/actionBtn'
 import {
   NAlert,
@@ -120,6 +120,15 @@ const zhihuLoading = ref(false)
 const zhihuSecretInput = ref('')
 const zhihuSaving = ref(false)
 
+// 移动端断点与 AppShell / AdminUsersView 保持一致（768px）。
+// 初始值在 script 顶层就算好 —— 首渲染早于 onMounted，等挂载后再赋值
+// 会让移动端先闪一帧桌面布局。知乎卡片的数据行含长文本（如
+// 「已用 6 / 100，剩余 94」「进行中（水位 88）」），桌面 2 列在窄屏下
+// 会被挤压换行、把行高撑高，移动端切单列 + label 置顶即可。
+const isMobile = ref(
+  typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches,
+)
+
 async function loadZhihu() {
   if (!auth.isAdmin) return
   zhihuLoading.value = true
@@ -160,7 +169,16 @@ const zhihuLastFetch = computed(() => {
   return u.last_ok ? `${label} · 成功 ${u.last_item_count} 条` : `${label} · 失败`
 })
 
-onMounted(refresh)
+onMounted(() => {
+  const mq = window.matchMedia('(max-width: 767px)')
+  isMobile.value = mq.matches
+  const onMqChange = (e: MediaQueryListEvent) => {
+    isMobile.value = e.matches
+  }
+  mq.addEventListener('change', onMqChange)
+  onUnmounted(() => mq.removeEventListener('change', onMqChange))
+  refresh()
+})
 
 // ---------------------------------------------------------------- 公众号管理
 const message = useMessage()
@@ -633,7 +651,12 @@ const envColumns: DataTableColumns<EnvRow> = [
            卡片同样按 isAdmin 门控（双保险，非管理员不发出注定 403 的请求）。 -->
       <NCard v-if="auth.isAdmin" size="small" title="知乎热点" style="margin-top: 16px">
         <NSpin :show="zhihuLoading">
-          <NDescriptions :column="2" size="small" label-placement="left" bordered>
+          <NDescriptions
+            :column="isMobile ? 1 : 2"
+            size="small"
+            :label-placement="isMobile ? 'top' : 'left'"
+            bordered
+          >
             <NDescriptionsItem label="Access Secret">
               <NTag
                 v-if="zhihuUsage?.configured"
