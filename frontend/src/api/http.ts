@@ -84,6 +84,7 @@ export async function checkHealth() {
   const { data } = await http.get('/health')
   return data as {
     status: string
+    version: string
     env: string
     llm_configured: boolean
     redis: boolean

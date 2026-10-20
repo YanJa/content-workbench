@@ -25,12 +25,14 @@ import {
 
 import NavIcon from '@/components/NavIcon.vue'
 import GuideTour from '@/components/GuideTour.vue'
+import ChangelogModal from '@/components/ChangelogModal.vue'
 import { checkHealth } from '@/api/http'
 import { useQueueStore } from '@/stores/queue'
 import { useAuthStore } from '@/stores/auth'
 import { useChatStore } from '@/stores/chat'
 import { useOnboardingStore } from '@/stores/onboarding'
 import { useThemeStore } from '@/stores/theme'
+import { useVersionStore } from '@/stores/version'
 
 const route = useRoute()
 const router = useRouter()
@@ -39,6 +41,7 @@ const onboarding = useOnboardingStore()
 const auth = useAuthStore()
 const chat = useChatStore()
 const theme = useThemeStore()
+const version = useVersionStore()
 const dialog = useDialog()
 
 const collapsed = ref(false)
@@ -183,6 +186,8 @@ onMounted(async () => {
   try {
     const h = await checkHealth()
     llmReady.value = h.llm_configured
+    // 拿到后端版本后初始化版本 store：决定要不要弹「新功能」提醒
+    if (h.version) version.init(h.version)
   } catch {
     llmReady.value = false
   }
@@ -232,7 +237,7 @@ onMounted(async () => {
               :value="activeKey"
               @update:value="onMenuSelect"
             />
-            <!-- 侧栏底部：随时可重看引导 -->
+            <!-- 侧栏底部：随时可重看引导 / 看更新日志 -->
             <div class="sider-foot">
               <NButton
                 quaternary
@@ -243,6 +248,16 @@ onMounted(async () => {
               >
                 <span class="guide-entry-icon">❓</span>
                 <span v-if="!collapsed">新手引导</span>
+              </NButton>
+              <NButton
+                quaternary
+                size="small"
+                class="guide-entry"
+                :title="collapsed ? '更新日志' : undefined"
+                @click="version.openChangelog()"
+              >
+                <span class="guide-entry-icon">📋</span>
+                <span v-if="!collapsed">更新日志</span>
               </NButton>
             </div>
           </NLayoutSider>
@@ -298,6 +313,15 @@ onMounted(async () => {
                   v-if="isMobile"
                   size="small"
                   quaternary
+                  title="更新日志"
+                  @click="version.openChangelog()"
+                >
+                  📋
+                </NButton>
+                <NButton
+                  v-if="isMobile"
+                  size="small"
+                  quaternary
                   @click="router.push('/settings')"
                 >
                   ⚙
@@ -326,6 +350,20 @@ onMounted(async () => {
 
     <!-- 新手引导：首次自动弹一次，之后从侧栏/头部手动重看 -->
     <GuideTour v-model:show="guideShow" @finish="onGuideFinish" @skip="onGuideSkip" />
+
+    <!-- 新功能提醒（版本升级后自动弹） -->
+    <ChangelogModal
+      v-model:show="version.whatsNewOpen"
+      :entries="version.newEntries"
+      title="新功能"
+      @close="version.dismissWhatsNew()"
+    />
+    <!-- 更新日志：手动入口，看全部历史 -->
+    <ChangelogModal
+      v-model:show="version.changelogOpen"
+      :entries="version.allEntries"
+      title="更新日志"
+    />
   </NLayout>
 </template>
 
@@ -374,7 +412,7 @@ onMounted(async () => {
   color: var(--app-text-3);
 }
 
-/* 侧栏底部：常驻「新手引导」入口（折叠时只剩 ❓） */
+/* 侧栏底部：常驻「新手引导」+「更新日志」入口（折叠时只剩图标） */
 .sider-foot {
   position: absolute;
   left: 0;
@@ -382,7 +420,8 @@ onMounted(async () => {
   bottom: 12px;
   padding: 0 12px;
   display: flex;
-  justify-content: center;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .guide-entry {

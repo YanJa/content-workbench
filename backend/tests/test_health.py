@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
+from app.core.config import settings
 from app.main import _health_payload, app
 
 client = TestClient(app)
@@ -42,3 +43,11 @@ def test_health_endpoints_expose_model_fields():
         body = resp.json()
         for key in MODEL_FIELDS:
             assert key in body, f"{path} 缺字段 {key}"
+
+
+def test_health_payload_exposes_version():
+    payload = _health_payload()
+    assert payload["version"] == settings.APP_VERSION
+    assert isinstance(payload["version"], str) and payload["version"]
+    for path in ("/health", "/api/health"):
+        assert client.get(path).json()["version"] == settings.APP_VERSION

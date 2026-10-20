@@ -6,6 +6,7 @@
  * 信息、AI 对话偏好）在个人中心（顶栏头像下拉进入），不在这里。
  */
 import { computed, h, onMounted, onUnmounted, ref } from 'vue'
+import { useVersionStore } from '@/stores/version'
 import { actionBtn } from '@/utils/actionBtn'
 import {
   NAlert,
@@ -50,6 +51,8 @@ import type { ToolInfo, WeChatAccount } from '@/types'
 
 interface Health {
   status: string
+  /** 当前系统版本号（后端 APP_VERSION），用于「关于」卡片展示 */
+  version: string
   env: string
   llm_configured: boolean
   redis: boolean
@@ -72,6 +75,7 @@ const loading = ref(true)
 const err = ref('')
 
 const auth = useAuthStore()
+const version = useVersionStore()
 
 // 用户当前对话通道（个人资料页可改，DB 优先于 .env）——
 // 服务健康的「AI 模型」要显示用户改后的实际模型，只读 health 的
@@ -812,6 +816,22 @@ const envColumns: DataTableColumns<EnvRow> = [
           </li>
         </ul>
       </NCard>
+
+      <!-- 关于：展示当前版本号，并给出「更新日志」入口 -->
+      <NCard size="small" title="关于" style="margin-top: 16px">
+        <div class="about-row">
+          <div class="about-meta">
+            <div class="about-name">内容运营工作台</div>
+            <div class="about-ver">
+              版本
+              <NTag size="small" :bordered="false" type="primary">
+                v{{ version.current || '—' }}
+              </NTag>
+            </div>
+          </div>
+          <NButton size="small" secondary @click="version.openChangelog()">查看更新日志</NButton>
+        </div>
+      </NCard>
     </NSpin>
   </div>
 </template>
@@ -899,6 +919,35 @@ const envColumns: DataTableColumns<EnvRow> = [
 
 .cost-list b {
   color: var(--app-text);
+}
+
+/* 关于卡片：左侧名称+版本，右侧「查看更新日志」 */
+.about-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.about-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.about-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--app-text);
+}
+
+.about-ver {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--app-text-3);
 }
 
 /* 我的配额 / 作者信息 / AI 对话偏好的样式随卡片搬去了 ProfileView.vue */

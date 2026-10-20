@@ -96,7 +96,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title=settings.APP_NAME,
-    version="1.0.0",
+    version=settings.APP_VERSION,
     description="内容运营工作台后端 API。含多平台文案生成、会话管理、工具调用、视频渲染。",
     lifespan=lifespan,
     docs_url="/docs",
@@ -132,7 +132,7 @@ app.include_router(zhihu.router, prefix=settings.API_PREFIX)
 async def root():
     return {
         "app": settings.APP_NAME,
-        "version": "1.0.0",
+        "version": settings.APP_VERSION,
         "docs": "/docs",
         "api_prefix": settings.API_PREFIX,
     }
@@ -141,6 +141,7 @@ async def root():
 def _health_payload() -> dict:
     return {
         "status": "ok",
+        "version": settings.APP_VERSION,
         "env": settings.APP_ENV,
         "llm_configured": bool(settings.DEEPSEEK_API_KEY),
         "redis": settings.use_redis,
