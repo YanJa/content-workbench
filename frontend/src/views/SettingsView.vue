@@ -38,10 +38,12 @@ import {
   checkWeChatAccount,
   createWeChatAccount,
   deleteWeChatAccount,
+  getChatProvider,
   listWeChatAccounts,
   setDefaultWeChatAccount,
   updateWeChatAccount,
   uploadWeChatQrcode,
+  type ChatProviderInfo,
   type WeChatAccountPayload,
 } from '@/api/settings'
 import type { ToolInfo, WeChatAccount } from '@/types'
@@ -52,6 +54,16 @@ interface Health {
   llm_configured: boolean
   redis: boolean
   tools_enabled: boolean
+  /** DeepSeek Flash（文案/轻任务/视觉走这个） */
+  model_flash: string
+  /** DeepSeek Pro（复杂推理走这个） */
+  model_pro: string
+  /** 主模型失败时的兜底模型，空 = 不兜底 */
+  fallback_model: string
+  /** CF 通道 .env 默认模型（用户在个人资料页改过的值不在这里） */
+  cf_chat_model: string
+  /** CF 凭证是否就位 */
+  cf_configured: boolean
 }
 
 const health = ref<Health | null>(null)
@@ -61,7 +73,11 @@ const err = ref('')
 
 const auth = useAuthStore()
 
-const model = computed(() => import.meta.env.VITE_MODEL_LABEL || 'deepseek-flash')
+// 用户当前对话通道（个人资料页可改，DB 优先于 .env）——
+// 服务健康的「AI 模型」要显示用户改后的实际模型，只读 health 的
+// .env 配置不够，得和这个拼起来才是真相。
+const chatProvider = ref<ChatProviderInfo>({ provider: 'deepseek', model: '', cloudflare_ready: false })
+const activeCfModel = computed(() => chatProvider.value.model || health.value?.cf_chat_model || '')
 
 // 走 vite dev server 时 /api 已由 proxy 转发到后端，手动指定地址是噪音；
 // 只有生产构建（dist 静态部署、没有 dev proxy）时才需要暴露这个配置。
@@ -104,10 +120,21 @@ async function refresh() {
     tools.value = toolList
     void loadWeChat()
     void loadZhihu()
+    void loadChatProvider()
   } catch (e) {
     err.value = (e as Error).message
   } finally {
     loading.value = false
+  }
+}
+
+/** 当前对话通道（用户在个人资料页改的 provider + CF 模型）。
+ *  失败不阻塞服务健康卡片 —— 回落默认 deepseek，最坏是显示 .env 口径。 */
+async function loadChatProvider() {
+  try {
+    chatProvider.value = await getChatProvider()
+  } catch {
+    /* 通道信息加载失败不该拖垮整个系统设置页，静默用默认值 */
   }
 }
 
@@ -491,7 +518,14 @@ const envColumns: DataTableColumns<EnvRow> = [
 
       <div class="grid">
         <NCard size="small" title="服务健康">
-          <NDescriptions :column="1" size="small" label-placement="left" bordered>
+          <!-- label 位置响应式：移动端 label 置顶，内容（通道 tag + 模型名 +
+               分工注释）吃满行宽，不与 label 互相挤压把行撑高 -->
+          <NDescriptions
+            :column="1"
+            size="small"
+            :label-placement="isMobile ? 'top' : 'left'"
+            bordered
+          >
             <NDescriptionsItem label="服务状态">
               <NBadge
                 :type="health?.status === 'ok' ? 'success' : 'error'"
@@ -504,9 +538,34 @@ const envColumns: DataTableColumns<EnvRow> = [
               <NTag size="small" :bordered="false">{{ health?.env ?? '-' }}</NTag>
             </NDescriptionsItem>
             <NDescriptionsItem label="AI 模型">
-              <NTag size="small" :type="health?.llm_configured ? 'success' : 'warning'" :bordered="false">
-                {{ health?.llm_configured ? model : '未配置' }}
-              </NTag>
+              <template v-if="health?.llm_configured">
+                <div class="ai-model-cell">
+                  <NTag
+                    size="small"
+                    :bordered="false"
+                    :type="chatProvider.provider === 'cloudflare' ? 'info' : 'success'"
+                  >
+                    {{ chatProvider.provider === 'cloudflare' ? 'Cloudflare 通道' : 'DeepSeek 通道' }}
+                  </NTag>
+                  <span class="ai-model-name">
+                    <template v-if="chatProvider.provider === 'cloudflare'">
+                      {{ activeCfModel || '未选择模型' }}
+                    </template>
+                    <template v-else>
+                      {{ health.model_flash }}<span class="ai-model-sep">·</span>{{ health.model_pro }}
+                    </template>
+                  </span>
+                </div>
+                <div class="ai-model-note">
+                  <template v-if="chatProvider.provider === 'cloudflare'">
+                    个人资料页所选；该通道不支持对话内工具调用
+                  </template>
+                  <template v-else>
+                    Flash 管文案/轻任务，Pro 管复杂推理<template v-if="health.fallback_model">；兜底 {{ health.fallback_model }}</template>
+                  </template>
+                </div>
+              </template>
+              <NTag v-else size="small" :bordered="false" type="warning">未配置</NTag>
             </NDescriptionsItem>
             <NDescriptionsItem label="缓存后端">
               <NTag size="small" :type="health?.redis ? 'success' : 'default'" :bordered="false">
@@ -783,6 +842,30 @@ const envColumns: DataTableColumns<EnvRow> = [
   display: flex;
   gap: 8px;
   align-items: center;
+}
+
+/* AI 模型行：通道 tag + 模型名一行，分工注解放第二行小字 */
+.ai-model-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.ai-model-name {
+  font-size: 13px;
+}
+
+.ai-model-sep {
+  color: var(--app-text-3);
+  margin: 0 2px;
+}
+
+.ai-model-note {
+  font-size: 12px;
+  color: var(--app-text-2);
+  margin-top: 2px;
+  line-height: 1.5;
 }
 
 .zhihu-secret-row .n-input {
