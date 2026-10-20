@@ -563,6 +563,11 @@ onMounted(async () => {
     chat.newConversation()
   }
   await restoreFromQueue()
+  // 兜底恢复「已保存到队列」状态。chat 是全局 store，从别的菜单页（设置 / 用户管理
+  // 等）切回对话创作时 currentId 往往不变，watch(currentId) 不触发；而 restoreFromQueue
+  // 只在从队列带 ?conversation_id 跳回时才进。两条路径都不覆盖普通菜单切换，导致回到
+  // 对话页后 savedMap 仍是空，所有 AI 回复都错误地显示「保存到队列」。这里挂载即拉一次。
+  void refreshSavedMap()
 })
 onBeforeUnmount(() => {
   window.removeEventListener('resize', syncViewport)
