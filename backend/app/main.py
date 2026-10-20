@@ -145,6 +145,18 @@ def _health_payload() -> dict:
         "llm_configured": bool(settings.DEEPSEEK_API_KEY),
         "redis": settings.use_redis,
         "tools_enabled": settings.ENABLE_TOOLS,
+        # 模型明细：只读 .env 配置、不查库，探活保持轻量。
+        # 「服务健康」卡片要展示用户实际在用的模型，光一个 flash 名不够
+        # 全面——Flash/Pro 双模型 + CF 通道默认值都得能看见。
+        # per-user 的当前通道（用户在个人资料页改的 chat_provider /
+        # cloudflare_chat_model）走 GET /settings/chat-provider，前端拼合。
+        "model_flash": settings.DEEPSEEK_MODEL_FLASH,
+        "model_pro": settings.DEEPSEEK_MODEL_PRO,
+        "fallback_model": settings.FALLBACK_MODEL,
+        "cf_chat_model": settings.CLOUDFLARE_CHAT_MODEL,
+        "cf_configured": bool(
+            settings.CLOUDFLARE_API_TOKEN and settings.CLOUDFLARE_ACCOUNT_ID
+        ),
     }
 
 
