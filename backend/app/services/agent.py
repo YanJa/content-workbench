@@ -290,23 +290,43 @@ async def execute_confirmed_tool(
     logger.info("执行已确认工具: %s", tool_name)
     result = await registry.execute(tool_name, arguments, ctx)
 
-    # 推送草稿箱成功后，回填 media_id
+    # 推送草稿箱成功后，把 media_id 回填到「被推送的那条」队列项上。
+    # 必须按 arguments.content_id 定位：前端（队列页 / 加工面板）推送时都带
+    # content_id，那才是本次推送的记录。早期按「最新创建」回填会把 media_id
+    # 写到别的记录上——被推送的记录仍显示可推送（会被二次推送），别的记录
+    # 反而被误标「已推送」。没带 content_id 的老调用才兜底用最新创建。
     if tool_name == "push_wechat_draft" and result.get("ok") and result.get("media_id"):
         try:
             from sqlalchemy import select
 
             from app.models.content import QueueItem
 
-            stmt = (
-                select(QueueItem)
-                .where(QueueItem.owner == ctx.get("owner", "default"))
-                .order_by(QueueItem.created_at.desc())
-                .limit(1)
-            )
-            item = (await db.execute(stmt)).scalar_one_or_none()
-            if item:
+            owner = ctx.get("owner", "default")
+            content_id = (arguments or {}).get("content_id")
+            items = []
+            if content_id:
+                stmt = select(QueueItem).where(
+                    QueueItem.owner == owner,
+                    QueueItem.content_id == content_id,
+                )
+                items = list((await db.execute(stmt)).scalars().all())
+            else:
+                stmt = (
+                    select(QueueItem)
+                    .where(QueueItem.owner == owner)
+                    .order_by(QueueItem.created_at.desc())
+                    .limit(1)
+                )
+                item = (await db.execute(stmt)).scalar_one_or_none()
+                if item:
+                    items = [item]
+            for item in items:
                 item.wechat_media_id = result["media_id"]
+            if items:
                 await db.flush()
+                logger.info(
+                    "回填 media_id：content_id=%s 命中 %d 条队列项", content_id, len(items)
+                )
         except Exception as exc:  # noqa: BLE001
             logger.warning("回填 media_id 失败: %s", exc)
 

@@ -207,7 +207,9 @@ const columns = computed<DataTableColumns<QueueItem>>(() => [
         ),
         // 发布检查
         actionBtn('search', '发布检查', () => openCheck(row), { disabled: busy }),
-        // 推微信草稿箱（公众号）/ 复制文案（其它平台）：额度耗尽时禁用并说明
+        // 推微信草稿箱（公众号）/ 复制文案（其它平台）：额度耗尽时禁用并说明。
+        // pushing = 有一条推送请求正在飞：此时禁用所有行的推送按钮，防止
+        // 用户连点同一条记录造成二次推送（后端回填 media_id 有回程延迟）。
         row.wechat_media_id
           ? null
           : isGzh && pushGate.blocked.value
@@ -223,7 +225,8 @@ const columns = computed<DataTableColumns<QueueItem>>(() => [
                 () => onPushDraft(row),
                 {
                   type: isGzh ? 'primary' : 'default',
-                  disabled: busy || (isGzh && pushGate.blocked.value),
+                  // 注意：这里是 script 作用域，ref 不会自动解包，必须 .value
+                  disabled: busy || pushing.value || (isGzh && pushGate.blocked.value),
                 },
               ),
         // 标记已发：公众号必须先推到微信草稿箱（wechat_media_id 非空）才能标记，
