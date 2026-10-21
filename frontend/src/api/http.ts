@@ -61,19 +61,45 @@ async function refreshPermSnapshot(): Promise<void> {
   }
 }
 
+/** 从错误响应体里抠后端文案：兼容 JSON 对象与 JSON 字符串（blob 转来的）两种形态。 */
+function pickDetail(data: any): string | undefined {
+  if (typeof data === 'string') {
+    try {
+      return JSON.parse(data)?.detail
+    } catch {
+      return undefined
+    }
+  }
+  return data?.detail || data?.message
+}
+
+/** 按状态码做副作用：
+ *  401 → 清 token 回登录页；
+ *  403 → 角色不够（管理面）或功能权限不够（按钮级），文案后端都给，
+ *        这里不区分，只负责把前端快照刷成服务端的真相；
+ *  429 → 配额用尽，同理刷快照。 */
+function onErrorStatus(status: number | undefined): void {
+  if (status === 401) void handleUnauthorized()
+  if (status === 403 || status === 429) void refreshPermSnapshot()
+}
+
 http.interceptors.response.use(
   (resp) => resp,
   (error) => {
     const status = error?.response?.status
-    const detail =
-      error?.response?.data?.detail ||
-      error?.response?.data?.message ||
-      error?.message ||
-      '请求失败'
-    if (status === 401) void handleUnauthorized()
-    // 403 有两种：角色不够（管理面）和功能权限不够（按钮级）。文案后端都给了，
-    // 这里不区分，只负责把快照刷成服务端的真相。
-    if (status === 403 || status === 429) void refreshPermSnapshot()
+    const raw = error?.response?.data
+    // blob 响应（文件导出）：错误体也是 blob，先读成文本再抠 detail，
+    // 否则前端只能看到 "Request failed with status code 404" 这种天书。
+    if (raw instanceof Blob) {
+      return raw.text().then((txt) => {
+        onErrorStatus(status)
+        const detail = pickDetail(txt) || txt || '请求失败'
+        console.error('[API]', detail, error?.config?.url)
+        return Promise.reject(new Error(detail))
+      })
+    }
+    onErrorStatus(status)
+    const detail = pickDetail(raw) || error?.message || '请求失败'
     console.error('[API]', detail, error?.config?.url)
     return Promise.reject(new Error(detail))
   },

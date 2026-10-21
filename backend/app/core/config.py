@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     APP_NAME: str = "内容运营工作台"
     # 版本号：全系统唯一来源。前端从 /health 读它展示，并据它判断「是否升过级」
     # 来弹「新功能」提醒。改版本请同步 frontend/package.json（仅作人工对照）。
-    APP_VERSION: str = "1.2.0"
+    APP_VERSION: str = "1.3.0"
     APP_ENV: Literal["dev", "prod"] = "dev"
     DEBUG: bool = True
     API_PREFIX: str = "/api"

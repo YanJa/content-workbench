@@ -93,3 +93,54 @@ export async function revenueSettlement(params: {
   })
   return data
 }
+
+/** 从 content-disposition 里取文件名：优先 RFC 5987 的 filename*（中文），
+ *  兜底普通 filename，再兜底 null。 */
+function pickExportFilename(cd?: string): string | null {
+  if (!cd) return null
+  const star = /filename\*=UTF-8''([^;]+)/i.exec(cd)
+  if (star) {
+    try {
+      return decodeURIComponent(star[1].trim())
+    } catch {
+      return star[1].trim()
+    }
+  }
+  const plain = /filename="?([^";]+)"?/i.exec(cd)
+  return plain ? plain[1].trim() : null
+}
+
+/**
+ * 导出收益数据（走后端 /revenue/export）。
+ *
+ * 只导看板同款的已缓存数据（T+1 口径），区间没数据时后端返回 404，
+ * 文案会由 http 拦截器从 blob 里解析出来直接抛给调用方。
+ * 下载用临时 <a> + object URL 触发，用完即焚。
+ */
+export async function revenueExport(params: {
+  account_id?: string | null
+  start: string
+  end: string
+  format: 'xlsx' | 'csv'
+}): Promise<void> {
+  const { data, headers } = await http.get('/revenue/export', {
+    params: {
+      start: params.start,
+      end: params.end,
+      format: params.format,
+      ...(params.account_id ? { account_id: params.account_id } : {}),
+    },
+    responseType: 'blob',
+  })
+  const fname =
+    pickExportFilename(headers?.['content-disposition']) ||
+    `流量主收益_${params.start}_${params.end}.${params.format}`
+  const url = URL.createObjectURL(data)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = fname
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+}

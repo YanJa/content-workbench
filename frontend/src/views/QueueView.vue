@@ -24,7 +24,7 @@ import {
 import { useQueueStore } from '@/stores/queue'
 import { confirmTool } from '@/api/tools'
 import { cancelProcessing } from '@/api/layout'
-import { getContent } from '@/api/queue'
+import { getContent, saveToQueue } from '@/api/queue'
 import type { QueueItem, QueueStatus, ContentItem } from '@/types'
 import LayoutPanel from '@/components/LayoutPanel.vue'
 import { useAuthStore } from '@/stores/auth'
@@ -439,6 +439,49 @@ async function onExport() {
   message.success('清单已导出')
 }
 
+// ---- 新建内容：把手里已有的完整文案直接粘进入队 ----
+// 场景：用户在别处（Word / 备忘录 / AI 聊天）已经写好了完整文案，
+// 不需要再走对话创作，直接粘进来 → 队列按「待加工」起步，
+// 之后照样能「加工排版」选主题生成公众号排版、推草稿箱。
+const createShow = ref(false)
+const createSaving = ref(false)
+const createForm = ref({ platform: 'gzh', title: '', body: '' })
+
+const createPlatformOptions = [
+  { label: '公众号', value: 'gzh' },
+  { label: '小红书', value: 'xiaohongshu' },
+  { label: '抖音', value: 'douyin' },
+]
+
+function openCreate() {
+  createForm.value = { platform: 'gzh', title: '', body: '' }
+  createShow.value = true
+}
+
+async function onCreate() {
+  const title = createForm.value.title.trim()
+  const body = createForm.value.body.trim()
+  if (!title) {
+    message.warning('请填写标题')
+    return
+  }
+  if (!body) {
+    message.warning('请粘贴正文内容')
+    return
+  }
+  createSaving.value = true
+  try {
+    await saveToQueue({ platform: createForm.value.platform, title, body })
+    message.success('已入队：在行内点「加工排版」即可生成公众号排版')
+    createShow.value = false
+    await queue.refresh()
+  } catch (e) {
+    message.error(`入队失败：${(e as Error).message}`)
+  } finally {
+    createSaving.value = false
+  }
+}
+
 onMounted(async () => {
   await queue.refresh()
   // 从对话页「去队列查看」跳来：高亮目标行，2.5 秒后自动淡出
@@ -581,6 +624,9 @@ function onSearchClear() {
             <NTag size="small" type="warning" :bordered="false">
               待发布 {{ queue.stats.by_status?.ready ?? 0 }}
             </NTag>
+            <IconTextBtn name="plus" size="small" type="primary" @click="openCreate">
+              新建内容
+            </IconTextBtn>
             <IconTextBtn name="download" size="small" @click="onExport">导出清单</IconTextBtn>
             <IconTextBtn name="reset" size="small" @click="queue.refresh()">刷新</IconTextBtn>
           </NSpace>
@@ -650,6 +696,62 @@ function onSearchClear() {
       </template>
     </NModal>
 
+    <!-- 新建内容：粘贴已有文案直接入队 -->
+    <NModal
+      v-model:show="createShow"
+      preset="card"
+      title="新建内容 · 粘贴已有文案"
+      style="max-width: 680px"
+    >
+      <NAlert type="info" :bordered="false" style="margin-bottom: 14px">
+        <div style="font-size: 12.5px; line-height: 1.7">
+          适合<b>已经写好的完整文案</b>：粘进来进入「发布队列」，之后在行内点
+          <b>「加工排版」</b>选主题生成公众号排版，再<b>「推微信草稿箱」</b>。
+          正文支持 Markdown（# 标题、**加粗**、- 列表、> 引用都会保留）。
+        </div>
+      </NAlert>
+
+      <div class="create-form">
+        <div class="create-row">
+          <span class="create-label">平台</span>
+          <NSelect
+            v-model:value="createForm.platform"
+            :options="createPlatformOptions"
+            size="small"
+            style="width: 160px"
+          />
+        </div>
+        <div class="create-row">
+          <span class="create-label">标题</span>
+          <NInput
+            v-model:value="createForm.title"
+            size="small"
+            placeholder="给这条内容起个标题（公众号标题前 12 字要有钩子）"
+            maxlength="64"
+            show-count
+          />
+        </div>
+        <div class="create-row create-row-body">
+          <span class="create-label">正文</span>
+          <NInput
+            v-model:value="createForm.body"
+            type="textarea"
+            :rows="14"
+            placeholder="把完整文案粘贴到这里，支持 Markdown…"
+          />
+        </div>
+      </div>
+
+      <template #footer>
+        <NSpace justify="end">
+          <NButton @click="createShow = false">取消</NButton>
+          <IconTextBtn name="check" type="primary" :loading="createSaving" @click="onCreate">
+            入队
+          </IconTextBtn>
+        </NSpace>
+      </template>
+    </NModal>
+
     <!-- 加工排版面板（已发布时只读，标题为「排版详情」） -->
     <LayoutPanel
       v-model:show="layoutShow"
@@ -683,6 +785,30 @@ function onSearchClear() {
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+/* 新建内容弹窗：标签定宽 + 控件撑满 */
+.create-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.create-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.create-row-body {
+  align-items: flex-start;
+}
+.create-label {
+  flex-shrink: 0;
+  width: 44px;
+  font-size: 13px;
+  color: var(--app-text-2);
+}
+.create-row-body .create-label {
+  padding-top: 4px;
 }
 
 .check-row {

@@ -15,6 +15,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import {
   NCard,
   NDatePicker,
+  NDropdown,
   NEmpty,
   NGrid,
   NGridItem,
@@ -24,11 +25,13 @@ import {
   NSpin,
   NTag,
   NText,
+  useMessage,
 } from 'naive-ui'
 
 import IconTextBtn from '@/components/IconTextBtn.vue'
 import {
   revenueAccounts,
+  revenueExport,
   revenueOverview,
   revenueSettlement,
   type CompositionItem,
@@ -88,6 +91,33 @@ const loading = ref(false)
 const error = ref('')
 const overview = ref<RevenueOverview | null>(null)
 const settlement = ref<RevenueSettlement | null>(null)
+const msg = useMessage()
+
+// ---------------------------------------------------------------- 导出
+const exporting = ref(false)
+const exportOptions = [
+  { label: 'Excel 表格（.xlsx，含汇总/构成）', key: 'xlsx' },
+  { label: 'CSV 明细（.csv，天×广告位）', key: 'csv' },
+]
+
+/** 按当前筛选条件导出；后端只导已缓存数据，区间为空时会抛出带文案的 404。 */
+async function onExport(key: string) {
+  if (key !== 'xlsx' && key !== 'csv') return
+  exporting.value = true
+  try {
+    await revenueExport({
+      account_id: accountId.value === '__all__' ? null : accountId.value,
+      start: range.value.start,
+      end: range.value.end,
+      format: key,
+    })
+    msg.success('已开始下载')
+  } catch (e: any) {
+    msg.error(e?.message || '导出失败')
+  } finally {
+    exporting.value = false
+  }
+}
 
 async function load() {
   loading.value = true
@@ -274,6 +304,11 @@ function slotColor(i: number): string {
           size="small"
           placeholder="选择公众号"
         />
+        <NDropdown trigger="click" :options="exportOptions" @select="onExport">
+          <IconTextBtn name="download" size="small" quaternary :loading="exporting">
+            导出
+          </IconTextBtn>
+        </NDropdown>
         <IconTextBtn name="reset" size="small" quaternary :loading="loading" @click="load">
           刷新
         </IconTextBtn>
@@ -371,10 +406,11 @@ function slotColor(i: number): string {
           <NGridItem>
             <NCard size="small" class="card">
               <template #header>
-                <div class="card-head">
-                  <span>收益趋势</span>
-                  <span class="hint">单位：{{ metricUnit }}</span>
-                </div>
+                <!-- 标题与「单位」合成一个左对齐组：header-extra 放指标切换，
+                     单位若单独成 span 会被 space-between 推到切换按钮旁边，贴在一起 -->
+                <span class="chart-title">
+                  收益趋势<span class="hint">单位：{{ metricUnit }}</span>
+                </span>
               </template>
               <template #header-extra>
                 <NRadioGroup v-model:value="metric" size="small">
@@ -694,6 +730,13 @@ function slotColor(i: number): string {
   justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
+}
+/* 趋势卡标题组：标题 + 单位说明，左对齐、带间隔 */
+.chart-title {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  font-weight: 500;
 }
 .hint {
   font-size: 12px;

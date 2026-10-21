@@ -494,6 +494,34 @@ ffmpeg -y -i out.mp4 -map 0:s:0 extracted.srt
 
 ---
 
+## 收益看板
+
+流量主广告数据来自微信 `publisher/stat`（广告分析）与 `publisher_settlement`（结算），
+按 owner 隔离——每个用户只看到自己公众号（`wechat_accounts.owner`）的收益。
+天级数据落库 `wechat_ad_daily`：T+1 才出，没必要每次现拉；90 天整段重拉既慢又易限频。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/revenue/accounts` | 当前用户可见的公众号列表 |
+| GET | `/api/revenue/overview?account_id=&start=&end=&refresh=` | 汇总 + 收益趋势 + 收益构成；支持多账号聚合，`refresh=1` 强制重拉微信 |
+| GET | `/api/revenue/settlement?account_id=&start=&end=` | 结算口径：累计收入 / 已结算 / 扣罚 + 月度结算单 |
+| GET | `/api/revenue/export?account_id=&start=&end=&format=xlsx\|csv` | 导出收益数据（文件下载） |
+
+口径说明（前端页面已如实标注，本模块**不作为对账依据**）：
+
+- **统计收益** = 所选区间内每日明细合计（本期口径）；
+- **累计收入 / 已结算 / 扣罚** = 微信结算口径，**累计值**，与上方时间筛选无关；
+- 待结算 = 累计收入 − 已结算 − 扣罚（估算）；两者有 T+1 与月结时滞，微信自身两口径可能差 1 分。
+
+`/api/revenue/export` 只导**库内已缓存**的数据（不打微信——导出是高频可重试操作，
+不该触发限频）；区间没数据时返回 `404`，文案引导用户先在看板页加载/刷新。
+
+- `format=xlsx`：四张表——**收益明细**（天 × 广告位）/ **每日汇总**（趋势同源）/ **收益构成**（按广告位）/ **说明**（口径 + 导出时间）；
+- `format=csv`：仅明细，UTF-8 带 BOM，Excel 双击打开不乱码；
+- 响应 `Content-Disposition` 带中文文件名（RFC 5987 `filename*`），如 `流量主收益_2026-09-22_2026-10-21.xlsx`。
+
+---
+
 ## 知乎热榜
 
 热榜由**后台定时任务**每半小时抓一次落库（`services/zhihu.py` 的 `loop_hot_fetch`，挂 lifespan），

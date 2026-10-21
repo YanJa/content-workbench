@@ -7,6 +7,7 @@
   GET /revenue/accounts   当前用户可见的公众号列表（看板顶部下拉用）
   GET /revenue/overview   汇总 + 收益趋势 + 收益构成（支持多账号聚合）
   GET /revenue/settlement 结算口径（累计收入 / 已结算 / 扣除）
+  GET /revenue/export     导出收益数据（xlsx 三张表 / csv 明细）
 
 缓存策略：
   微信数据 T+1 才出，且按 90 天整段重拉慢又易限频，所以落库。
@@ -15,11 +16,16 @@
 """
 from __future__ import annotations
 
+import csv
+import io
 import time
-from typing import Any
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import get_column_letter
+from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -323,3 +329,217 @@ async def revenue_settlement(
             "penalty_all_fen": tot_penalty,
         },
     }
+
+
+# ---------------------------------------------------------------- 导出
+def _yuan(fen: int) -> float:
+    """分 → 元（导出给 Excel 看，保留两位小数）。"""
+    return round((fen or 0) / 100, 2)
+
+
+def _attachment(filename: str) -> str:
+    """Content-Disposition：中文文件名走 RFC 5987（filename*），并给 ASCII 兜底。"""
+    ascii_name = filename.encode("ascii", "ignore").decode().strip("_") or "export"
+    return f"attachment; filename={ascii_name}; filename*=UTF-8''{quote(filename)}"
+
+
+def _style_sheet(ws, widths: list[int]) -> None:
+    """表头加粗 + 浅底 + 冻结首行 + 列宽（按内容长度给个舒服的宽度）。"""
+    head_fill = PatternFill("solid", fgColor="EEF2F8")
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+        cell.fill = head_fill
+        cell.alignment = Alignment(horizontal="center")
+    for i, w in enumerate(widths, 1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    ws.freeze_panes = "A2"
+
+
+def _build_xlsx(detail: list[dict], agg: dict, start: str, end: str) -> bytes:
+    """xlsx 三张表：收益明细 / 每日汇总 / 收益构成。"""
+    wb = Workbook()
+
+    # 1) 收益明细（天 × 广告位 粒度）
+    ws = wb.active
+    ws.title = "收益明细"
+    ws.append(
+        [
+            "日期",
+            "公众号",
+            "广告位",
+            "拉取量",
+            "曝光量",
+            "曝光率",
+            "点击量",
+            "点击率",
+            "收益(元)",
+            "千次曝光收益(元)",
+        ]
+    )
+    for r in detail:
+        ws.append(
+            [
+                r["date"],
+                r["account"],
+                r["ad_slot"],
+                r["req_succ_count"],
+                r["exposure"],
+                r["exposure_rate"],
+                r["click"],
+                r["click_rate"],
+                _yuan(r["income_fen"]),
+                _yuan(r["ecpm_fen"]),
+            ]
+        )
+    for row in ws.iter_rows(min_row=2, min_col=6, max_col=6):
+        for c in row:
+            c.number_format = "0.00%"
+    for row in ws.iter_rows(min_row=2, min_col=8, max_col=8):
+        for c in row:
+            c.number_format = "0.00%"
+    for col in (9, 10):
+        for row in ws.iter_rows(min_row=2, min_col=col, max_col=col):
+            for c in row:
+                c.number_format = "0.00"
+    _style_sheet(ws, [12, 20, 16, 10, 10, 10, 10, 10, 12, 18])
+
+    # 2) 每日汇总（看板「收益趋势」同源）
+    ws2 = wb.create_sheet("每日汇总")
+    ws2.append(["日期", "收益(元)", "曝光量", "点击量"])
+    for t in agg["trend"]:
+        ws2.append([t["date"], _yuan(t["income_fen"]), t["exposure"], t["click"]])
+    for row in ws2.iter_rows(min_row=2, min_col=2, max_col=2):
+        for c in row:
+            c.number_format = "0.00"
+    _style_sheet(ws2, [12, 12, 12, 12])
+
+    # 3) 收益构成（按广告位）
+    ws3 = wb.create_sheet("收益构成")
+    ws3.append(["广告位", "收益(元)", "占比", "曝光量", "点击量"])
+    total = sum(c["income_fen"] for c in agg["composition"])
+    for c in agg["composition"]:
+        share = round(c["income_fen"] / total, 4) if total else 0
+        ws3.append([c["slot"], _yuan(c["income_fen"]), share, c["exposure"], c["click"]])
+    for row in ws3.iter_rows(min_row=2, min_col=2, max_col=2):
+        for c in row:
+            c.number_format = "0.00"
+    for row in ws3.iter_rows(min_row=2, min_col=3, max_col=3):
+        for c in row:
+            c.number_format = "0.00%"
+    _style_sheet(ws3, [16, 12, 10, 12, 12])
+
+    # 元信息页：口径说明，避免导出文件被单独转发后误读
+    ws4 = wb.create_sheet("说明")
+    s = agg["summary"]
+    ws4.append(["导出区间", f"{start} ~ {end}"])
+    ws4.append(["数据来源", "微信广告分析接口（流量主），T+1 更新，仅统计广告收益"])
+    ws4.append(["区间收益合计(元)", _yuan(s["income_fen"])])
+    ws4.append(["区间曝光量", s["exposure"]])
+    ws4.append(["区间点击量", s["click"]])
+    ws4.append(["金额口径", "已按分→元换算；微信明细合计与结算口径可能有 1 分以内差异"])
+    ws4.append(["导出时间", time.strftime("%Y-%m-%d %H:%M:%S")])
+    ws4.column_dimensions["A"].width = 20
+    ws4.column_dimensions["B"].width = 60
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def _build_csv(detail: list[dict]) -> bytes:
+    """csv 明细（带 BOM，Excel 双击打开不乱码）。"""
+    buf = io.StringIO()
+    buf.write("\ufeff")
+    w = csv.writer(buf)
+    w.writerow(
+        [
+            "日期",
+            "公众号",
+            "广告位",
+            "拉取量",
+            "曝光量",
+            "曝光率",
+            "点击量",
+            "点击率",
+            "收益(元)",
+            "千次曝光收益(元)",
+        ]
+    )
+    for r in detail:
+        w.writerow(
+            [
+                r["date"],
+                r["account"],
+                r["ad_slot"],
+                r["req_succ_count"],
+                r["exposure"],
+                r["exposure_rate"],
+                r["click"],
+                r["click_rate"],
+                _yuan(r["income_fen"]),
+                _yuan(r["ecpm_fen"]),
+            ]
+        )
+    return buf.getvalue().encode("utf-8")
+
+
+@router.get("/export")
+async def revenue_export(
+    account_id: str | None = Query(None, description="指定公众号 id；留空=全部账号"),
+    start: str = Query(..., description="开始日期 YYYY-MM-DD"),
+    end: str = Query(..., description="结束日期 YYYY-MM-DD"),
+    format: str = Query("xlsx", description="导出格式：xlsx（三张表）或 csv（明细）"),
+    db: AsyncSession = Depends(get_db),
+    owner: str = Depends(current_owner_id),
+) -> Response:
+    """导出收益数据。
+
+    只导**库内已缓存**的天级数据，不打微信——导出是高频可重试操作，
+    不该触发限频；区间没数据时返回 404，让前端引导用户先加载/刷新页面。
+    xlsx 含 收益明细 / 每日汇总 / 收益构成 / 说明 四张表；csv 仅明细（带 BOM）。
+    """
+    if format not in ("xlsx", "csv"):
+        raise HTTPException(400, "format 仅支持 xlsx / csv")
+
+    accounts = await _resolve_accounts(db, owner, account_id)
+    name_of = {a.id: a.name for a in accounts}
+    rows = await _rows_from_db(db, owner, list(name_of), start, end)
+    if not rows:
+        raise HTTPException(404, "该区间暂无已缓存数据，请先在看板页加载/刷新后再导出")
+
+    detail = sorted(
+        (
+            {
+                "date": r.date,
+                "account": name_of.get(r.account_id, r.account_id),
+                "ad_slot": r.ad_slot_name or r.ad_slot or f"广告位{r.slot_id}",
+                "req_succ_count": r.req_succ_count,
+                "exposure": r.exposure_count,
+                "exposure_rate": r.exposure_rate,
+                "click": r.click_count,
+                "click_rate": r.click_rate,
+                "income_fen": r.income_fen,
+                "ecpm_fen": r.ecpm_fen,
+            }
+            for r in rows
+        ),
+        key=lambda x: (x["date"], x["account"], x["ad_slot"]),
+    )
+
+    if format == "csv":
+        content = _build_csv(detail)
+        fname = f"流量主收益_{start}_{end}.csv"
+        return Response(
+            content=content,
+            media_type="text/csv",
+            headers={"Content-Disposition": _attachment(fname)},
+        )
+
+    agg = _aggregate([_row_to_dict(r) for r in rows])
+    content = _build_xlsx(detail, agg, start, end)
+    fname = f"流量主收益_{start}_{end}.xlsx"
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": _attachment(fname)},
+    )

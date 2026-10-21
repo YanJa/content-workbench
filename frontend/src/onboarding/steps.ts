@@ -69,7 +69,9 @@ export const TOUR_STEPS: TourStep[] = [
     anchor: '.queue-header',
     placement: 'bottom',
     title: '发布队列：集中管理成品',
-    body: '按状态筛选（待加工 / 待发布 / 已发布），看总计与待发布数量，也能一键导出成 Markdown 清单。',
+    body:
+      '按状态筛选（待加工 / 待发布 / 已发布），看总计与待发布数量，一键导出成 Markdown 清单。\n' +
+      '手里已有写好的完整文案？点「新建内容」直接粘进入队，不用再走一遍对话。',
   },
   {
     route: 'queue',
@@ -96,7 +98,7 @@ export const TOUR_STEPS: TourStep[] = [
     body:
       '流量主广告的收益、曝光、点击都在这里，并区分「已结算 / 待结算」。\n' +
       '数据 T+1 更新（当天未出），结算是累计口径、按月出账打款，所以「待结算」会一直有余额。\n' +
-      '想从微信强制拉一次最新数据，点右上角「刷新」。',
+      '想从微信强制拉一次最新数据，点右上角「刷新」；想把数据带走，点「导出」可选 Excel 或 CSV。',
   },
   {
     route: 'settings',
