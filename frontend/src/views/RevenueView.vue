@@ -8,7 +8,10 @@
  * 「已结算怎么展示」的口径（页面已如实标注，不用此页对账、只看量级与趋势）：
  *   - 统计收益  = 所选区间内每日明细合计（本期口径）；
  *   - 累计收入 / 已结算 / 扣罚 = 微信结算口径，**累计值**，与上方时间筛选无关；
- *   - 待结算    = 累计收入 − 已结算 − 扣罚（估算，即「还没打款」的那部分）。
+ *   - 待结算    = 累计收入 − 已结算 − 扣罚（估算，即「还没进入结算流程」的那部分）。
+ *   - 已结算 ≠ 已到账：微信结算分四步（结算中 → 已结算 → 付款中 → 已付款），
+ *     「已结算」只代表结算单已出具；打款是结算单出具后 15 个工作日内的事，
+ *     API 也不提供「已付款」终态，到账以银行卡实际入账为准。
  *   两者有 T+1 与月结时滞，且微信自身两口径可能差 1 分，故分别标注来源。
  */
 import { computed, onMounted, ref, watch } from 'vue'
@@ -177,27 +180,69 @@ const penaltyAll = computed(() => stTotals.value?.penalty_all_fen ?? 0) // 扣�
 const pendingAll = computed(() => Math.max(0, revenueAll.value - settledAll.value - penaltyAll.value)) // 待结算
 const settledRatio = computed(() => (revenueAll.value ? (settledAll.value / revenueAll.value) * 100 : 0))
 
+/**
+ * 微信结算四步流程（官方口径）：
+ *   01 结算中（等待结算信息核验）→ 02 已结算（收取结算单）
+ *   → 03 付款中（等待付款）→ 04 已付款（收入到账）
+ * API 的 sett_status 枚举：1=结算中；2、3=已结算；4=付款中。
+ * 「已付款」是后台终态，API 不提供，到账以银行卡实际入账为准。
+ */
+const SETTLE_STAGES = [
+  { no: '01', stage: 1, name: '结算中', desc: '等待结算信息核验' },
+  { no: '02', stage: 2, name: '已结算', desc: '收取结算单' },
+  { no: '03', stage: 3, name: '付款中', desc: '等待付款' },
+  { no: '04', stage: 4, name: '已付款', desc: '收入到账' },
+] as const
+
+const SETT_STATUS_MAP: Record<
+  number,
+  { label: string; stage: number; type: 'default' | 'info' | 'success' | 'warning' }
+> = {
+  1: { label: '结算中', stage: 1, type: 'info' },
+  2: { label: '已结算', stage: 2, type: 'success' },
+  3: { label: '已结算', stage: 2, type: 'success' },
+  4: { label: '付款中', stage: 3, type: 'warning' },
+}
+function settStatusInfo(s?: number) {
+  return (
+    SETT_STATUS_MAP[s ?? 0] ?? { label: '状态未知', stage: 0, type: 'default' as const }
+  )
+}
+
 interface SettleRow {
   month: string
+  zone: string
+  order: number
+  sett_status: number
   amount_fen: number
   sett_no: string
   account: string
 }
-/** 把所有账号的月度结算单摊平，按月份倒序（最新在上）。 */
+/** 把所有账号的月度结算单摊平，按月份倒序（同月上半月在前，最新在上）。 */
 const settleRows = computed<SettleRow[]>(() => {
   const out: SettleRow[] = []
   for (const it of settlement.value?.items ?? []) {
     for (const s of it.settlement_list ?? []) {
       out.push({
         month: s.month,
+        zone: s.zone || '',
+        order: s.order || 0,
+        sett_status: Number(s.sett_status) || 0,
         amount_fen: Number(s.settled_revenue) || 0,
         sett_no: s.sett_no || '',
         account: it.name,
       })
     }
   }
-  return out.sort((a, b) => b.month.localeCompare(a.month))
+  return out.sort(
+    (a, b) => b.month.localeCompare(a.month) || b.order - a.order,
+  )
 })
+/** 最新一条结算区间（用于流程条定位当前阶段）。 */
+const latestSettle = computed(() => settleRows.value[0] ?? null)
+const latestStage = computed(() =>
+  latestSettle.value ? settStatusInfo(latestSettle.value.sett_status).stage : 0,
+)
 const multiAccount = computed(() => (overview.value?.account_count ?? 0) > 1)
 function fmtMonth(m: string): string {
   if (!m || m.length < 6) return m || '—'
@@ -367,12 +412,9 @@ function slotColor(i: number): string {
           </NGridItem>
           <NGridItem>
             <div class="kpi">
-              <span class="k-label">
-                已结算
-                <NTag v-if="settledAll > 0" size="tiny" :bordered="false" type="success">已打款</NTag>
-              </span>
+              <span class="k-label">已结算</span>
               <strong class="k-value settled">¥{{ yuan(settledAll) }}</strong>
-              <span class="k-foot">累计收入的 {{ settledRatio.toFixed(1) }}%</span>
+              <span class="k-foot">累计收入的 {{ settledRatio.toFixed(1) }}% · 已结算 ≠ 已到账</span>
             </div>
           </NGridItem>
           <NGridItem>
@@ -523,13 +565,40 @@ function slotColor(i: number): string {
             </div>
           </template>
 
+          <!-- 结算四步流程（微信官方口径）：高亮当前所处阶段。
+               已结算 ≠ 已到账——打款在结算单出具后才开始。 -->
+          <div class="settle-flow" v-if="latestSettle">
+            <div
+              v-for="st in SETTLE_STAGES"
+              :key="st.no"
+              class="sf-step"
+              :class="{
+                done: latestStage > st.stage,
+                current: latestStage === st.stage,
+              }"
+            >
+              <span class="sf-no">{{ st.no }}</span>
+              <span class="sf-name">{{ st.name }}</span>
+              <span class="sf-desc">{{ st.desc }}</span>
+            </div>
+          </div>
+          <p v-if="latestSettle" class="settle-status-line">
+            最新结算区间 <strong>{{ latestSettle.zone || fmtMonth(latestSettle.month) }}</strong>：
+            <NTag size="tiny" :bordered="false" :type="settStatusInfo(latestSettle.sett_status).type">
+              {{ settStatusInfo(latestSettle.sett_status).label }}
+            </NTag>
+            <span class="hint">
+              {{ latestSettle.sett_status === 1 ? '等待结算信息核验，结算单出具后才会安排打款' : '以结算单邮件与银行卡实际入账为准' }}
+            </span>
+          </p>
+
           <div class="settle-progress">
             <div class="sp-track">
               <div class="sp-fill" :style="{ width: Math.max(settledRatio, settledAll > 0 ? 1.5 : 0) + '%' }" />
             </div>
             <div class="sp-legend">
               <span class="sp-settled">
-                <i style="background: var(--app-teal)" />已结算 {{ settledRatio.toFixed(1) }}（¥{{ yuan(settledAll) }}）
+                <i style="background: var(--app-teal)" />已结算 {{ settledRatio.toFixed(1) }}%（¥{{ yuan(settledAll) }}）
               </span>
               <span class="sp-pending">待结算 ¥{{ yuan(pendingAll) }}</span>
             </div>
@@ -557,6 +626,7 @@ function slotColor(i: number): string {
                   <th>结算月份</th>
                   <th v-if="multiAccount">账号</th>
                   <th class="num">已结算金额</th>
+                  <th>状态</th>
                   <th>结算单号</th>
                 </tr>
               </thead>
@@ -565,6 +635,11 @@ function slotColor(i: number): string {
                   <td>{{ fmtMonth(r.month) }}</td>
                   <td v-if="multiAccount">{{ r.account }}</td>
                   <td class="num">¥{{ yuan(r.amount_fen) }}</td>
+                  <td>
+                    <NTag size="tiny" :bordered="false" :type="settStatusInfo(r.sett_status).type">
+                      {{ settStatusInfo(r.sett_status).label }}
+                    </NTag>
+                  </td>
                   <td class="mono">{{ r.sett_no || '—' }}</td>
                 </tr>
               </tbody>
@@ -573,7 +648,9 @@ function slotColor(i: number): string {
           <NEmpty v-else description="暂无结算单（尚未到结算周期）" size="small" class="settle-empty" />
 
           <p class="settle-note">
-            结算是**累计口径、按月出账**：本月产生的收益通常次月中下旬才打款，所以「待结算」会一直有余额，属正常。
+            结算日期：腾讯公司在<strong>次月 1 日和次月 15 日前</strong>（遇法定节假日推迟），分别对上半月和下半月收入进行结算，并发送结算单到结算单接收邮箱。<br />
+            打款金额：腾讯公司根据结算收入<strong>代扣代缴个人所得税，并代征增值税和附加税费</strong>，剩余金额即为最终打款金额。<br />
+            何时打款：腾讯公司在出具结算单后的 <strong>15 个工作日内</strong>，将最终金额打入结算银行卡。「已结算」只代表结算单已出具，<strong>不等于钱已到账</strong>；到账以银行卡实际入账为准。
           </p>
         </NCard>
 
@@ -841,6 +918,67 @@ function slotColor(i: number): string {
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+/* 结算四步流程条（结算中 → 已结算 → 付款中 → 已付款） */
+.settle-flow {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+.sf-step {
+  background: var(--app-surface-2);
+  border: 1px solid var(--app-border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  opacity: 0.5;
+}
+.sf-step.done {
+  opacity: 0.85;
+  border-color: var(--app-primary-border-soft);
+}
+.sf-step.current {
+  opacity: 1;
+  border-color: var(--app-primary);
+  background: var(--app-primary-a08);
+}
+.sf-no {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--app-text-3);
+  font-variant-numeric: tabular-nums;
+}
+.sf-step.current .sf-no,
+.sf-step.current .sf-name {
+  color: var(--app-primary);
+}
+.sf-step.done .sf-no,
+.sf-step.done .sf-name {
+  color: var(--app-teal);
+}
+.sf-name {
+  font-size: 14px;
+  font-weight: 600;
+}
+.sf-desc {
+  font-size: 11px;
+  color: var(--app-text-3);
+}
+.settle-status-line {
+  margin: 0;
+  font-size: 12px;
+  color: var(--app-text-2);
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+@media (max-width: 880px) {
+  .settle-flow {
+    grid-template-columns: repeat(2, 1fr);
+  }
 }
 .settle-progress {
   display: flex;

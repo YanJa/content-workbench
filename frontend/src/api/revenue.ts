@@ -38,13 +38,31 @@ export interface RevenueOverview {
   composition: CompositionItem[]
 }
 
+/** 单条结算区间明细（微信 publisher_settlement 原样透传）。
+
+ * sett_status 官方枚举：1=结算中；2、3=已结算；4=付款中。
+ * 注意 API **不提供**「已付款」终态——到账以银行卡实际入账为准。
+ */
+export interface SettlementRecord {
+  month: string // "202609"
+  order: number // 1=上半月，2=下半月
+  zone: string // "2026年9月16日至30日"
+  sett_status: number
+  settled_revenue: number
+  penalty?: number | null
+  sett_no: string
+  mail_send_cnt?: string
+  date?: string
+  slot_revenue?: { slot_id: string; slot_settled_revenue: number }[]
+}
+
 export interface SettlementItem {
   account_id: string
   name: string
   revenue_all_fen: number
   settled_revenue_all_fen: number
   penalty_all_fen: number
-  settlement_list: any[]
+  settlement_list: SettlementRecord[]
 }
 
 export interface RevenueSettlement {
