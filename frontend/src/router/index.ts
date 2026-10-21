@@ -67,7 +67,7 @@ const router = createRouter({
           component: () => import('@/views/SettingsView.vue'),
           meta: {
             title: '系统设置',
-            desc: '服务健康、工具清单、凭证与环境变量',
+            desc: '服务健康、对话通道、凭证与环境变量',
             icon: '⚙',
             perm: 'menu.settings',
           },
@@ -79,7 +79,7 @@ const router = createRouter({
           path: 'profile',
           name: 'profile',
           component: () => import('@/views/ProfileView.vue'),
-          meta: { title: '个人中心', desc: '账号资料、偏好与个人配额', icon: '👤' },
+          meta: { title: '个人中心', desc: '账号资料、作者信息与个人配额', icon: '👤' },
         },
         {
           path: 'admin/users',

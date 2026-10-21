@@ -1,9 +1,9 @@
 <script setup lang="ts">
 /**
  * 系统设置页。
- * 只讲「这套系统怎么样」—— 服务健康、可用工具、公众号凭证、环境变量
- * 对照、成本提示。**和「我」相关的设置**（账号资料、使用配额、作者
- * 信息、AI 对话偏好）在个人中心（顶栏头像下拉进入），不在这里。
+ * 只讲「这套系统怎么样」—— 服务健康、AI 对话通道、可用工具、公众号凭证、
+ * 环境变量对照、成本提示。**和「我」相关的设置**（账号资料、使用配额、
+ * 作者信息）在个人中心（顶栏头像下拉进入），不在这里。
  */
 import { computed, h, onMounted, onUnmounted, ref } from 'vue'
 import { useVersionStore } from '@/stores/version'
@@ -17,6 +17,9 @@ import {
   NDescriptions,
   NDescriptionsItem,
   NDivider,
+  NRadioButton,
+  NRadioGroup,
+  NSelect,
   NSpin,
   NTag,
   NText,
@@ -41,8 +44,10 @@ import {
   createWeChatAccount,
   deleteWeChatAccount,
   getChatProvider,
+  getCloudflareModels,
   listWeChatAccounts,
   setDefaultWeChatAccount,
+  updateChatProvider,
   updateWeChatAccount,
   uploadWeChatQrcode,
   type ChatProviderInfo,
@@ -64,7 +69,7 @@ interface Health {
   model_pro: string
   /** 主模型失败时的兜底模型，空 = 不兜底 */
   fallback_model: string
-  /** CF 通道 .env 默认模型（用户在个人资料页改过的值不在这里） */
+  /** CF 通道 .env 默认模型（用户在「AI 对话」卡片里改过的值不在这里） */
   cf_chat_model: string
   /** CF 凭证是否就位 */
   cf_configured: boolean
@@ -78,11 +83,88 @@ const err = ref('')
 const auth = useAuthStore()
 const version = useVersionStore()
 
-// 用户当前对话通道（个人资料页可改，DB 优先于 .env）——
+// 用户当前对话通道（本页「AI 对话」卡片可改，DB 优先于 .env）——
 // 服务健康的「AI 模型」要显示用户改后的实际模型，只读 health 的
 // .env 配置不够，得和这个拼起来才是真相。
 const chatProvider = ref<ChatProviderInfo>({ provider: 'deepseek', model: '', cloudflare_ready: false })
 const activeCfModel = computed(() => chatProvider.value.model || health.value?.cf_chat_model || '')
+
+// ---------------------------------------------------------------- AI 对话
+// deepseek（默认，全功能）/ cloudflare（Workers AI）。只影响对话轮次，
+// 摘要压缩/排版/标签等后台任务固定走 DeepSeek。
+//
+// **切换权仅管理员**（2026-10-19 收归此处，2026-10-21 从个人中心搬来）：
+// CF 通道不支持对话内工具、计费按估价，普通成员随手切的话，出问题
+// （对话里调不了工具、用量对不上账）定位成本高。member 在这张卡上是
+// 只读的：控件全禁用 + 保存禁止，后端 PUT /settings/chat-provider
+// 同样只放行 admin（403）。
+//
+// 为什么放系统设置而不是个人中心：这是**系统级通道决策**（影响所有
+// 账号的对话行为与计费口径），不是「我是谁」式的个人偏好。
+const providerReadonly = computed(() => !auth.isAdmin)
+const chatModel = ref('')
+const cfModels = ref<{ name: string; label: string }[]>([])
+const cfModelsLoading = ref(false)
+const cfModelsErr = ref('')
+const providerSaving = ref(false)
+
+async function loadCfModels() {
+  cfModelsLoading.value = true
+  cfModelsErr.value = ''
+  try {
+    cfModels.value = await getCloudflareModels()
+    // 已存的模型不在清单里（换账号/模型下线）→ 兜底插一条，别让下拉显示空、
+    // 用户一保存又把它冲掉
+    if (chatModel.value && !cfModels.value.some((m) => m.name === chatModel.value)) {
+      cfModels.value = [
+        { name: chatModel.value, label: `${chatModel.value}（已不在线）` },
+        ...cfModels.value,
+      ]
+    }
+  } catch (e) {
+    cfModelsErr.value = (e as Error).message || '拉取失败'
+  } finally {
+    cfModelsLoading.value = false
+  }
+}
+
+function onProviderChange(v: string) {
+  chatProvider.value = {
+    ...chatProvider.value,
+    provider: v === 'cloudflare' ? 'cloudflare' : 'deepseek',
+  }
+  if (chatProvider.value.provider === 'cloudflare') {
+    if (chatProvider.value.cloudflare_ready && !cfModels.value.length && !cfModelsLoading.value) {
+      void loadCfModels()
+    }
+  } else {
+    // 切回 DeepSeek 清掉 CF 模型选择，防止把 CF 模型名留给默认通道
+    chatModel.value = ''
+  }
+}
+
+async function saveChatProvider() {
+  if (providerReadonly.value) return // 双保险：按钮禁用了，函数这层也拦
+  providerSaving.value = true
+  try {
+    const p = await updateChatProvider({
+      provider: chatProvider.value.provider,
+      model: chatProvider.value.provider === 'cloudflare' ? chatModel.value : '',
+    })
+    // 返回值没有 cloudflare_ready（接口只回 ok/provider/model），保留本地这份，
+    // 否则服务健康卡片的通道判断会丢掉 CF 就绪状态
+    chatProvider.value = {
+      ...chatProvider.value,
+      provider: p.provider === 'cloudflare' ? 'cloudflare' : 'deepseek',
+      model: p.model || '',
+    }
+    message.success('已保存，下一轮对话生效')
+  } catch (e) {
+    message.error(`保存失败：${(e as Error).message}`)
+  } finally {
+    providerSaving.value = false
+  }
+}
 
 // 走 vite dev server 时 /api 已由 proxy 转发到后端，手动指定地址是噪音；
 // 只有生产构建（dist 静态部署、没有 dev proxy）时才需要暴露这个配置。
@@ -133,11 +215,16 @@ async function refresh() {
   }
 }
 
-/** 当前对话通道（用户在个人资料页改的 provider + CF 模型）。
+/** 当前对话通道（「AI 对话」卡片所选的 provider + CF 模型）。
  *  失败不阻塞服务健康卡片 —— 回落默认 deepseek，最坏是显示 .env 口径。 */
 async function loadChatProvider() {
   try {
     chatProvider.value = await getChatProvider()
+    chatModel.value = chatProvider.value.model || ''
+    // 已是 CF 供应商且凭证就位 → 顺手把模型清单拉上，下拉直接有值
+    if (chatProvider.value.provider === 'cloudflare' && chatProvider.value.cloudflare_ready) {
+      void loadCfModels()
+    }
   } catch {
     /* 通道信息加载失败不该拖垮整个系统设置页，静默用默认值 */
   }
@@ -563,7 +650,7 @@ const envColumns: DataTableColumns<EnvRow> = [
                 </div>
                 <div class="ai-model-note">
                   <template v-if="chatProvider.provider === 'cloudflare'">
-                    个人资料页所选；该通道不支持对话内工具调用
+                    上方「AI 对话」卡片所选；该通道不支持对话内工具调用
                   </template>
                   <template v-else>
                     Flash 管文案/轻任务，Pro 管复杂推理<template v-if="health.fallback_model">；兜底 {{ health.fallback_model }}</template>
@@ -585,6 +672,72 @@ const envColumns: DataTableColumns<EnvRow> = [
           </NDescriptions>
 
           <IconTextBtn name="reset" style="margin-top: 12px" @click="refresh">重新检测</IconTextBtn>
+        </NCard>
+
+        <!-- AI 对话通道：DeepSeek（默认，全功能）/ Cloudflare Workers AI（免费额度大，
+             但不支持对话内工具调用、计费按估价）。只影响对话，后台任务仍走 DeepSeek。
+             切换权仅管理员（member 只读，后端同样 403）。2026-10-21 从个人中心搬来：
+             它是系统级通道决策，不是个人偏好。 -->
+        <NCard size="small" title="AI 对话" style="margin-top: 16px">
+          <template #header-extra>
+            <NTag v-if="providerReadonly" size="small" :bordered="false" type="default">只读</NTag>
+          </template>
+          <NSpin :show="cfModelsLoading">
+            <div class="author-form">
+              <NRadioGroup
+                :value="chatProvider.provider"
+                size="small"
+                :disabled="providerReadonly"
+                @update:value="onProviderChange"
+              >
+                <NRadioButton value="deepseek">DeepSeek（默认）</NRadioButton>
+                <NRadioButton value="cloudflare">Cloudflare Workers AI</NRadioButton>
+              </NRadioGroup>
+              <NSelect
+                v-if="chatProvider.provider === 'cloudflare'"
+                v-model:value="chatModel"
+                size="small"
+                style="width: 340px"
+                :options="cfModels.map((m) => ({ label: m.label, value: m.name }))"
+                :loading="cfModelsLoading"
+                :disabled="!chatProvider.cloudflare_ready || providerReadonly"
+                placeholder="选择对话模型"
+                filterable
+              />
+              <IconTextBtn
+                name="check"
+                type="primary"
+                :loading="providerSaving"
+                :disabled="providerReadonly"
+                @click="saveChatProvider"
+              >
+                保存
+              </IconTextBtn>
+            </div>
+          </NSpin>
+          <div class="api-base-hint" style="margin-top: 8px; opacity: 0.75">
+            <template v-if="providerReadonly">
+              对话供应商由管理员统一配置，此处只读。当前通道：<b>{{ chatProvider.provider === 'cloudflare' ? 'Cloudflare Workers AI' : 'DeepSeek' }}</b>。
+            </template>
+            <template v-else-if="chatProvider.provider === 'cloudflare'">
+              <template v-if="chatProvider.cloudflare_ready">
+                <b>Cloudflare 模型不支持对话内工具</b>（查队列、推草稿箱等需切回
+                DeepSeek），用量按估价计费；中文创作效果弱于 DeepSeek，严肃成稿建议默认通道。
+                <span v-if="cfModelsErr" style="color: var(--app-amber-text)">
+                  模型清单拉取失败：{{ cfModelsErr }}（不影响已保存的选择）
+                </span>
+              </template>
+              <template v-else>
+                尚未配置 Cloudflare 凭证：请在 <code>backend/.env</code> 填
+                <code>CLOUDFLARE_API_TOKEN</code> 与 <code>CLOUDFLARE_ACCOUNT_ID</code>
+                并重启后端（获取方式见 .env.example 里的注释）。
+              </template>
+            </template>
+            <template v-else>
+              DeepSeek 全功能通道：支持思维链、工具调用与精确计费。切换供应商对下一轮对话生效，
+              历史消息不受影响；摘要压缩、排版、话题标签等后台任务固定走 DeepSeek。
+            </template>
+          </div>
         </NCard>
 
         <NCard size="small" :title="`可用工具（${tools.length}）`">
@@ -842,6 +995,15 @@ const envColumns: DataTableColumns<EnvRow> = [
   display: flex;
   gap: 8px;
   align-items: center;
+}
+
+/* 表单横排：控件 + 按钮一行放不下时整体换行（窄面板不挤压）。
+   知乎热点与 AI 对话两张卡共用。 */
+.author-form {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
 }
 
 .api-base-hint {

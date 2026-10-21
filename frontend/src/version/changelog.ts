@@ -22,6 +22,14 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '1.3.11',
+    date: '2026-10-21',
+    title: 'AI 对话通道设置从个人中心移至系统设置',
+    highlights: [
+      '「AI 对话」卡片从个人中心搬到系统设置：对话通道的选择会影响所有账号的对话行为与计费口径，本质是系统级决策，不是个人偏好，放在「我是谁」那一页容易误以为是各人自己的事。切换权仍仅管理员（普通成员在该卡片上只读），保持原有边界不变。',
+    ],
+  },
+  {
     version: '1.3.10',
     date: '2026-10-21',
     title: '健壮性修复：配置加载不再依赖进程启动目录',
