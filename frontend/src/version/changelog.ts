@@ -22,6 +22,14 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '1.3.10',
+    date: '2026-10-21',
+    title: '健壮性修复：配置加载不再依赖进程启动目录',
+    highlights: [
+      '修复 .env 配置文件按相对路径加载的问题：任何不在 backend 目录启动的进程（临时脚本、迁移工具等）都会静默读不到配置——表现为微信接口代理未生效、出口 IP 不在白名单而报 40164 等「灵异」故障。现在改为按代码位置定位 .env，从任何目录启动行为一致。',
+    ],
+  },
+  {
     version: '1.3.9',
     date: '2026-10-21',
     title: '修复移动端底部导航有新任务时图标错乱',

@@ -4,15 +4,22 @@
 本地开发把 .env.example 复制成 .env 填写即可。
 """
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# .env 的绝对路径：相对路径 ".env" 依赖进程 cwd，任何不在 backend/ 目录
+# 启动的进程（supervisord 的工作目录若配错、临时脚本、migrate 工具）都会
+# 静默读不到配置——表现为代理没生效、LLM key 为空等「灵异」故障。
+# 本文件位于 backend/app/core/config.py，上溯三级即 backend/。
+_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=str(_ENV_FILE),
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
@@ -22,7 +29,7 @@ class Settings(BaseSettings):
     APP_NAME: str = "内容运营工作台"
     # 版本号：全系统唯一来源。前端从 /health 读它展示，并据它判断「是否升过级」
     # 来弹「新功能」提醒。改版本请同步 frontend/package.json（仅作人工对照）。
-    APP_VERSION: str = "1.3.9"
+    APP_VERSION: str = "1.3.10"
     APP_ENV: Literal["dev", "prod"] = "dev"
     DEBUG: bool = True
     API_PREFIX: str = "/api"
