@@ -22,6 +22,14 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '1.3.7',
+    date: '2026-10-21',
+    title: '修复更新日志弹窗窄窗口下版本号竖排的问题',
+    highlights: [
+      '修复「新功能 / 更新日志」弹窗：标题文字过长时会把版本号（如 v1.3.6）挤压成逐字竖排、日期也被挤得看不见。现在版本号与日期固定在首行左右两端，标题改为可自动换行的 chip 另起一行，窄窗口下也不再挤压。',
+    ],
+  },
+  {
     version: '1.3.6',
     date: '2026-10-21',
     title: '文内配图体验优化：描述框加高、图片可放大、Cloudflare 中文提示词修复',

@@ -6,7 +6,7 @@
  *
  * 纯展示，不依赖任何业务状态；版本比较与「已看」推进在 version store 里做。
  */
-import { NButton, NModal, NTag } from 'naive-ui'
+import { NButton, NModal } from 'naive-ui'
 
 import type { ChangelogEntry } from '@/version/changelog'
 
@@ -42,11 +42,9 @@ function close(): void {
       <section v-for="e in entries" :key="e.version" class="clog-entry">
         <header class="clog-head">
           <span class="clog-ver">v{{ e.version }}</span>
-          <NTag v-if="e.title" size="small" :bordered="false" type="primary">
-            {{ e.title }}
-          </NTag>
           <span class="clog-date">{{ e.date }}</span>
         </header>
+        <div v-if="e.title" class="clog-title">{{ e.title }}</div>
         <ul class="clog-list">
           <li v-for="(h, i) in e.highlights" :key="i">{{ h }}</li>
         </ul>
@@ -73,14 +71,17 @@ function close(): void {
   border-top: 1px solid var(--app-border);
 }
 
+/* 第一行：版本号 + 日期（左右两端），均不收缩不换行 */
 .clog-head {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   gap: 10px;
-  margin-bottom: 10px;
+  margin-bottom: 6px;
 }
 
 .clog-ver {
+  flex-shrink: 0;
+  white-space: nowrap;
   font-size: 14px;
   font-weight: 700;
   color: var(--app-text);
@@ -88,9 +89,25 @@ function close(): void {
 
 .clog-date {
   margin-left: auto;
+  flex-shrink: 0;
+  white-space: nowrap;
   font-size: 12px;
   color: var(--app-text-3);
   font-variant-numeric: tabular-nums;
+}
+
+/* 标题 chip：另起一行，长了就在 chip 内部换行（NTag 自带 nowrap 用不了） */
+.clog-title {
+  display: inline-block;
+  max-width: 100%;
+  margin-bottom: 10px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.6;
+  color: var(--app-primary-soft);
+  background: var(--app-primary-a14);
 }
 
 .clog-list {
