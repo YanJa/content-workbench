@@ -358,7 +358,6 @@ async def push_wechat_draft(
     # transfer_inline_images 不会处理它 —— 不转存则发布后外链失效。
     if db is not None:
         try:
-            import re as _re
             from pathlib import Path as _Path
 
             from app.core.config import settings as _settings
@@ -370,13 +369,15 @@ async def push_wechat_draft(
                 local_qr = _Path(_settings.UPLOAD_DIR) / acc.qrcode_path
                 qrfname = _Path(acc.qrcode_path).name
                 if local_qr.exists() and qrfname:
-                    # 按文件名匹配（二维码 url 同样有 &amp;/ 签名时效问题，子串匹配会失配）
-                    pat = _re.compile(r'src="([^"]*' + _re.escape(qrfname) + r')"')
-                    m = pat.search(html)
-                    if m:
+                    # 二维码 url 同样带 &amp;/ 签名查询串，必须整体替换 src
+                    # （复用正文图转存的同一个函数，曾因正则失配静默不转存）
+                    from app.services.wechat import _replace_src_by_filename
+
+                    _, hits = _replace_src_by_filename(html, qrfname)
+                    if hits:
                         try:
                             wx_url = await client.upload_image(str(local_qr))
-                            html = html[: m.start(1)] + wx_url + html[m.end(1) :]
+                            html, _ = _replace_src_by_filename(html, qrfname, wx_url)
                         except Exception as exc:  # noqa: BLE001
                             logger.warning("二维码转存失败（保留原地址）: %s", exc)
         except Exception as exc:  # noqa: BLE001

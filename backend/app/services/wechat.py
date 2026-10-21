@@ -91,6 +91,44 @@ def _friendly_error(data: dict) -> str:
 
 
 
+def _replace_src_by_filename(
+    html: str, fname: str, new_url: str | None = None
+) -> tuple[str, int]:
+    """把 html 里所有指向文件名为 fname 的 `<img src="...">` 整体替换为 new_url。
+
+    返回 (新 html, 命中次数)。new_url 传 None 时只探测不改动（调用方用于
+    先判断 html 里有没有这个文件的引用，避免白上传）。
+
+    ⚠️ 正则必须容忍文件名后面的查询串：本地图片地址是 HMAC 签名直链
+    （`?o={owner}&sig=...`，见 core/security.link_url），且 `&` 在 html 里
+    会被转义成 `&amp;`。三个坑都真实踩过：
+    1. 早期写成 `src="([^"]*fname)"`，要求文件名紧贴结束引号——签名直链
+       上线后查询串挡在中间，**全部静默失配**，正文图一张都没转存，微信
+       抓不到图，草稿正文全是空的（只剩封面，因为封面走另一条链路）。
+    2. 匹配必须把整个属性值（含查询串）一起换掉，只在文件名处截断替换的
+       话，微信 url 后面会挂着无效签名参数，图照样裂。
+    3. 只匹配**站点相对路径**（`/` 开头）的 src：本地引用一定是 `/api/...`，
+       而微信 CDN 是绝对地址（https://mmbiz.qpic.cn/...）且**可能含原文件名**。
+       不设这道守卫的话，对已转存过的 html 再跑一次会把微信 url 也当本地
+       引用重复上传——守卫同时让本函数幂等。
+    """
+    if not fname:
+        return html, 0
+    import re
+
+    # 兼容单/双引号；属性值内不会出现裸引号，[^"'] 不会跨属性边界
+    pat = re.compile(r"src=([\"'])/[^\"']*" + re.escape(fname) + r"[^\"']*\1")
+    matches = list(pat.finditer(html))
+    if new_url is None or not matches:
+        return html, len(matches)
+    out = html
+    # 从后往前替换，避免偏移失效；同一张图在正文出现多次只算一次上传
+    for m in reversed(matches):
+        q = m.group(1)
+        out = out[: m.start()] + f"src={q}{new_url}{q}" + out[m.end() :]
+    return out, len(matches)
+
+
 class WeChatClient:
     def __init__(self, appid: str | None = None, secret: str | None = None) -> None:
         # 不传则回退 .env（兼容老行为：只有一套全局凭证时的用法）
@@ -217,22 +255,50 @@ class WeChatClient:
         为什么必须做：公众号发布后，正文里的**外链图片会失效**（含本地/内网地址），
         必须先上传到微信素材库换成它自己的 url。
 
-        `images` 来自 content.images（[{url, path, alt}]）。本地 url 形如
-        `/api/content/images/{cid}/{file}`，我们**按文件名**在 html 里定位并替换。
+        两条路径互补：
+        1. **扫正文**（主路径）：本地图片地址形如
+           `/api/content/images/{cid}/{file}?o=...&sig=...`（HMAC 签名直链，
+           映射规则见 routers/layout.serve_image：UPLOAD_DIR/gen/{cid}/{file}），
+           直接从 html 里提取引用。正文才是「有哪些图」的权威来源——
+           content.images 元数据会与正文漂移（实测：正文引了图元数据没记、
+           元数据记了图正文没引，两种都有）。
+        2. **扫元数据**（兜底）：content.images 里记了、磁盘上还在的图，
+           若正文里仍有它的本地引用（URL 形态不规范没被路径 1 覆盖到的），
+           按文件名再兜一次。
 
-        ⚠️ 为什么用文件名而非完整 URL 子串匹配：
-        body_html 里 `<img src>` 的 `&` 会被 HTML 转义成 `&amp;`，而 content.images[].url
-        是原始 `&`；两者签名（HMAC+时效）相同，但 `&amp;` 差异导致 `local_url in html`
-        恒为 False，图片永远不转存 —— 微信抓不到图就报 40007 invalid media_id。
-        文件名部分不受 `&amp;` 和签名时效影响，最稳妥。
+        替换统一走 _replace_src_by_filename（整体换掉 src 属性值，含查询串），
+        踩坑记录见那个函数的文档。
         """
-        if not images:
+        if not html:
             return html
-        from pathlib import Path
         import re
+        from pathlib import Path
 
         out = html
-        for img in images:
+
+        # 1) 扫正文：/api/content/images/{cid}/{fname}（容忍签名查询串与 &amp;）
+        scan = re.compile(
+            r"src=([\"'])(/api/content/images/([^/\"'?]+)/([^\"'?]+))[^\"']*\1"
+        )
+        seen: dict[str, str] = {}  # fname -> 磁盘绝对路径
+        for m in scan.finditer(out):
+            cid, fname = m.group(3), m.group(4)
+            if fname in seen:
+                continue
+            full = Path(settings.UPLOAD_DIR) / "gen" / cid / fname
+            if full.exists():
+                seen[fname] = str(full)
+        for fname, full in seen.items():
+            try:
+                new_url = await self.upload_image(full)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("正文图片转存失败（保留原地址）: %s", exc)
+                continue
+            out, n = _replace_src_by_filename(out, fname, new_url)
+            logger.info("正文图片转存: %s → %d 处引用已替换", fname, n)
+
+        # 2) 扫元数据兜底
+        for img in images or []:
             path = img.get("path") or ""
             if not path:
                 continue
@@ -240,18 +306,25 @@ class WeChatClient:
             full = Path(settings.UPLOAD_DIR) / path
             if not full.exists():
                 continue
-            # 按文件名定位 <img src="...fname...">，兼容 src 里 & 与 &amp; 两种写法
-            pat = re.compile(r'src="([^"]*' + re.escape(fname) + r')"')
-            m = pat.search(out)
-            if not m:
+            # 先探一下 html 里还有没有这个文件的本地引用，没有就跳过，别白上传
+            _, hits = _replace_src_by_filename(out, fname)
+            if hits == 0:
                 continue
             try:
                 new_url = await self.upload_image(str(full))
             except Exception as exc:  # noqa: BLE001
                 logger.warning("正文图片转存失败（保留原地址）: %s", exc)
                 continue
-            # 只替换 src 内部（保留外层 src="..."），新 url 不带查询串
-            out = out[: m.start(1)] + new_url + out[m.end(1) :]
+            out, n = _replace_src_by_filename(out, fname, new_url)
+            logger.info("正文图片转存（元数据兜底）: %s → %d 处引用已替换", fname, n)
+
+        # 3) 仍有残留本地引用的（文件不在磁盘上了）——记一笔，推送前能排查
+        leftover = len(scan.findall(out))
+        if leftover:
+            logger.warning(
+                "正文仍有 %d 处本地图片未能转存（文件已不在磁盘，推送后会缺图，"
+                "建议重新「加工排版」生成正文）", leftover,
+            )
         return out
 
     async def add_draft(
