@@ -103,12 +103,16 @@ const menuOptions = computed<MenuOption[]>(() =>
   })),
 )
 
-/** 移动端底部导航直接渲染静态配置，避免用函数式 label 导致渲染异常。 */
+/**
+ * 移动端底部导航配置。与桌面端一样用独立红点表达「有待发布」，
+ * 但**不能**像早期那样把 ● 拼进 label 字符串——底栏 tab 只有
+ * 屏宽/7（375px 下约 53px），「发布队列●」直接换行，60px 高的底栏
+ * 被撑爆成图标+两行错行文字（2026-10-21 用户截图复现）。
+ * 现在红点是绝对定位在图标右上角的独立元素，不占文档流。
+ */
 const mobileTabs = computed(() =>
   visibleNav.value.map((n) =>
-    n.key === 'queue' && queue.pendingCount > 0
-      ? { ...n, label: `${n.label} ●` }
-      : n,
+    n.key === 'queue' && queue.pendingCount > 0 ? { ...n, dot: true } : { ...n, dot: false },
   ),
 )
 
@@ -346,7 +350,10 @@ onMounted(async () => {
                 :class="{ active: activeKey === item.key }"
                 @click="onMenuSelect(item.key)"
               >
-                <NavIcon :name="item.icon" :size="20" />
+                <span class="tab-icon-wrap">
+                  <NavIcon :name="item.icon" :size="20" />
+                  <span v-if="item.dot" class="tab-dot" />
+                </span>
                 <span class="tab-label">{{ item.label }}</span>
               </div>
             </div>
@@ -555,6 +562,34 @@ onMounted(async () => {
   user-select: none;
   -webkit-tap-highlight-color: transparent;
   transition: color 0.15s;
+  min-width: 0;
+}
+
+/* 图标定位容器：红点以它为基准，不占文档流、不挤压文字 */
+.tab-icon-wrap {
+  position: relative;
+  display: inline-flex;
+  line-height: 1;
+}
+
+/* 底部栏「发布队列」红点：有待发布记录时挂在图标右上角 */
+.tab-dot {
+  position: absolute;
+  top: -1px;
+  right: -4px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #f5222d;
+  flex-shrink: 0;
+}
+
+.tab-label {
+  /* tab 只有屏宽/7，文字绝不换行——长了就省略号，绝不把底栏撑高 */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
 }
 
 .tab-icon {
