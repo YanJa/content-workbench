@@ -6,6 +6,7 @@
 from app.models.content import Content, QueueItem  # noqa: F401
 from app.models.conversation import Conversation, Message  # noqa: F401
 from app.models.invite import InviteCode  # noqa: F401
+from app.models.knowledge import KnowledgeChunk, KnowledgeItem  # noqa: F401
 from app.models.renderjob import RenderJob  # noqa: F401
 from app.models.settings import AppSetting, WeChatAccount  # noqa: F401
 from app.models.permission import RolePermission  # noqa: F401
@@ -30,6 +31,8 @@ __all__ = [
     "QuotaUsage",
     "RolePermission",
     "InviteCode",
+    "KnowledgeItem",
+    "KnowledgeChunk",
     "HotSnapshot",
     "HotTopic",
     "ZhihuApiUsage",

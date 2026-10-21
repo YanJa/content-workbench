@@ -25,6 +25,7 @@ import { useQueueStore } from '@/stores/queue'
 import { confirmTool } from '@/api/tools'
 import { cancelProcessing } from '@/api/layout'
 import { getContent, saveToQueue } from '@/api/queue'
+import { createKnowledge } from '@/api/knowledge'
 import type { QueueItem, QueueStatus, ContentItem } from '@/types'
 import LayoutPanel from '@/components/LayoutPanel.vue'
 import { useAuthStore } from '@/stores/auth'
@@ -45,6 +46,26 @@ const auth = useAuthStore()
  * 的是灰的，会以为页面坏了。
  */
 const pushGate = usePermGate({ perm: 'wechat.push', quota: 'wechat_push' })
+/** 「存入知识库」的门控：权限同后端 POST /knowledge/items 的 knowledge.create */
+const kbGate = usePermGate({ perm: 'knowledge.create' })
+/** 正在存入知识库的 content_id（行级 loading，防连点重存） */
+const savingKbId = ref('')
+
+/**
+ * 把这篇成稿存进知识库。后端取的是 Content.body（Markdown 正文），
+ * 不是排版后的 HTML —— 内联样式对检索毫无价值，还会污染上下文。
+ */
+async function onSaveKnowledge(row: QueueItem) {
+  savingKbId.value = row.content_id
+  try {
+    await createKnowledge({ content_id: row.content_id })
+    message.success('已存入知识库，之后写稿时会自动参考')
+  } catch (e) {
+    message.error((e as Error).message || '存入知识库失败')
+  } finally {
+    savingKbId.value = ''
+  }
+}
 
 /** 从对话页跳来时带的 content_id，用于定位并高亮对应行 */
 const highlightId = ref('')
@@ -190,7 +211,7 @@ const columns = computed<DataTableColumns<QueueItem>>(() => [
   {
     title: '操作',
     key: 'actions',
-    width: 320,
+    width: 360,
     render: (row) => {
       // 加工中（排版/生图）禁用所有会改状态的操作，避免重复触发/冲突
       const busy = !!row.processing
@@ -252,6 +273,14 @@ const columns = computed<DataTableColumns<QueueItem>>(() => [
               { disabled: busy || (isGzh && !row.wechat_media_id) },
             )
           : null,
+        // 存入知识库：把这篇成稿变成「AI 写下一篇时的参考素材」。
+        // 重复存不会去重（后端按条记），但删过一次就能在知识库页看到并删掉，
+        // 所以这里不做二次确认。
+        kbGate.blocked.value
+          ? actionBtn('book', '没有存入知识库的权限，请联系管理员', () => {}, { disabled: true })
+          : actionBtn('book', '存入知识库（写稿时 AI 自动参考）', () => onSaveKnowledge(row), {
+              loading: savingKbId.value === row.content_id,
+            }),
         // 删除
         actionBtn('trash', '删除该内容', () => onDelete(row), { type: 'error', disabled: busy }),
         // 来源是某条对话 → 跳回会话并定位到那条 AI 回复（非会话来源没有此字段）

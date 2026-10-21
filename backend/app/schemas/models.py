@@ -63,6 +63,39 @@ class ChatRequest(BaseModel):
     # 前端为这条回复预生成的消息 id，落库时直接当主键。
     # 于是「保存到队列」上报的 msg_id 与历史消息 id 一致，队列页才能反跳定位。
     assistant_msg_id: str | None = None
+    # 本轮是否从私有知识库召回素材（默认开，前端输入框旁开关控制）。
+    # null 视为 true：老客户端不带这个字段时保持「自动召回」的默认体验。
+    use_knowledge: bool | None = None
+
+
+# ---------------------------------------------------------------- 知识库
+class KnowledgeCreate(BaseModel):
+    """新增一条素材。
+
+    两种互斥填法：
+      - `text`：直接给原文（手动录入 / 抓取网页内容）；
+      - `content_id`：复用工作台已产成稿（后端自己取 Content.body）。
+    两个都给时以 text 为准——前端编辑框里的内容比库里的更新。
+    """
+
+    title: str = Field(default="", max_length=300)
+    text: str = ""
+    content_id: str | None = None
+    source: Literal["manual", "content", "upload", "url"] = "manual"
+    origin_ref: str = ""
+
+
+class KnowledgeUpdate(BaseModel):
+    """目前只开放改标题：改内容等于重切重算向量，用户该删了重加。"""
+
+    title: str = Field(default="", max_length=300)
+
+
+class KnowledgeSearchRequest(BaseModel):
+    """召回调试用：看看某句话能命中哪些素材。"""
+
+    query: str
+    top_k: int = Field(default=5, ge=1, le=20)
 
 
 class ToolConfirmRequest(BaseModel):

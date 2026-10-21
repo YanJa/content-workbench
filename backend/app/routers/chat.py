@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import AsyncGenerator
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -28,6 +29,7 @@ from app.schemas.models import (
     ToolConfirmRequest,
 )
 from app.services import conversation as conv_svc
+from app.services import knowledge as kb
 from app.services.agent import execute_confirmed_tool, run_chat
 from app.services.llm import get_llm
 from app.tools.registry import registry
@@ -108,7 +110,34 @@ async def chat_stream(
         if provider == "cloudflare":
             # CF 模型没有工具可用：system 里的「工具使用纪律」段只会干扰它
             system_prompt = strip_tool_discipline(system_prompt)
-        messages = await conv_svc.build_context(db, conv, system_prompt)
+
+        # 知识库召回：放在知道 provider 之后，好按通道挑 token 预算
+        # （CF 的 8b 模型上下文小得多，给一样的预算会挤爆）。
+        # 整体 try/except —— 召回是旁路，任何异常都只能让本轮没素材，
+        # 不能让对话直接 500。
+        snippets = ""
+        kb_hits: list[dict] = []
+        if req.use_knowledge is not False:
+            budget = (
+                settings.KB_MAX_CHARS_CF if provider == "cloudflare" else settings.KB_MAX_CHARS
+            )
+            t0 = time.time()
+            try:
+                snippets, kb_hits = await kb.recall_for_prompt(
+                    db, owner, req.message, max_chars=budget
+                )
+                if kb_hits:
+                    logger.info(
+                        "知识库召回 %d 片 / %.0f 字（%.2fs, %s）",
+                        len(kb_hits),
+                        len(snippets),
+                        time.time() - t0,
+                        kb_hits[0].get("match"),
+                    )
+            except Exception as exc:  # noqa: BLE001 - 旁路降级
+                logger.warning("知识库召回失败（本轮无素材继续）：%s", exc)
+
+        messages = await conv_svc.build_context(db, conv, system_prompt, knowledge=snippets)
 
         ctx = {
             "db": db,

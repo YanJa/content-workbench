@@ -48,6 +48,11 @@ export interface ChatRequest {
   enable_tools?: boolean
   /** 前端为这条回复预生成的 id，落库时当主键（让 meta.msg_id 与历史消息 id 一致） */
   assistant_msg_id?: string | null
+  /**
+   * 本轮是否从私有知识库召回素材。默认开（后端 null 视为 true），
+   * 关掉后这一轮完全不查素材——临时想让 AI 自由发挥时用。
+   */
+  use_knowledge?: boolean | null
 }
 
 /**
@@ -176,6 +181,65 @@ export interface QueuePage {
   total: number
   page: number
   page_size: number
+}
+
+// ---------------------------------------------------------------- 知识库
+/** 素材来源 */
+export type KnowledgeSource = 'manual' | 'content' | 'upload' | 'url'
+/** 素材状态：pending=排队 / processing=向量化中 / ready=可用 / partial=部分片段失败 / failed=失败 */
+export type KnowledgeStatus = 'pending' | 'processing' | 'ready' | 'partial' | 'failed'
+
+export interface KnowledgeItem {
+  id: string
+  source: KnowledgeSource
+  title: string
+  origin_ref: string
+  status: KnowledgeStatus
+  chunk_count: number
+  error: string
+  char_count: number
+  created_at: number
+  updated_at: number
+  /** 仅详情接口返回 */
+  raw_text?: string
+  chunks?: KnowledgeChunk[]
+}
+
+export interface KnowledgeChunk {
+  id: string
+  seq: number
+  content: string
+  char_len: number
+  status: KnowledgeStatus
+  error: string
+}
+
+export interface KnowledgePage {
+  items: KnowledgeItem[]
+  total: number
+  page: number
+  page_size: number
+  pages: number
+}
+
+export interface KnowledgeStats {
+  items: number
+  chunks: number
+  ready_chunks: number
+  pending_chunks: number
+  items_limit: number
+  chunks_limit: number
+  /** 向量化通道是否已配置（没配则检索退化为关键词匹配） */
+  vector_ready: boolean
+  embed_model: string
+}
+
+export interface KnowledgeHit {
+  item_id: string
+  title: string
+  content: string
+  score: number
+  match: 'vector' | 'keyword'
 }
 
 /** 渲染任务 */

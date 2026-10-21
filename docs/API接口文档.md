@@ -621,6 +621,47 @@ ffmpeg -y -i out.mp4 -map 0:s:0 extracted.srt
 
 ---
 
+## 知识库（RAG 素材）
+
+用户私有的「给 AI 用的素材库」：素材入库后自动切分 + 向量化（Cloudflare bge-m3），
+对话写稿时按语义召回相关片段、以独立 system 消息注入上下文（见 `services/knowledge.py`）。
+向量化不可用时检索自动降级为关键词匹配，**绝不阻塞对话**。
+
+| 方法 | 路径 | 权限 | 说明 |
+|---|---|---|---|
+| GET | `/api/knowledge/stats` | 登录即可 | 概览：条数 / 片数 / 就绪片数 / 向量化通道是否就绪 |
+| GET | `/api/knowledge/items?q=&source=&status=&page=&page_size=` | 登录即可 | 素材列表（分页 + 搜索 + 筛选，全在后端做） |
+| POST | `/api/knowledge/items` | knowledge.create | 新增：`{title?, text}` 或 `{title?, content_id}`（复用成稿，取 Content.body） |
+| GET | `/api/knowledge/items/{id}` | 登录即可 | 详情：含 `raw_text` 与切片明细 |
+| PATCH | `/api/knowledge/items/{id}` | knowledge.delete | 改标题（内容不支持改——改了等于重切重算） |
+| DELETE | `/api/knowledge/items/{id}` | knowledge.delete | 删素材并级联删片段 |
+| POST | `/api/knowledge/items/{id}/retry` | knowledge.create | 重跑失败/中断的片段 |
+| POST | `/api/knowledge/search` | 登录即可 | 召回调试：`{query, top_k}` → 命中片段 + 分数 + 匹配方式 |
+
+注：对话请求 `POST /api/chat/stream` 的 body 新增 `use_knowledge`（默认 true），
+为 false 时该轮完全跳过召回。
+
+`GET /api/knowledge/stats` 响应：
+
+```json
+{
+  "items": 1, "chunks": 1, "ready_chunks": 1, "pending_chunks": 0,
+  "items_limit": 300, "chunks_limit": 3000,
+  "vector_ready": true, "embed_model": "@cf/baai/bge-m3"
+}
+```
+
+`POST /api/knowledge/search` 响应（`match=vector` 为语义命中，`keyword` 为降级命中；
+`score` 两者量纲不同——余弦 0~1，关键词是 query 二字组命中比例）：
+
+```json
+{
+  "query": "买了之后多久能退款",
+  "total": 1,
+  "hits": [{"item_id": "…", "title": "产品FAQ", "content": "…前300字", "score": 0.7847, "match": "vector"}]
+}
+```
+
 ## 声音复刻
 
 「提取我的声音」= 声音复刻（voice cloning）。用户传一段自己的录音，系统抽取出

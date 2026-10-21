@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     APP_NAME: str = "内容运营工作台"
     # 版本号：全系统唯一来源。前端从 /health 读它展示，并据它判断「是否升过级」
     # 来弹「新功能」提醒。改版本请同步 frontend/package.json（仅作人工对照）。
-    APP_VERSION: str = "1.3.11"
+    APP_VERSION: str = "1.4.0"
     APP_ENV: Literal["dev", "prod"] = "dev"
     DEBUG: bool = True
     API_PREFIX: str = "/api"
@@ -154,6 +154,50 @@ class Settings(BaseSettings):
     # 注意：CF 模型不支持 function calling，切到 CF 后对话内的工具
     # （查队列/推草稿箱等）自动停用；计费走兜底估价（用量页显示「按模型估价」）。
     CLOUDFLARE_CHAT_MODEL: str = "@cf/meta/llama-3.1-8b-instruct-fp8"
+
+    # ---------- 知识库（RAG）：文本向量化 ----------
+    # ⚠️ 模型选型：DeepSeek 侧**没有** embedding 端点；CF 免费额度里的
+    # bge-small/base/large-en-v1.5 都是英文模型，对中文素材基本失效。
+    # bge-m3 是多语言（100+ 语言）模型，是目前唯一中文可用的选择。
+    CLOUDFLARE_EMBED_MODEL: str = "@cf/baai/bge-m3"
+    CLOUDFLARE_EMBED_TIMEOUT: int = 30
+
+    # 单条素材切成多长一片（中文按**字符**计，不按 token：中文 1 字≈1 token，
+    # 500 字对嵌入模型来说既够语义完整又不会超上下文）
+    KB_CHUNK_SIZE: int = 500
+    # 相邻片段的重叠字数：缓解「一句话被切在两片边界上」导致两边都不完整
+    KB_CHUNK_OVERLAP: int = 60
+    # 短于此长度的碎片并入上一片（「如图」「。」这类碎片检索价值为零）
+    KB_CHUNK_MIN: int = 80
+    # 单条素材最多切多少片（长文档防失控）
+    KB_MAX_CHUNKS_PER_ITEM: int = 200
+    # 每次调 embedding 接口批量送多少片（批越大越少请求、越省额度）
+    KB_EMBED_BATCH: int = 32
+    # 检索返回条数与最低相似度：低于阈值视为「没命中」，不注入上下文
+    KB_TOP_K: int = 5
+    # 向量余弦阈值：bge-m3 下，「同一件事的不同说法」通常在 0.6+，
+    # 0.45 以下基本是噪声（实测无关问题约 0.2~0.35）
+    KB_MIN_SCORE: float = 0.45
+    # 关键词降级（向量化不可用时的兜底）要求**至少命中几个二字组**。
+    # 刻意不复用 KB_MIN_SCORE：那是余弦（0~1，语义尺度完全不同），这是
+    # 「query 的二字组命中了几个」——长问句的比例天然低（10 个二字组命中
+    # 3 个才 0.3），套 0.45 会把所有降级结果都误杀。默认 1（宁可多召回
+    # 一条也不漏）；嫌吵就调成 2。
+    KB_MIN_KEYWORD_HITS: int = 1
+    # 注入上下文的素材总字数上限（硬顶，防止把对话上下文挤爆）
+    KB_MAX_CHARS: int = 3000
+    # CF 通道的 8b 模型上下文小得多，单独给个更小的预算
+    KB_MAX_CHARS_CF: int = 1200
+    # 单条片段截断阈值（超过就截断，避免一条素材吃掉整个预算）
+    KB_SNIPPET_MAX_CHARS: int = 1200
+    # 每人素材条数 / 片段总数上限（存量上限，不是周期配额 —— 走这里而不是
+    # QUOTA_FEATURES，后者是「每天能用几次」的口径）
+    KB_MAX_ITEMS_PER_USER: int = 300
+    KB_MAX_CHUNKS_PER_USER: int = 3000
+    # 短追问（少于该字数）跳过检索：如「继续」「再长一点」，召回没有意义
+    KB_MIN_QUERY_LEN: int = 6
+    # 结果精排（bge-reranker-base）：一期不开，留配置位
+    KB_RERANK_ENABLED: bool = False
 
     # ---------- 知乎数据开放平台（热点灵感的数据源） ----------
     # 在 https://developer.zhihu.com/profile 申请。鉴权是 Bearer + 秒级时间戳

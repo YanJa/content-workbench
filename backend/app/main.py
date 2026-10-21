@@ -23,6 +23,7 @@ from app.routers import (
     admin,
     auth,
     chat,
+    knowledge,
     layout,
     queue,
     revenue,
@@ -86,6 +87,12 @@ async def lifespan(app: FastAPI):
     await load_runtime_secret()
     asyncio.create_task(loop_hot_fetch())
 
+    # 知识库：把上次进程中断时没跑完的向量化重新排队（只捞 pending，
+    # failed 是明确失败，等用户在列表页决定要不要重试）。
+    from app.services.knowledge import reembed_failed_on_startup
+
+    asyncio.create_task(reembed_failed_on_startup())
+
     if not settings.DEEPSEEK_API_KEY:
         logger.warning("未配置 DEEPSEEK_API_KEY，AI 功能将不可用。请在 .env 中填写。")
 
@@ -128,6 +135,7 @@ app.include_router(usage.router, prefix=settings.API_PREFIX)
 app.include_router(revenue.router, prefix=settings.API_PREFIX)
 app.include_router(admin.router, prefix=settings.API_PREFIX)
 app.include_router(zhihu.router, prefix=settings.API_PREFIX)
+app.include_router(knowledge.router, prefix=settings.API_PREFIX)
 
 
 @app.get("/", tags=["系统"])

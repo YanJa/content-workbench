@@ -58,11 +58,21 @@ interface NavItem {
   adminOnly?: boolean
   /** 菜单级权限点（见 backend/app/core/rbac.py 的 PERMISSIONS） */
   perm?: string
+  /**
+   * 是否进移动端底部导航（默认 true）。
+   *
+   * 知识库设 false：底栏已有 6 项，375px 下每格约 53px，再加一项必然挤压
+   * （v1.3.9 才修过「发布队列●」换行撑爆底栏的 bug）。知识库是「配置型」
+   * 页面，不是每天要点的入口，留在侧栏里就够了。
+   */
+  mobile?: boolean
 }
 
 const NAV: NavItem[] = [
   { key: 'chat', icon: 'chat', label: '对话创作', perm: 'menu.chat' },
   { key: 'queue', icon: 'queue', label: '发布队列', perm: 'menu.queue' },
+  // 知识库**不进移动端底栏**（见 NavItem.mobile 的说明）
+  { key: 'knowledge', icon: 'book', label: '知识库', perm: 'menu.knowledge', mobile: false },
   { key: 'video', icon: 'video', label: '视频生产', perm: 'menu.video' },
   { key: 'usage', icon: 'usage', label: 'AI 用量', perm: 'menu.usage' },
   { key: 'revenue', icon: 'revenue', label: '收益看板', perm: 'menu.revenue' },
@@ -111,9 +121,11 @@ const menuOptions = computed<MenuOption[]>(() =>
  * 现在红点是绝对定位在图标右上角的独立元素，不占文档流。
  */
 const mobileTabs = computed(() =>
-  visibleNav.value.map((n) =>
-    n.key === 'queue' && queue.pendingCount > 0 ? { ...n, dot: true } : { ...n, dot: false },
-  ),
+  visibleNav.value
+    .filter((n) => n.mobile !== false)
+    .map((n) =>
+      n.key === 'queue' && queue.pendingCount > 0 ? { ...n, dot: true } : { ...n, dot: false },
+    ),
 )
 
 const activeKey = computed(() => (route.name as string) ?? 'chat')

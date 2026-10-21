@@ -13,6 +13,18 @@ from app.core.config import settings
 from app.core.logging import logger
 from app.models.conversation import Conversation, Message
 
+# 知识库素材的注入头。措辞是反复权衡过的：
+#  - 「仅供本次写稿参考」划清边界，避免模型把素材当用户指令去执行；
+#  - 「不要逐字照抄」防洗稿式复述，也防素材里的旧数据被当成事实硬写；
+#  - 「不要提及本段存在」避免模型在成稿里冒出「根据你提供的素材1」这种话；
+#  - 「与问题无关则忽略」防止素材反过来带偏本轮意图（召回是模糊匹配，
+#    阈值之上不代表真的相关）。
+KNOWLEDGE_HEADER = (
+    "【知识库素材】以下片段来自用户的私有知识库，仅供本次写稿参考。"
+    "相关时参考其中的事实、术语与行文风格；不要逐字照抄，不要在成稿里标注"
+    "或向用户提及这些素材的存在。与本次问题无关则直接忽略。"
+)
+
 
 async def create_conversation(
     db: AsyncSession, owner: str, title: str = "新对话", scene: str = "chat"
@@ -186,18 +198,26 @@ def _tool_calls_to_context(tool_calls: dict | None) -> list[dict[str, Any]]:
 
 
 async def build_context(
-    db: AsyncSession, conv: Conversation, system_prompt: str
+    db: AsyncSession,
+    conv: Conversation,
+    system_prompt: str,
+    knowledge: str | None = None,
 ) -> list[dict[str, Any]]:
     """构造发给模型的消息列表。
 
     上下文策略：
-      [system] + [历史摘要（若有）] + [最近 N 轮原文]
+      [system] + [历史摘要（若有）] + [知识库素材（若有）] + [最近 N 轮原文]
 
     为什么不无脑全塞：虽然有 1M 上下文，但输入 token 是要花钱的。
     保留最近 N 轮原文 + 更早内容压缩成摘要，是成本与效果的平衡点。
 
     注意 reasoning（思维链）**不进上下文**：那是给人看的推理过程，
     回灌既白烧 token，又有 provider 兼容风险。
+
+    `knowledge` 是已拼好的素材文本（拼装见 `services/knowledge.build_snippets`），
+    这里只负责塞进去。**必须是独立 system 消息，不能拼进 system_prompt**：
+    `prompts.platforms.strip_tool_discipline()` 会从「工具使用纪律」标记一刀切，
+    拼在 system_prompt 尾部的素材在 CF 通道会被整段丢弃（2026-10-21 实测确认）。
     """
     msgs = await list_messages(db, conv.id)
 
@@ -210,6 +230,13 @@ async def build_context(
     if conv.summary:
         result.append(
             {"role": "system", "content": f"【此前对话摘要】\n{conv.summary}"}
+        )
+
+    # 知识库素材：独立一条 system 消息，紧跟摘要、在最近 N 轮之前 ——
+    # 越靠前越容易被模型当作「背景设定」而不是「刚说过的话」。
+    if knowledge:
+        result.append(
+            {"role": "system", "content": f"{KNOWLEDGE_HEADER}\n\n{knowledge}"}
         )
 
     for m in recent:

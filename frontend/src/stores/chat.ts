@@ -19,6 +19,14 @@ export const useChatStore = defineStore('chat', () => {
   const messages = ref<ChatMessage[]>([])
   const streaming = ref(false)
   const platform = ref<Platform | null>(null)
+  /**
+   * 本轮是否带上知识库素材（默认开）。
+   *
+   * 关掉的意义：素材是「相关就参考」，偶尔会带偏——比如要 AI 完全自由发挥、
+   * 或本轮话题跟库存素材无关时。开关只影响**本轮请求**，不是全局设置：
+   * 写稿是逐轮的事，用户要的是「这一句不带素材」。
+   */
+  const useKnowledge = ref(true)
 
   let controller: AbortController | null = null
 
@@ -121,6 +129,7 @@ export const useChatStore = defineStore('chat', () => {
         // 让这条回复的 id 落库时当主键：保存到队列上报的 msg_id 才能与
         // 历史消息 id 对上，队列页「回到对话」才定位得到这条回复
         assistant_msg_id: assistant.id,
+        use_knowledge: useKnowledge.value,
       },
       {
         onEvent: (evt) => {
@@ -236,6 +245,7 @@ export const useChatStore = defineStore('chat', () => {
     messages,
     streaming,
     platform,
+    useKnowledge,
     loadConversations,
     openConversation,
     newConversation,

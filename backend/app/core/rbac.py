@@ -67,6 +67,7 @@ PERMISSIONS: list[tuple[str, str, str]] = [
     ("menu", "menu.usage", "AI 用量"),
     ("menu", "menu.revenue", "收益看板"),
     ("menu", "menu.settings", "系统状态"),
+    ("menu", "menu.knowledge", "知识库"),
     # 按钮级：控制具体动作
     ("chat", "chat.send", "发送消息"),
     ("queue", "queue.create", "新建内容"),
@@ -76,6 +77,8 @@ PERMISSIONS: list[tuple[str, str, str]] = [
     ("layout", "layout.run", "一键排版"),
     ("layout", "layout.image_gen", "AI 生图（不计次）"),
     ("layout", "layout.cover", "生成封面（不计次）"),
+    ("knowledge", "knowledge.create", "新增知识库素材"),
+    ("knowledge", "knowledge.delete", "删除知识库素材"),
     ("voice", "voice.clone", "声音复刻"),
     ("wechat", "wechat.push", "推送公众号草稿"),
     ("settings", "settings.wechat_edit", "公众号增删改"),

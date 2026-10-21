@@ -22,6 +22,7 @@ import {
   NModal,
   NForm,
   NFormItem,
+  NTooltip,
   useMessage,
 } from 'naive-ui'
 
@@ -854,6 +855,24 @@ async function restoreFromQueue() {
           </div>
         </NScrollbar>
 
+        <!-- 知识库素材开关：默认开。关掉后本轮完全不召回素材 ——
+             想让 AI 自由发挥、或本轮话题跟库存素材无关时用。
+             只作用于「这一句」，不是全局设置：写稿是逐轮的事。 -->
+        <div class="composer-tools">
+          <NTooltip placement="top-start" :style="{ maxWidth: '280px' }">
+            <template #trigger>
+              <label class="kb-toggle">
+                <input v-model="chat.useKnowledge" type="checkbox" />
+                <span>知识库素材</span>
+              </label>
+            </template>
+            <span style="font-size: 12px">
+              开启后，每句话都会去你的私有知识库里按语义找相关片段，命中了就
+              悄悄参考（不照抄、不在成稿里标注）。关掉则本轮完全不查。
+            </span>
+          </NTooltip>
+        </div>
+
         <!-- 输入区 -->
         <div class="composer">
           <NInput
@@ -1399,13 +1418,34 @@ async function restoreFromQueue() {
   white-space: nowrap;
 }
 
+/* 知识库开关：贴在输入框上方一排，刻意用轻量 checkbox 而不是按钮组 ——
+   它是「状态」不是「动作」，用户要的是一眼看见当前带不带素材 */
+.composer-tools {
+  padding-top: 12px;
+  border-top: 1px solid var(--app-border);
+  margin-top: 12px;
+}
+
+.kb-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--app-text-2);
+  cursor: pointer;
+  user-select: none;
+}
+
+.kb-toggle input {
+  accent-color: var(--app-primary, #18a058);
+  cursor: pointer;
+}
+
 .composer {
   display: flex;
   gap: 10px;
   align-items: flex-end;
-  padding-top: 14px;
-  border-top: 1px solid var(--app-border);
-  margin-top: 12px;
+  padding-top: 10px;
 }
 
 .send-btn {
