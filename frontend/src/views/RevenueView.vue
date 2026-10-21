@@ -346,8 +346,11 @@ function slotColor(i: number): string {
       <div v-if="error" class="error-box">{{ error }}</div>
 
       <template v-else-if="hasData">
-        <!-- 资金 KPI：本期收益 + 结算三件套（累计口径，与时间筛选无关） -->
-        <NGrid cols="2 640:4" :x-gap="12" :y-gap="12" responsive="screen" class="kpis">
+        <!-- 资金 KPI：本期收益 + 结算三件套（累计口径，与时间筛选无关）
+             注意：NGrid 的 responsive 默认 "self"（按栅格自身宽度断点），
+             数字断点（640/880）才能生效；若写 "screen" 会按命名断点
+             （xs/s/m/l…）匹配，数字键永远命中不了，网格会锁死在默认列数。 -->
+        <NGrid cols="2 640:4" :x-gap="12" :y-gap="12" class="kpis">
           <NGridItem>
             <div class="kpi accent">
               <span class="k-label">统计收益</span>
@@ -401,8 +404,8 @@ function slotColor(i: number): string {
           </div>
         </div>
 
-        <!-- 趋势 + 构成 -->
-        <NGrid cols="1 880:2" :x-gap="16" :y-gap="16" responsive="screen" class="charts">
+        <!-- 趋势 + 构成（≥880px 两列并排，窄屏堆叠） -->
+        <NGrid cols="1 880:2" :x-gap="16" :y-gap="16" class="charts">
           <NGridItem>
             <NCard size="small" class="card">
               <template #header>
@@ -591,6 +594,15 @@ function slotColor(i: number): string {
   max-width: 1080px;
   margin: 0 auto;
   padding: 4px 0 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* NSpin 的内容容器（.n-spin-content）是 block，页容器的 flex gap 传不进去，
+   会导致 KPI 组 / 指标条 / 图表组 / 结算卡之间 0 间距挨在一起。
+   在这里给容器补上 flex + gap，各组卡片恢复 14px 间距。 */
+.revenue-page :deep(.n-spin-content) {
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -939,7 +951,7 @@ function slotColor(i: number): string {
 }
 
 .disclaimer {
-  margin: 4px 0 0;
+  margin: 0;
   font-size: 12px;
   line-height: 1.7;
   color: var(--app-text-3);

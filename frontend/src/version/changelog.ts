@@ -22,6 +22,15 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '1.3.1',
+    date: '2026-10-21',
+    title: '修复收益看板卡片间距与布局',
+    highlights: [
+      '修复收益看板各组卡片之间 0 间距、挨在一起的问题：KPI 组、广告指标条、图表组、结算进度卡现在统一 14px 间距。',
+      '修复收益看板在宽屏下 KPI 卡只排 2 列、收益趋势与收益构成卡不并排的问题：桌面端 KPI 一行 4 张、图表左右并排，窄屏自动堆叠。',
+    ],
+  },
+  {
     version: '1.3.0',
     date: '2026-10-21',
     title: '收益数据导出 + 队列支持粘贴已有文案',
