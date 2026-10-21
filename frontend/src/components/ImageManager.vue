@@ -7,7 +7,7 @@
  *  - 配图：AI 文生图（IMAGE_SCRIPT），随机、按提示词，插在正文里。
  * 未配置对应脚本时按钮禁用并提示手动上传。
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import {
   NDivider,
   NEmpty,
@@ -18,6 +18,7 @@ import {
   NRadioGroup,
   NSpin,
   NTag,
+  NTooltip,
   NUpload,
   useMessage,
 } from 'naive-ui'
@@ -237,8 +238,39 @@ async function onDelete(img: ContentImage) {
   }
 }
 
-async function saveAlt(img: ContentImage, alt: string) {
-  if (img.alt === alt) return
+/**
+ * 图片说明（alt）编辑：底部操作行只放一个铅笔图标，点击后在缩略图与操作行
+ * 之间展开全宽输入框。原因是格子最窄 160px，常驻输入框会被「设为封面/删除」
+ * 挤得只剩 placeholder 头两个字；改成图标后底部行还余量，后续加「文内视频」
+ * 之类的操作也只是换行不挤压。
+ */
+const editingAltId = ref<string | null>(null)
+const altDraft = ref('')
+const altEditEl = ref<HTMLInputElement | null>(null)
+
+function startEditAlt(img: ContentImage) {
+  altDraft.value = img.alt || ''
+  editingAltId.value = img.id
+}
+
+// 函数 ref：输入框在 v-for 里，字符串 ref 会被 Vue 收成数组（拿到的不再是 DOM 元素）
+function setAltEl(el: unknown) {
+  altEditEl.value = (el as HTMLInputElement | null) ?? null
+}
+
+// 编辑行出现后主动聚焦：autofocus 属性会被 NModal 的焦点陷阱压掉，显式 focus() 才稳
+watch(editingAltId, async (id) => {
+  if (!id) return
+  await nextTick()
+  altEditEl.value?.focus()
+})
+
+async function confirmAlt(img: ContentImage) {
+  // 防重入：回车与失焦可能连着触发，只认第一发
+  if (editingAltId.value !== img.id) return
+  editingAltId.value = null
+  const alt = altDraft.value.trim()
+  if (alt === (img.alt || '')) return
   try {
     const res = await updateImage(props.contentId, img.id, { alt })
     emit('changed', res.images)
@@ -421,14 +453,34 @@ async function saveAlt(img: ContentImage, alt: string) {
               lazy
             />
           </div>
-          <div class="cell-actions">
+          <!-- 说明编辑行：点铅笔图标后展开在缩略图与操作行之间，全宽不挤压 -->
+          <div v-if="!isReadonly && editingAltId === img.id" class="cell-alt-edit">
             <input
-              v-if="!isReadonly"
-              class="alt-input"
-              :value="img.alt"
+              :ref="setAltEl"
+              v-model="altDraft"
+              class="alt-edit-input"
               placeholder="图片说明（可留空）"
-              @change="saveAlt(img, ($event.target as HTMLInputElement).value)"
+              @keydown.enter.prevent="confirmAlt(img)"
+              @keydown.esc.prevent="editingAltId = null"
+              @blur="confirmAlt(img)"
             />
+          </div>
+          <div class="cell-actions">
+            <!-- 可编辑态：铅笔图标（已填说明带小圆点）；只读态：直接显示说明文字 -->
+            <NTooltip v-if="!isReadonly" trigger="hover">
+              <template #trigger>
+                <IconTextBtn
+                  class="alt-btn"
+                  :class="{ 'has-alt': !!img.alt }"
+                  name="edit"
+                  size="tiny"
+                  quaternary
+                  @mousedown.prevent
+                  @click="startEditAlt(img)"
+                />
+              </template>
+              {{ img.alt ? `图片说明：${img.alt}` : '添加图片说明' }}
+            </NTooltip>
             <span v-else class="alt-readonly">{{ img.alt || '（无说明）' }}</span>
             <template v-if="!isReadonly">
               <IconTextBtn
@@ -620,23 +672,41 @@ async function saveAlt(img: ContentImage, alt: string) {
   display: flex;
   align-items: center;
   gap: 6px;
+  /* 后续加「文内视频」等按钮时换行，不挤压现有按钮 */
+  flex-wrap: wrap;
   padding: 6px 8px;
   border-top: 1px solid var(--app-border, #e0e0e6);
 }
-.alt-input {
-  flex: 1;
-  min-width: 0;
-  border: none;
-  background: transparent;
-  font-size: 12px;
+/* 铅笔图标按钮：不收缩；已填说明时右上角小圆点提示 */
+.alt-btn {
+  flex-shrink: 0;
+  position: relative;
+}
+.alt-btn.has-alt::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--app-primary, #4f7cff);
+}
+/* 说明编辑行：临时展开，全宽输入 */
+.cell-alt-edit {
+  padding: 6px 8px 0;
+}
+.alt-edit-input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--app-primary, #4f7cff);
+  border-radius: 4px;
+  background: var(--app-sunken, rgba(128, 128, 128, 0.08));
   color: inherit;
+  font-size: 12px;
+  padding: 4px 6px;
   outline: none;
-  padding: 2px 0;
 }
-.alt-input::placeholder {
-  color: var(--app-text-3);
-}
-/* 只读态下的图片说明：与可编辑输入同样的排版，只是不可改 */
 .alt-readonly {
   flex: 1;
   min-width: 0;

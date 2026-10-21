@@ -11,6 +11,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.core.config import settings
 from app.core.rbac import require_use
@@ -262,6 +263,11 @@ async def update_image(
     else:
         raise HTTPException(404, "配图不存在")
     c.images = imgs
+    # JSON 列的经典坑：list(c.images) 只是浅拷贝，原地改里面 dict 的 alt/position
+    # 后，新旧值序列化出来完全相同，SQLAlchemy 的变更检测看不见——commit 静默
+    # 丢弃，接口返回 200 但一个字节都没落库（实测：图片说明改了弹回原值）。
+    # 必须显式标记这一列为已修改，增删类操作不受影响（列表内容真的变了）。
+    flag_modified(c, "images")
     await db.commit()
     await db.refresh(c)
     return {"ok": True, "images": c.images}
