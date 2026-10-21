@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import re
 import shutil
 import sys
 import uuid
@@ -29,6 +30,59 @@ from app.core.config import settings
 from app.core.logging import logger
 
 _IMG_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+
+# 中日韩表意文字/假名/谚文：命中任意一种就认为「这描述模型大概率吃不消」
+_CJK_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]")
+
+# flux-1-schnell 等 Cloudflare 生图模型的提示词翻译系统提示。
+# 2026-10-21 实测：中文提示词「一杯咖啡旁的笔记本电脑…俯视图」生成的是古风
+# 仕女图（还把汉字当纹理画进角落），同一语义的英文提示词则精确命中——
+# 这模型对中文语义基本不识，必须译成英文再喂。
+_TRANSLATE_SYS = (
+    "你是生图提示词翻译器。用户给你一段中文图片描述，你输出对应的英文提示词，"
+    "用于 FLUX 文生图模型。规则：\n"
+    "1. 只输出英文提示词本身，不要任何解释、引号、前后缀；\n"
+    "2. 完整保留描述里的主体、动作、场景、光线、构图、色调、风格，不增删语义；\n"
+    "3. 用英文生图常用的「名词短语 + 逗号分隔」形式，例如：a laptop next to a "
+    "cup of coffee, warm light, office desk, flat lay, top view, photorealistic；\n"
+    "4. 原文没有风格/质量词时补 2-3 个通用词（如 soft lighting / high detail），"
+    "不要改变原意；\n"
+    "5. 60 词以内；原文已是英文或无需翻译时原样返回。"
+)
+
+
+async def _translate_prompt(prompt: str) -> str:
+    """把中文配图描述译成 flux 友好的英文提示词。
+
+    只在**含 CJK 字符**时才翻（纯英文描述模型本来就懂）。翻译失败 /
+    LLM 未配置 / 结果异常（翻回来还是中文、空、过长）一律回落原提示词——
+    翻译是增强，不能因为它把生图整个挡死。
+    """
+    if not settings.CLOUDFLARE_IMAGE_TRANSLATE:
+        return prompt
+    if not _CJK_RE.search(prompt):
+        return prompt
+
+    try:
+        from app.services.llm import LLMClient
+
+        client = LLMClient()
+        res = await client.chat(
+            messages=[
+                {"role": "system", "content": _TRANSLATE_SYS},
+                {"role": "user", "content": prompt},
+            ],
+            task="lightweight",
+        )
+        out = (res.content or "").strip().strip('"').strip()
+        # sanity：非空、别又把中文吐回来、别长到离谱
+        if out and not _CJK_RE.search(out) and len(out) <= 400:
+            logger.info("提示词已译为英文: %s -> %s", prompt[:40], out[:80])
+            return out
+        logger.warning("提示词翻译结果异常，回落原提示词: %s", out[:80])
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("提示词翻译失败，回落原提示词: %s", exc)
+    return prompt
 
 
 def configured() -> bool:
@@ -138,6 +192,9 @@ async def _run_cloudflare(prompt: str, n: int, out_dir: Path) -> list[Path]:
     出口（SSH -D 隧道那头那台机器），用于直连不稳定/被限流的场景。
     """
     import httpx
+
+    # 中文描述先译成英文再喂模型（见 _translate_prompt 的实测说明）
+    prompt = await _translate_prompt(prompt)
 
     url = (
         f"https://api.cloudflare.com/client/v4/accounts/"

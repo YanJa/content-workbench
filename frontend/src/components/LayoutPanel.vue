@@ -718,6 +718,16 @@ function handleShowUpdate(v: boolean) {
   emit('update:show', false)
 }
 
+/**
+ * Esc 关闭面板：若图片放大预览（.n-image-preview）正开着，
+ * 让预览自己关即可，别把整个排版面板也一起关掉。
+ * 配合 NModal 的 :close-on-esc="false"，由这里统一决策。
+ */
+function onPanelEsc() {
+  if (document.querySelector('.n-image-preview')) return
+  handleShowUpdate(false)
+}
+
 onBeforeUnmount(() => {
   stopPoll()
   if (inputTimer) clearTimeout(inputTimer)
@@ -737,6 +747,8 @@ onBeforeUnmount(() => {
     :title="`排版详情${local ? ' · ' + local.title : ''}`"
     :bordered="false"
     size="small"
+    :close-on-esc="false"
+    @esc="onPanelEsc"
     @update:show="handleShowUpdate"
   >
     <template #header-extra>
@@ -994,8 +1006,11 @@ onBeforeUnmount(() => {
           <div class="picker-row">
             <NInput
               v-model:value="genPrompt"
-              size="small"
-              placeholder="配图描述，如：一杯咖啡旁的笔记本电脑，温暖光线"
+              class="prompt-input"
+              type="textarea"
+              :autosize="{ minRows: 2, maxRows: 5 }"
+              placeholder="配图描述，如：一杯咖啡旁的笔记本电脑，温暖光线，桌面平铺俯拍"
+              :disabled="generating"
             />
           </div>
           <div class="picker-row gen-opts">
@@ -1121,9 +1136,9 @@ onBeforeUnmount(() => {
   gap: 8px;
   flex-wrap: wrap;
 }
-.gen-opts .prompt-input {
-  flex: 1 1 200px;
-  min-width: 0;
+/* 描述文本域独占整行（块级容器里的 NInput 不会自动拉伸） */
+.prompt-input {
+  width: 100%;
 }
 .count-label {
   font-size: 12px;

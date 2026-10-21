@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     APP_NAME: str = "内容运营工作台"
     # 版本号：全系统唯一来源。前端从 /health 读它展示，并据它判断「是否升过级」
     # 来弹「新功能」提醒。改版本请同步 frontend/package.json（仅作人工对照）。
-    APP_VERSION: str = "1.3.5"
+    APP_VERSION: str = "1.3.6"
     APP_ENV: Literal["dev", "prod"] = "dev"
     DEBUG: bool = True
     API_PREFIX: str = "/api"
@@ -129,6 +129,10 @@ class Settings(BaseSettings):
     # 文生图模型（Cloudflare Workers AI 模型 id）
     CLOUDFLARE_IMAGE_MODEL: str = "@cf/black-forest-labs/flux-1-schnell"
     CLOUDFLARE_IMAGE_TIMEOUT: int = 120
+    # 中文配图描述是否先译成英文再喂生图模型（flux 系对中文语义基本不识，
+    # 2026-10-21 实测中文提示词生成结果与描述完全无关）。翻译用轻量 LLM，
+    # 失败自动回落原提示词；换成懂中文的生图模型后可关掉。
+    CLOUDFLARE_IMAGE_TRANSLATE: bool = True
     # 可选：Cloudflare 请求的固定出口代理（形如 socks5://127.0.0.1:10800，
     # 复用 deploy/proxy-guard.sh 的 SSH -D 隧道，出口即那台固定公网 IP 机器）。
     # 留空 = 直连。只在直连 api.cloudflare.com 不稳定 / 被限流时才需要开。

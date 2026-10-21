@@ -11,6 +11,7 @@ import { computed, onMounted, ref } from 'vue'
 import {
   NDivider,
   NEmpty,
+  NImage,
   NInput,
   NInputNumber,
   NRadioButton,
@@ -259,7 +260,13 @@ async function saveAlt(img: ContentImage, alt: string) {
 
       <!-- 已有封面：预览 + 操作 -->
       <div v-if="coverImg" class="cover-preview">
-        <img :src="coverImg.url" :alt="coverImg.alt || '封面'" />
+        <NImage
+          class="cover-img"
+          :src="coverImg.url"
+          :alt="coverImg.alt || '封面'"
+          object-fit="cover"
+          lazy
+        />
         <div v-if="!isReadonly" class="cover-ops">
           <IconTextBtn name="image" size="tiny" :disabled="!coverReady" :loading="coverGen" @click="openCoverForm">
             换一张
@@ -348,44 +355,45 @@ async function saveAlt(img: ContentImage, alt: string) {
       <NInput
         v-model:value="prompt"
         class="prompt-input"
-        size="small"
-        placeholder="配图描述，如：一杯咖啡旁的笔记本电脑，温暖光线"
+        type="textarea"
+        :autosize="{ minRows: 2, maxRows: 5 }"
+        placeholder="配图描述，如：一杯咖啡旁的笔记本电脑，温暖光线，桌面平铺俯拍"
         :disabled="generating"
       />
-      <div class="gen-actions">
-        <NRadioGroup v-model:value="genProvider" size="small" :disabled="generating">
-          <NRadioButton v-if="providers.script" value="script">脚本生成</NRadioButton>
-          <NRadioButton v-if="providers.cloudflare" value="cloudflare">Cloudflare AI</NRadioButton>
-        </NRadioGroup>
-        <span class="count-label">张数</span>
-        <NInputNumber
-          v-model:value="count"
-          size="small"
-          :min="1"
-          :max="4"
-          style="width: 92px"
-          :disabled="generating"
-        />
-        <IconTextBtn
-          name="image"
-          type="primary"
-          :loading="generating"
-          :disabled="!genReady || imageGenGate.blocked.value"
-          @click="onGenerate"
-        >
-          {{ imageGenGate.blocked.value ? '无权限' : '生成配图' }}
-        </IconTextBtn>
-        <div v-if="imageGenGate.reason.value" class="hint warn gate-tip">
-          {{ imageGenGate.reason.value }}
-        </div>
-        <NUpload
-          :show-file-list="false"
-          :custom-request="onUpload as never"
-          accept="image/*"
-          :disabled="uploading"
-        >
-          <IconTextBtn name="upload" size="small" :loading="uploading" :disabled="uploading">上传图片</IconTextBtn>
-        </NUpload>
+    </div>
+    <div v-if="!isReadonly" class="gen-actions">
+      <NRadioGroup v-model:value="genProvider" size="small" :disabled="generating">
+        <NRadioButton v-if="providers.script" value="script">脚本生成</NRadioButton>
+        <NRadioButton v-if="providers.cloudflare" value="cloudflare">Cloudflare AI</NRadioButton>
+      </NRadioGroup>
+      <span class="count-label">张数</span>
+      <NInputNumber
+        v-model:value="count"
+        size="small"
+        :min="1"
+        :max="4"
+        style="width: 92px"
+        :disabled="generating"
+      />
+      <IconTextBtn
+        name="image"
+        type="primary"
+        :loading="generating"
+        :disabled="!genReady || imageGenGate.blocked.value"
+        @click="onGenerate"
+      >
+        {{ imageGenGate.blocked.value ? '无权限' : '生成配图' }}
+      </IconTextBtn>
+      <NUpload
+        :show-file-list="false"
+        :custom-request="onUpload as never"
+        accept="image/*"
+        :disabled="uploading"
+      >
+        <IconTextBtn name="upload" size="small" :loading="uploading" :disabled="uploading">上传图片</IconTextBtn>
+      </NUpload>
+      <div v-if="imageGenGate.reason.value" class="hint warn gate-tip">
+        {{ imageGenGate.reason.value }}
       </div>
     </div>
     <div v-if="!genReady && !isReadonly" class="hint warn">
@@ -405,7 +413,13 @@ async function saveAlt(img: ContentImage, alt: string) {
       <div v-else class="grid">
         <div v-for="img in bodyImgs" :key="img.id" class="cell">
           <div class="thumb">
-            <img :src="img.url" :alt="img.alt" />
+            <NImage
+              class="thumb-img"
+              :src="img.url"
+              :alt="img.alt || '配图'"
+              object-fit="cover"
+              lazy
+            />
           </div>
           <div class="cell-actions">
             <input
@@ -477,11 +491,17 @@ async function saveAlt(img: ContentImage, alt: string) {
   gap: 12px;
   align-items: flex-start;
 }
-.cover-preview img {
+.cover-img {
   width: min(420px, 100%);
+  border-radius: 8px;
+  display: block;
+}
+.cover-img :deep(img) {
+  width: 100%;
   border-radius: 8px;
   border: 1px solid var(--app-border, #e0e0e6);
   display: block;
+  cursor: zoom-in;
 }
 .cover-ops {
   display: flex;
@@ -520,23 +540,20 @@ async function saveAlt(img: ContentImage, alt: string) {
   flex-shrink: 0;
 }
 
+/* 描述框独占一行（多行文本域 2~5 行自适应高度），按钮组在下一行：
+   再窄也是换行而非挤压，「张数」永远看得见 */
 .gen-row {
-  display: flex;
-  gap: 8px;
-  align-items: center;
   margin-top: 10px;
-  /* 描述再长也不换行挤走按钮：输入框可收缩，按钮组不收缩 */
 }
-/* 关键：min-width:0 让 flex 子项能收缩，否则长 placeholder/value 会撑破整行 */
 .gen-row .prompt-input {
-  flex: 1 1 220px;
-  min-width: 0;
+  width: 100%;
 }
 .gen-actions {
   display: flex;
   gap: 8px;
   align-items: center;
-  flex-shrink: 0;
+  flex-wrap: wrap;
+  margin-top: 8px;
 }
 .count-label {
   font-size: 12px;
@@ -544,12 +561,6 @@ async function saveAlt(img: ContentImage, alt: string) {
   flex-shrink: 0;
 }
 @media (max-width: 768px) {
-  .gen-row {
-    flex-wrap: wrap;
-  }
-  .gen-row .prompt-input {
-    flex-basis: 100%;
-  }
   .cover-preview {
     flex-direction: column;
   }
@@ -594,11 +605,16 @@ async function saveAlt(img: ContentImage, alt: string) {
   overflow: hidden;
   background: rgba(128, 128, 128, 0.08);
 }
-.thumb img {
+.thumb-img {
+  width: 100%;
+  height: 100%;
+}
+.thumb-img :deep(img) {
   width: 100%;
   height: 100%;
   object-fit: cover;
   display: block;
+  cursor: zoom-in;
 }
 .cell-actions {
   display: flex;
