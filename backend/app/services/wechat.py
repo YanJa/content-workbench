@@ -335,5 +335,120 @@ class WeChatClient:
         }
 
 
+# ---------------------------------------------------------------- 流量主 / 广告分析
+# 广告位枚举 → 中文名。公众号与小程序的广告位都在这里，未知枚举回落原始名。
+SLOT_NAME_MAP: dict[str, str] = {
+    "SLOT_ID_BIZ_BOTTOM": "底部广告",
+    "SLOT_ID_BIZ_MID_CONTEXT": "文中广告",
+    "SLOT_ID_BIZ_VIDEO_END": "视频后贴",
+    "SLOT_ID_BIZ_SPONSOR": "互选广告",
+    "SLOT_ID_BIZ_CPS": "返佣商品",
+    "SLOT_ID_WEAPP_COVER": "封面广告",
+    "SLOT_ID_WEAPP_TEMPLATE": "原生模板",
+    "SLOT_ID_WEAPP_REWARD_VIDEO": "激励视频",
+    "SLOT_ID_WEAPP_INTERSTITIAL": "插屏广告",
+    "SLOT_ID_WEAPP_BANNER": "横幅广告",
+    "SLOT_ID_WEAPP_VIDEO_FEEDS": "视频广告",
+    "SLOT_ID_WEAPP_VIDEO_BEGIN": "视频前贴",
+    "SLOT_ID_WEAPP_BOX": "格子广告",
+}
+
+# 取中文名：未知枚举回落原始字符串，绝不返回空。
+def slot_name(ad_slot: str | None) -> str:
+    if not ad_slot:
+        return "其他"
+    return SLOT_NAME_MAP.get(ad_slot, ad_slot)
+
+
+async def _get_json(self, url: str, params: dict) -> dict:
+    """GET 并解析 JSON，代理瞬断时重试（与 _PROXY_RETRY 一致）。"""
+    total = _PROXY_RETRY if settings.WECHAT_PROXY else 1
+    last_exc: Exception | None = None
+    for i in range(total):
+        try:
+            async with httpx.AsyncClient(**_client_kwargs(20)) as client:
+                resp = await client.get(url, params=params)
+                return resp.json()
+        except httpx.TransportError as exc:  # 代理瞬断，重试即可
+            last_exc = exc
+            if i < total - 1:
+                logger.warning("微信 GET 经代理瞬断，重试 %d/%d：%s", i + 1, total - 1, exc)
+                await asyncio.sleep(0.8 * (i + 1))
+            else:
+                raise
+    if last_exc:
+        raise last_exc
+    return {}
+
+
+async def get_adpos_general(
+    self, start_date: str, end_date: str, page: int = 1, page_size: int = 90
+) -> dict:
+    """获取分广告位天级数据（publisher_adpos_general）。
+
+    ⚠️ 参数名是 `start_date` / `end_date`（不是 begin_date）——传错微信不报错、
+    只静默返回空数据（total_num=0），这是最容易踩的坑。
+    最大时间跨度 90 天，每页最多 90 条。
+    """
+    token = await self._access_token()
+    params = {
+        "action": "publisher_adpos_general",
+        "access_token": token,
+        "start_date": start_date,
+        "end_date": end_date,
+        "page": page,
+        "page_size": page_size,
+    }
+    data = await _get_json(self, f"{WECHAT_API}/publisher/stat", params)
+    if data.get("base_resp", {}).get("ret", -1) != 0:
+        raise RuntimeError(f"流量主广告数据失败：{data.get('base_resp')}")
+    return data
+
+
+async def get_settlement(
+    self, start_date: str, end_date: str, page: int = 1, page_size: int = 90
+) -> dict:
+    """获取结算收入数据（publisher_settlement）。
+
+    结算数据是累计口径，日期区间只用于圈定「重合的结算区间」，不影响累计总额。
+    返回 revenue_all（累计收入·分）、settled_revenue_all（已结算·分）、
+    penalty_all（扣除·分）、settlement_list（各结算区间明细）。
+    """
+    token = await self._access_token()
+    params = {
+        "action": "publisher_settlement",
+        "access_token": token,
+        "start_date": start_date,
+        "end_date": end_date,
+        "page": page,
+        "page_size": page_size,
+    }
+    data = await _get_json(self, f"{WECHAT_API}/publisher/stat", params)
+    if data.get("base_resp", {}).get("ret", -1) != 0:
+        raise RuntimeError(f"流量主结算数据失败：{data.get('base_resp')}")
+    return data
+
+
+async def fetch_adpos_all(self, start_date: str, end_date: str, page_size: int = 90) -> list[dict]:
+    """分页拉全某区间的分广告位数据（自动翻页）。"""
+    items: list[dict] = []
+    page = 1
+    while page <= 50:  # 防御性上限：90 天 * 十几个广告位远到不了
+        data = await self.get_adpos_general(start_date, end_date, page=page, page_size=page_size)
+        items.extend(data.get("list") or [])
+        total = data.get("total_num", 0)
+        if not data.get("list") or len(items) >= total:
+            break
+        page += 1
+    return items
+
+
+# 把实例方法挂到 WeChatClient（保持类定义风格统一，且能复用 _access_token / 代理）。
+WeChatClient.get_adpos_general = get_adpos_general  # type: ignore[attr-defined]
+WeChatClient.get_settlement = get_settlement  # type: ignore[attr-defined]
+WeChatClient.fetch_adpos_all = fetch_adpos_all  # type: ignore[attr-defined]
+WeChatClient._get_json = _get_json  # type: ignore[attr-defined]
+
+
 # 需要人工确认才能执行的工具（供上层判断）
 DANGEROUS_TOOLS = {"push_wechat_draft", "render_video"}

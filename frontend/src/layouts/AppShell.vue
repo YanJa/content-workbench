@@ -65,6 +65,7 @@ const NAV: NavItem[] = [
   { key: 'queue', icon: 'queue', label: '发布队列', perm: 'menu.queue' },
   { key: 'video', icon: 'video', label: '视频生产', perm: 'menu.video' },
   { key: 'usage', icon: 'usage', label: 'AI 用量', perm: 'menu.usage' },
+  { key: 'revenue', icon: 'revenue', label: '收益看板', perm: 'menu.revenue' },
   { key: 'settings', icon: 'activity', label: '系统设置', perm: 'menu.settings' },
   { key: 'admin-users', icon: 'users', label: '用户管理', adminOnly: true },
 ]

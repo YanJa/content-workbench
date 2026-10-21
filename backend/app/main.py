@@ -25,6 +25,7 @@ from app.routers import (
     chat,
     layout,
     queue,
+    revenue,
     settings as settings_router,
     tools,
     usage,
@@ -124,6 +125,7 @@ app.include_router(tools.router, prefix=settings.API_PREFIX)
 app.include_router(tools.video_router, prefix=settings.API_PREFIX)
 app.include_router(voice_clone.router, prefix=settings.API_PREFIX)
 app.include_router(usage.router, prefix=settings.API_PREFIX)
+app.include_router(revenue.router, prefix=settings.API_PREFIX)
 app.include_router(admin.router, prefix=settings.API_PREFIX)
 app.include_router(zhihu.router, prefix=settings.API_PREFIX)
 

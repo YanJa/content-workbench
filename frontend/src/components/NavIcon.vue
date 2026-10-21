@@ -47,6 +47,11 @@ const NODES: Record<string, Node[]> = {
     ['path', { d: 'M22 21v-2a4 4 0 0 0-3-3.87' }],
     ['path', { d: 'M16 3.13a4 4 0 0 1 0 7.75' }],
   ],
+  // 收益看板：上升趋势线 + 人民币符号
+  revenue: [
+    ['polyline', { points: '3 17 9 11 13 15 21 7' }],
+    ['polyline', { points: '15 7 21 7 21 13' }],
+  ],
 }
 
 export default defineComponent({

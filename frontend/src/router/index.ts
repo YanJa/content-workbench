@@ -51,6 +51,17 @@ const router = createRouter({
           meta: { title: 'AI 用量', desc: '花了多少钱、花在哪儿', icon: '▣', perm: 'menu.usage' },
         },
         {
+          path: 'revenue',
+          name: 'revenue',
+          component: () => import('@/views/RevenueView.vue'),
+          meta: {
+            title: '收益看板',
+            desc: '流量主广告收益、曝光与趋势',
+            icon: '¥',
+            perm: 'menu.revenue',
+          },
+        },
+        {
           path: 'settings',
           name: 'settings',
           component: () => import('@/views/SettingsView.vue'),
@@ -114,6 +125,7 @@ const MENU_PERM: Record<string, string> = {
   queue: 'menu.queue',
   video: 'menu.video',
   usage: 'menu.usage',
+  revenue: 'menu.revenue',
   settings: 'menu.settings',
 }
 

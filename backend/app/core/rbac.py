@@ -65,6 +65,7 @@ PERMISSIONS: list[tuple[str, str, str]] = [
     ("menu", "menu.queue", "发布队列"),
     ("menu", "menu.video", "视频生产"),
     ("menu", "menu.usage", "AI 用量"),
+    ("menu", "menu.revenue", "收益看板"),
     ("menu", "menu.settings", "系统状态"),
     # 按钮级：控制具体动作
     ("chat", "chat.send", "发送消息"),
