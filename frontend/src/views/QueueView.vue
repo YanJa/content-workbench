@@ -62,6 +62,8 @@ const checks = ref<Record<string, boolean>>({})
 /** 已发布 = 任务完成，发布检查转为只读（只能看、不能改勾选/保存） */
 const checkReadonly = computed(() => checkItem.value?.status === 'published')
 const pushing = ref(false)
+/** 正在删微信草稿的 content_id（行级 loading，防连点重复删） */
+const deletingDraftId = ref('')
 
 // 加工排版面板
 const layoutShow = ref(false)
@@ -210,8 +212,17 @@ const columns = computed<DataTableColumns<QueueItem>>(() => [
         // 推微信草稿箱（公众号）/ 复制文案（其它平台）：额度耗尽时禁用并说明。
         // pushing = 有一条推送请求正在飞：此时禁用所有行的推送按钮，防止
         // 用户连点同一条记录造成二次推送（后端回填 media_id 有回程延迟）。
+        //
+        // 已推送（media_id 在）时推送按钮让位给「删除微信草稿」：
+        // 推错了 / 想改完再推，删掉微信侧草稿后本地状态回退、按钮回来。
+        // 微信删除不可恢复，dialog 二次确认里会写明。
         row.wechat_media_id
-          ? null
+          ? actionBtn(
+              'draft-trash',
+              '删除微信草稿箱里的这篇草稿（微信侧不可恢复，删除后可重新推送）',
+              () => onDeleteDraft(row),
+              { type: 'warning', loading: deletingDraftId.value === row.content_id },
+            )
           : isGzh && pushGate.blocked.value
             ? actionBtn('send', '无法推送：今日公众号推送额度已用完', () => onPushDraft(row), {
                 type: 'primary',
@@ -421,6 +432,55 @@ async function onPushDraft(row: QueueItem) {
   } finally {
     pushing.value = false
   }
+}
+
+/**
+ * 删除微信草稿箱里的草稿（推错了 / 想改完再推）。
+ *
+ * 微信侧删除不可恢复（草稿箱没有回收站），所以 dialog 二次确认里写清楚。
+ * 成功后后端清掉该行的 wechat_media_id，列表刷新后推送按钮回来——
+ * 本地状态与微信侧保持一致，可重新推送。
+ */
+async function onDeleteDraft(row: QueueItem) {
+  if (!row.wechat_media_id) return
+  dialog.warning({
+    title: '删除微信草稿',
+    content: `确定删除「${row.title}」在公众号草稿箱里的草稿？微信侧删除不可恢复，删除后本条记录恢复为可重新推送。`,
+    positiveText: '删除草稿',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      deletingDraftId.value = row.content_id
+      try {
+        const res = await confirmTool({
+          tool_call_id: `qd_${row.id}`,
+          tool_name: 'delete_wechat_draft',
+          // 带 content_id：后端据此定位要清状态的队列记录
+          arguments: { media_id: row.wechat_media_id!, content_id: row.content_id },
+        })
+        const result = res.result as {
+          ok?: boolean
+          error?: string
+          errcode?: number
+          message?: string
+        }
+        if (result?.ok) {
+          message.success(result.message ?? '草稿已删除，可重新推送')
+          await queue.refresh()
+        } else if (result?.errcode === 40007) {
+          // 微信侧草稿已不存在（用户在公众号后台删过 / 被清理）：本地「已推送」
+          // 标记本就是陈旧信息，后端已一并清掉——按成功语义提示，刷新后推送按钮回来
+          message.warning('微信侧草稿已不存在，本地记录已恢复为可推送')
+          await queue.refresh()
+        } else {
+          message.error(result?.error ?? '删除失败')
+        }
+      } catch (e) {
+        message.error(`删除失败：${(e as Error).message}`)
+      } finally {
+        deletingDraftId.value = ''
+      }
+    },
+  })
 }
 
 /** 直接带着已取到的内容打开加工面板，省一次请求。 */

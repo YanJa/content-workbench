@@ -338,11 +338,20 @@ class WeChatClient:
 
         html 必须是公众号兼容的内联样式片段（<section>…</section>），
         即 gzh-design 排版引擎的产物。
-        thumb_media_id：封面图媒体 id（来自 upload_thumb）。留空则草稿无封面，
-        用户可在后台补。
+        thumb_media_id：封面图媒体 id（来自 upload_thumb）。
+        **微信要求每篇草稿必须有封面**：实测空串 / 省略该字段都返回
+        40007「invalid media_id」（2026-10-21 探测确认），没有“无封面草稿”
+        这种状态。所以这里显式拦截并给出可操作的提示，而不是把微信的
+        40007 原样抛给用户。
         """
         if not self.configured:
             return {"ok": False, "error": "未配置 WECHAT_APPID / WECHAT_SECRET"}
+        if not thumb_media_id:
+            return {
+                "ok": False,
+                "error": "缺少封面图：微信要求每篇草稿必须有封面",
+                "hint": "先在队列里点「加工排版」生成配图（首图会自动用作封面）后再推送",
+            }
 
         try:
             token = await self._access_token()
@@ -405,6 +414,74 @@ class WeChatClient:
             "media_id": data.get("media_id"),
             "message": "已推送到公众号草稿箱，请到后台核对后手动群发",
             "pushed_at": int(time.time()),
+        }
+
+    async def delete_draft(self, media_id: str) -> dict[str, Any]:
+        """删除草稿箱里的草稿（draft/delete）。
+
+        media_id 即 add_draft 返回的草稿 id。删除后：
+          - 本地 queue item 的 wechat_media_id 必须同步清空（由上层负责），
+            否则记录仍显示「已推送」，而微信侧草稿已不存在，用户会再次推送
+            或误以为群发过了。
+          - 微信侧删除不可恢复（草稿箱没有回收站），必须前端二次确认后才调。
+        """
+        if not self.configured:
+            return {"ok": False, "error": "未配置 WECHAT_APPID / WECHAT_SECRET"}
+        if not media_id:
+            return {"ok": False, "error": "缺少 media_id"}
+
+        try:
+            token = await self._access_token()
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc)}
+
+        payload = {"media_id": media_id, "index": 0}
+        url = f"{WECHAT_API}/cgi-bin/draft/delete?access_token={token}"
+
+        import json as _json
+
+        body = _json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        total = _PROXY_RETRY if settings.WECHAT_PROXY else 1
+        data = None
+        try:
+            for i in range(total):
+                try:
+                    async with httpx.AsyncClient(**_client_kwargs(30)) as client:
+                        resp = await client.post(
+                            url,
+                            content=body,
+                            headers={"Content-Type": "application/json"},
+                        )
+                        data = resp.json()
+                    break
+                except httpx.TransportError as exc:
+                    if i < total - 1:
+                        logger.warning("删除草稿经代理瞬断，重试 %d/%d：%s", i + 1, total - 1, exc)
+                        await asyncio.sleep(0.8 * (i + 1))
+                    else:
+                        raise
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("删除草稿失败")
+            return {"ok": False, "error": str(exc)}
+
+        if not data or data.get("errcode", 0) != 0:
+            errcode = data.get("errcode")
+            errmsg = data.get("errmsg", "未知错误")
+            hint = ""
+            if errcode == 40007:
+                hint = "media_id 无效或草稿已不存在（可能已被删除）"
+            return {
+                "ok": False,
+                "error": errmsg,
+                "errcode": errcode,
+                "hint": hint or "常见原因：IP 不在白名单 / 凭证错误 / 接口权限未开通",
+            }
+
+        logger.info("删除草稿成功: media_id=%s", media_id)
+        return {
+            "ok": True,
+            "media_id": media_id,
+            "message": "已从公众号草稿箱删除，本地记录恢复为可推送状态",
         }
 
 
@@ -524,4 +601,4 @@ WeChatClient._get_json = _get_json  # type: ignore[attr-defined]
 
 
 # 需要人工确认才能执行的工具（供上层判断）
-DANGEROUS_TOOLS = {"push_wechat_draft", "render_video"}
+DANGEROUS_TOOLS = {"push_wechat_draft", "delete_wechat_draft", "render_video"}

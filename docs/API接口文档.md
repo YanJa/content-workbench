@@ -164,6 +164,31 @@ assistant 的 `tool_calls[i].result`）。思维链只给人看，`build_context
 服务端会校验 tool_name 是否真在 `TOOL_REQUIRE_CONFIRM` 名单里，防止绕过确认机制。
 `args.content_id` 是可选增强：带上后后端会读该内容已排版的 `body_html` 与 `images`，把本地图转存进微信素材库、拿首图当草稿封面（`thumb_media_id`）；不带则只按传入的 `html` 纯文本推送。
 
+**推送的硬性前提——封面必填**：微信 `draft/add` 要求每篇草稿必须有封面
+（`thumb_media_id` 必填，空串/省略都返回 40007 invalid media_id，2026-10-21 实测）。
+没配图时后端直接返回「还没有封面图」+ 加工排版指引，不再把微信的 40007 原样抛出。
+
+**`delete_wechat_draft`（2026-10-21 新增，删除微信草稿箱里的草稿）**：
+
+```json
+{
+  "tool_call_id": "qd_{itemId}",
+  "tool_name": "delete_wechat_draft",
+  "arguments": {
+    "media_id": "草稿 media_id（推送成功时返回，队列行上带有）",
+    "content_id": "可选。带上后删除成功会同步清掉该记录的推送状态",
+    "account_id": "可选，指定用哪个公众号的凭证；留空用默认号"
+  }
+}
+```
+
+- 微信侧删除**不可恢复**（草稿箱没有回收站），所以前端有二次确认弹窗。
+- 删除成功后，后端把命中行的 `queue_items.wechat_media_id` 置空——本地「已推送」
+  标记与推送按钮复位，状态与微信侧保持一致，可重新推送。
+- 微信对「已不存在的草稿」执行删除返回 `errcode 0`（幂等），因此用户在后台
+  删过的草稿走本工具同样是成功语义，本地陈旧标记一并清掉。
+- 该工具权限点 `wechat.push`，**不耗推送配额**（配额只对 `push_wechat_draft` 扣减）。
+
 ### 会话 CRUD
 
 | 方法 | 路径 | 说明 |

@@ -3,7 +3,7 @@
 覆盖三类典型场景：
   - 只读查询：query_queue / check_compliance（模型可自由调用）
   - 写操作：save_content（仅落库为草稿，需前端显式触发，不入队）
-  - 对外操作：push_wechat_draft / render_video（需人工确认）
+  - 对外操作：push_wechat_draft / delete_wechat_draft / render_video（需人工确认）
 
 说明：所有工具均已接入真实实现（WeChatClient / submit_render_job），
 无 TODO 占位。
@@ -383,12 +383,79 @@ async def push_wechat_draft(
         except Exception as exc:  # noqa: BLE001
             logger.warning("二维码转存流程异常（继续推送）: %s", exc)
 
+    # 微信 draft/add 强制要求封面（thumb_media_id 必填，空串/省略都 40007）。
+    # 没有配图时在这里拦下来，给可操作提示；否则用户看到的是微信的
+    # 「invalid media_id」，完全不知道问题出在没封面上。
+    if not thumb_id:
+        return {
+            "ok": False,
+            "error": "这篇内容还没有封面图，微信要求每篇草稿必须有封面",
+            "hint": "先到队列里点「加工排版」生成配图（首图自动用作封面）后再推送",
+        }
+
     result = await client.add_draft(
         title=title, html=html, digest=digest, thumb_media_id=thumb_id
     )
     logger.info(
         "推送草稿箱: title=%s ok=%s 凭证来源=%s 封面=%s",
         title, result.get("ok"), source, bool(thumb_id),
+    )
+    return result
+
+
+@tool(
+    name="delete_wechat_draft",
+    description=(
+        "删除微信公众号草稿箱里的指定草稿。"
+        "注意：微信侧删除不可恢复（草稿箱没有回收站），必须经用户确认后才能执行；"
+        "删除成功后本地记录会自动恢复为「可推送」状态。仅支持公众号平台。"
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "media_id": {
+                "type": "string",
+                "description": "草稿的 media_id（推送成功时返回，队列页「已推送」记录上带有）",
+            },
+            "content_id": {
+                "type": "string",
+                "description": "内容 ID（可选）。带上后删除成功会同步清掉该记录的推送状态",
+            },
+            "account_id": {
+                "type": "string",
+                "description": "公众号账号 ID（可选）。留空则用默认公众号；一个都没配时回退 .env。",
+            },
+        },
+        "required": ["media_id"],
+    },
+    requires_confirm=True,
+)
+async def delete_wechat_draft(
+    media_id: str,
+    content_id: str = "",
+    account_id: str = "",
+    ctx: dict | None = None,
+):
+    """删除公众号草稿箱里的草稿（draft/delete）。
+
+    不可恢复操作，必须前端二次确认。成功后由 execute_confirmed_tool
+    按 media_id / content_id 清空队列记录的 wechat_media_id。
+    """
+    ctx = ctx or {}
+    db = ctx.get("db")
+
+    client, source = await _resolve_wechat_client(db, account_id, ctx.get("owner", "default"))
+    if client is None:
+        return {
+            "ok": False,
+            "error": "未配置微信凭证",
+            "hint": "到「系统状态」页添加公众号，或在 .env 里填 WECHAT_APPID / WECHAT_SECRET",
+        }
+
+    result = await client.delete_draft(media_id)
+    logger.info(
+        "删除草稿: media_id=%s ok=%s 凭证来源=%s",
+        media_id, result.get("ok"), source,
     )
     return result
 

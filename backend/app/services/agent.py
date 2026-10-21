@@ -330,4 +330,49 @@ async def execute_confirmed_tool(
         except Exception as exc:  # noqa: BLE001
             logger.warning("回填 media_id 失败: %s", exc)
 
+    # 删除草稿成功后，清掉本地记录的推送标记（镜像上面的回填逻辑）。
+    # 不清的后果：微信侧草稿已不存在，本地仍显示「已推送」——
+    # 用户看不到推送按钮（会以为已群发），也不能重新推送修正。
+    # 按 media_id 定位为主、content_id 兜底：两种参数前端至少带一种。
+    #
+    # 40007（media_id 无效）也清：微信明确说这个草稿不存在了（用户在后台
+    # 删过 / 过期清理），本地标记已是陈旧信息，继续挂着只会挡住推送按钮。
+    # 2026-10-21 实测遇到过：4 个旧草稿在微信后台被外部删除后，本地行全部
+    # 卡在「已推送」且无解，只能来硬的。
+    if tool_name == "delete_wechat_draft" and (
+        result.get("ok") or result.get("errcode") == 40007
+    ):
+        try:
+            from sqlalchemy import or_, select
+
+            from app.models.content import QueueItem
+
+            owner = ctx.get("owner", "default")
+            args = arguments or {}
+            media_id = args.get("media_id") or result.get("media_id")
+            content_id = args.get("content_id")
+            conditions = []
+            if media_id:
+                conditions.append(QueueItem.wechat_media_id == media_id)
+            if content_id:
+                conditions.append(QueueItem.content_id == content_id)
+            items = []
+            if conditions:
+                stmt = select(QueueItem).where(
+                    QueueItem.owner == owner,
+                    or_(*conditions),
+                )
+                items = list((await db.execute(stmt)).scalars().all())
+            for item in items:
+                item.wechat_media_id = None
+            if items:
+                await db.flush()
+                logger.info(
+                    "清除推送标记：media_id=%s content_id=%s 命中 %d 条（ok=%s errcode=%s）",
+                    media_id, content_id, len(items),
+                    result.get("ok"), result.get("errcode"),
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("清除推送标记失败: %s", exc)
+
     return result

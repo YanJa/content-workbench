@@ -89,6 +89,7 @@ _FUNCTION_KEYS = tuple(k for g, k, _ in PERMISSIONS if g != "menu")
 TOOL_PERM: dict[str, tuple[str, str | None]] = {
     "render_video": ("video.render", "video"),
     "push_wechat_draft": ("wechat.push", "wechat_push"),
+    "delete_wechat_draft": ("wechat.push", None),  # 删除不耗配额（推送才计次）
     "save_content": ("queue.create", None),
 }
 
