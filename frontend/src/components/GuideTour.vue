@@ -112,7 +112,7 @@ function locate(target: Element | null) {
   if (tooBig) {
     bubble.value = {
       left: Math.max(12, (vpW.value - BUBBLE_W) / 2),
-      top: vh() - 232,
+      top: vh() - measureBubble() - 12,
       arrow: 'none',
     }
     return
@@ -133,22 +133,59 @@ function locate(target: Element | null) {
     side = best === spaceBottom ? 'bottom' : best === spaceTop ? 'top' : best === spaceRight ? 'right' : 'left'
   }
 
-  const BH = 200 // 气泡估算高度，用于夹取不越界
+  // 气泡真实高度（见 measureBubble）。用真实高度先挑边、再夹取：
+  // 指定侧放不下就自动换另一侧，两侧都放不下才硬夹进视口——
+  // 宁可气泡盖住目标一点，也不能把「下一步」挤出屏幕点不到。
+  const BH = measureBubble()
   if (side === 'bottom' || side === 'top') {
-    const top = side === 'bottom' ? h.top + h.height + GAP : h.top - GAP - BH
+    let top = side === 'bottom' ? h.top + h.height + GAP : h.top - GAP - BH
+    if (side === 'top' && top < 12) {
+      const alt = h.top + h.height + GAP
+      if (alt + BH <= vh() - 12) {
+        top = alt
+        side = 'bottom'
+      }
+    } else if (side === 'bottom' && top + BH > vh() - 12) {
+      const alt = h.top - GAP - BH
+      if (alt >= 12) {
+        top = alt
+        side = 'top'
+      }
+    }
     bubble.value = {
       left: Math.min(Math.max(12, h.left + h.width / 2 - BUBBLE_W / 2), vpW.value - BUBBLE_W - 12),
-      top: Math.min(Math.max(12, top), vh() - BH - 12),
+      top: Math.min(Math.max(12, top), Math.max(12, vh() - BH - 12)),
       arrow: side === 'bottom' ? 'top' : 'bottom',
     }
   } else {
     const left = side === 'right' ? h.left + h.width + GAP : h.left - GAP - BUBBLE_W
     bubble.value = {
       left: Math.min(Math.max(12, left), vpW.value - BUBBLE_W - 12),
-      top: Math.min(Math.max(12, h.top + h.height / 2 - BH / 2), vh() - BH - 12),
+      top: Math.min(Math.max(12, h.top + h.height / 2 - BH / 2), Math.max(12, vh() - BH - 12)),
       arrow: side === 'right' ? 'left' : 'right',
     }
   }
+}
+
+/**
+ * 量气泡的真实高度。
+ *
+ * 之前这里是个写死的估值 200：长文案的步（实测最高 285px）被「夹取不越界」
+ * 夹到 vh-212 后，下缘反而超出视口 70+px——「下一步」按钮正好被切掉，
+ * 用户只能按 Enter（2026-10-22 用户截图复现，第 2/7/8 步全中）。
+ *
+ * 为什么这里量得准：本步文案在上一个 nextTick 就已渲染进气泡
+ * （goto → nextTick → positionStep → locate），宽度又固定 320px，
+ * 所以 offsetHeight 就是本步的真实高度。移动端走贴底 CSS（top:auto），
+ * 不经过这条路径，不受影响。
+ */
+function measureBubble(): number {
+  const el = document.querySelector<HTMLElement>('.guide-bubble')
+  if (!el) return 200
+  // 宽度先钉成渲染时的值再量高：上一步若是无锚点的居中卡（宽 420），
+  // 量出来的高度会偏小。Vue 随后会用同样的值重新绑定，不冲突。
+  el.style.width = `${BUBBLE_W}px`
+  return el.offsetHeight || 200
 }
 
 /** 定位当前步：必要时跳转 → 等元素 → 滚进视野 → 计算位置。 */
