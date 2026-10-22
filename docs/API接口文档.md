@@ -427,6 +427,7 @@ assistant 的 `tool_calls[i].result`）。思维链只给人看，`build_context
 | GET | `/api/skills/meta` | 登录即可 | 能力开关：`{enabled, catalog_max, body_max_chars}` |
 | POST | `/api/skills` | skill.manage | 粘贴/手填：`{text}`（完整 SKILL.md）。同名覆盖 |
 | POST | `/api/skills/upload` | skill.manage | 上传 `.md` 或技能 **zip 包**（包内 SKILL.md 为准，其余文本文件存入 files 随技能存档；条目≤30、单文件≤200KB、解压总量≤1MB，路径穿越/二进制跳过） |
+| POST | `/api/skills/import_url` | skill.manage | 从 URL 导入技能（`.md` / `.zip`，≤20MB；SSRF 防护拒绝私网/环回地址，重定向后地址不复查） |
 | PATCH | `/api/skills/{id}` | skill.manage | `{enabled?}` 启停 / `{name?}` 改名 |
 | DELETE | `/api/skills/{id}` | skill.manage | 删除 |
 
