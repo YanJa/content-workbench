@@ -30,6 +30,7 @@ from app.schemas.models import (
 )
 from app.services import conversation as conv_svc
 from app.services import knowledge as kb
+from app.services import skill as skill_svc
 from app.services.agent import execute_confirmed_tool, run_chat
 from app.services.llm import get_llm
 from app.tools.registry import registry
@@ -137,7 +138,16 @@ async def chat_stream(
             except Exception as exc:  # noqa: BLE001 - 旁路降级
                 logger.warning("知识库召回失败（本轮无素材继续）：%s", exc)
 
-        messages = await conv_svc.build_context(db, conv, system_prompt, knowledge=snippets)
+        # 技能清单（catalog）：和知识库一样是旁路，读失败就本轮无技能。
+        # CF 通道不给 —— 它没有 function calling，清单里「调用 activate_skill」
+        # 的指令只会让它凭空编造工具调用；而且 8b 模型上下文小，省点预算。
+        skill_catalog = ""
+        if provider != "cloudflare":
+            skill_catalog = await skill_svc.build_catalog_for_owner(db, owner)
+
+        messages = await conv_svc.build_context(
+            db, conv, system_prompt, knowledge=snippets, skills=skill_catalog
+        )
 
         ctx = {
             "db": db,

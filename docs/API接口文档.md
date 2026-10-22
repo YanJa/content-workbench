@@ -414,7 +414,52 @@ assistant 的 `tool_calls[i].result`）。思维链只给人看，`build_context
 > 前端配合两点：**自适应间隔**（有变化 4s，无变化退避到 8s→15s）+
 > **结束时取一次完整详情**回填 script / visual_scenes。
 
-### 声音复刻
+### 技能包（Skill）
+
+用户私有的「教 AI 怎么做」的模块。一个技能 = 一份 `SKILL.md`：YAML frontmatter
+（`name` + `description`）+ 正文步骤。**渐进式披露**：平时只把 `name` + `description`
+作为「清单」以独立 system 消息注入（约 50-100 tokens/条），模型判断任务匹配时
+才调 `activate_skill` 取回正文原文（见 `services/skill.py`）。
+
+| 方法 | 路径 | 权限 | 说明 |
+|---|---|---|---|
+| GET | `/api/skills` | 登录即可 | 全部技能（含 `invalid` 的，`error` 里是原因） |
+| GET | `/api/skills/meta` | 登录即可 | 能力开关：`{enabled, catalog_max, body_max_chars}` |
+| POST | `/api/skills` | skill.manage | 粘贴/手填：`{text}`（完整 SKILL.md）。同名覆盖 |
+| POST | `/api/skills/upload` | skill.manage | 上传 `.md`，文件名参与 name 校验 |
+| PATCH | `/api/skills/{id}` | skill.manage | `{enabled?}` 启停 / `{name?}` 改名 |
+| DELETE | `/api/skills/{id}` | skill.manage | 删除 |
+
+### 校验规则（来自 Agent Skills 开放规范）
+
+- `name`：1-64 字符，**只允许小写字母、数字、连字符**，不能以连字符开头/结尾、不能连续两个连字符；
+- `name` 必须**与文件名（去扩展名）一致** —— 等价于官方的「name 必须等于父目录名」。
+  叫 `SKILL.md` 时豁免（官方包的文件名固定是这个）；
+- `description`：1-1024 字符，多行会被折叠成一行（catalog 里每条占一行）；
+- 正文必填，上限 `SKILL_BODY_MAX_CHARS`（默认 20000 字符）。
+
+### 落库语义：坏文件不会打坏好技能
+
+| 情况 | 结果 |
+|---|---|
+| 解析成功 | 覆盖同名旧版本，`status=ready` |
+| 解析失败，**同名已有可用版本** | **不落库**，返回 400「格式有误，原技能未改动」 |
+| 解析失败，没有同名可用版本 | 落成 `status=invalid`，`error` 写明原因（让用户看到为什么没生效） |
+
+第三条是 2026-10-22 实测踩到的坑：原本传对了一个技能，再传一个「文件名与 name
+不符」的坏文件，好技能直接被覆盖成 invalid、在用户面前凭空消失且无法撤销。
+
+### 与对话链路的接线
+
+- `chat.py` 在 `build_context` 前调 `skill.build_catalog_for_owner(db, owner)`，
+  catalog 作为**独立 system 消息**注入（和知识库同理：`strip_tool_discipline()`
+  会把拼在 system_prompt 尾部的内容整段切掉）；
+- **Cloudflare 通道不注入**：CF 模型没有 function calling，清单里「调用
+  activate_skill」的指令只会让它编造工具调用；
+- `activate_skill` 是**动态工具**（`dynamic_tool`）：`name` 参数的 enum 按当前
+  owner 可用集合生成，**没有可用技能时整个工具不提供给模型**（空 enum 会让模型反复试错）。
+
+## 声音复刻
 
 上传一段自己的录音 → 后台复刻出专属音色 → 渲染时把它当 `voice` 传进去。
 

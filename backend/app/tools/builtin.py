@@ -17,7 +17,7 @@ from typing import Any
 from sqlalchemy import select
 
 from app.core.logging import logger
-from app.tools.registry import tool
+from app.tools.registry import dynamic_tool, tool
 
 
 async def _resolve_wechat_client(db, account_id: str = "", owner: str = "default"):
@@ -97,6 +97,72 @@ async def _resolve_wechat_account(db, account_id: str = "", owner: str = "defaul
         logger.warning("解析公众号账号对象失败: %s", exc)
         return None
 
+
+
+# ---------------------------------------------------------------- Skill 激活
+def _skill_description(names: list[str]) -> str:
+    """activate_skill 的描述。
+
+    names 为空时（/api/tools 展示）给一句通用说明；有可用集合时把名字列进去
+    —— 描述和 enum 双管齐下，模型才不会去猜没注册的名字。
+    """
+    base = (
+        "激活一套「技能包」，取回它的完整操作说明。"
+        "【可用技能】清单里列出了每个技能的用途；当本轮任务确实匹配某个技能的"
+        "description 时，先用本工具取回说明，再按说明里的步骤执行。"
+        "不匹配的任务不要调用。"
+    )
+    if names:
+        base += f" 当前可用：{', '.join(names)}。"
+    return base
+
+
+def _skill_parameters(names: list[str]) -> dict[str, Any]:
+    """name 参数用 enum 约束到可用集合。
+
+    官方对非 Claude 模型的推荐做法：把 enum 收紧到实际可用的技能，模型就不会
+    编造不存在的名字；再配合「没有可用技能就不注册这个工具」。
+    """
+    prop: dict[str, Any] = {
+        "type": "string",
+        "description": "要激活的技能名（与【可用技能】清单里的名字完全一致）",
+    }
+    if names:
+        prop["enum"] = names
+    return {
+        "type": "object",
+        "properties": {"name": prop},
+        "required": ["name"],
+    }
+
+
+async def _list_skill_names(db, owner: str) -> list[str]:
+    """本次请求可激活的技能名。空列表 → 工具整体不提供给模型。"""
+    from app.core.config import settings
+
+    if not settings.ENABLE_SKILLS or db is None:
+        return []
+    from app.services import skill as skill_svc
+
+    return [s.name for s in await skill_svc.list_active(db, owner)]
+
+
+@dynamic_tool(
+    name="activate_skill",
+    list_fn=_list_skill_names,
+    description_for=_skill_description,
+    parameters_for=_skill_parameters,
+)
+async def activate_skill(name: str, ctx: dict | None = None):
+    """取回某个技能包的完整说明。"""
+    ctx = ctx or {}
+    db = ctx.get("db")
+    owner = ctx.get("owner", "default")
+    if db is None:
+        return {"ok": False, "error": "数据库未就绪，暂时无法读取技能"}
+    from app.services import skill as skill_svc
+
+    return await skill_svc.activate(db, owner, name)
 
 
 # ---------------------------------------------------------------- 只读工具

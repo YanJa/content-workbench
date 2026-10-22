@@ -199,6 +199,17 @@ class Settings(BaseSettings):
     # 结果精排（bge-reranker-base）：一期不开，留配置位
     KB_RERANK_ENABLED: bool = False
 
+    # ---------- Skill（技能包，渐进式披露的第一层：catalog） ----------
+    ENABLE_SKILLS: bool = True
+    # catalog 里最多列出几个 skill。官方建议 catalog 控制在 50~100 tokens/条，
+    # 超过这个数量说明该做筛选了（按 owner 的启用集合通常远小于它）。
+    SKILL_CATALOG_MAX: int = 20
+    # 单个 SKILL.md 正文上限（字符）。激活时原文进上下文，太长会挤爆对话；
+    # 官方设计意图也是「正文精炼 + 细节放 references 按需读」。
+    SKILL_BODY_MAX_CHARS: int = 20000
+    # 单轮对话内最多激活几个 skill（同一轮反复激活会让上下文迅速膨胀）
+    SKILL_MAX_ACTIVATIONS_PER_TURN: int = 3
+
     # ---------- 知乎数据开放平台（热点灵感的数据源） ----------
     # 在 https://developer.zhihu.com/profile 申请。鉴权是 Bearer + 秒级时间戳
     # 双要素，缺任一都会被拒（2026-10-19 实测）。

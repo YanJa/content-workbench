@@ -116,7 +116,9 @@ async def run_chat(
     from app.services.usage import make_sink
 
     llm = get_llm()
-    tools = registry.schemas()
+    # schemas_for(ctx)：动态工具（activate_skill）的 enum 要按本次 owner 算，
+    # 静态的 schemas() 只会给出一个 enum 为空的空壳。
+    tools = await registry.schemas_for(ctx)
     # 对话供应商：deepseek（默认，全功能）/ cloudflare（Workers AI，见下）
     provider = ctx.get("provider") or "deepseek"
     model_override = ctx.get("model_override") or None

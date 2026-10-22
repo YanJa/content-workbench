@@ -28,6 +28,7 @@ from app.routers import (
     queue,
     revenue,
     settings as settings_router,
+    skills,
     tools,
     usage,
     voice_clone,
@@ -136,6 +137,7 @@ app.include_router(revenue.router, prefix=settings.API_PREFIX)
 app.include_router(admin.router, prefix=settings.API_PREFIX)
 app.include_router(zhihu.router, prefix=settings.API_PREFIX)
 app.include_router(knowledge.router, prefix=settings.API_PREFIX)
+app.include_router(skills.router, prefix=settings.API_PREFIX)
 
 
 @app.get("/", tags=["系统"])

@@ -56,6 +56,17 @@ const router = createRouter({
           },
         },
         {
+          path: 'skills',
+          name: 'skills',
+          component: () => import('@/views/SkillsView.vue'),
+          meta: {
+            title: '技能包',
+            desc: '教 AI 一套具体做法，匹配时自动照做',
+            icon: '✦',
+            perm: 'menu.skills',
+          },
+        },
+        {
           path: 'usage',
           name: 'usage',
           component: () => import('@/views/UsageView.vue'),
@@ -135,6 +146,7 @@ const MENU_PERM: Record<string, string> = {
   chat: 'menu.chat',
   queue: 'menu.queue',
   knowledge: 'menu.knowledge',
+  skills: 'menu.skills',
   video: 'menu.video',
   usage: 'menu.usage',
   revenue: 'menu.revenue',

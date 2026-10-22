@@ -202,11 +202,12 @@ async def build_context(
     conv: Conversation,
     system_prompt: str,
     knowledge: str | None = None,
+    skills: str | None = None,
 ) -> list[dict[str, Any]]:
     """构造发给模型的消息列表。
 
     上下文策略：
-      [system] + [历史摘要（若有）] + [知识库素材（若有）] + [最近 N 轮原文]
+      [system] + [历史摘要（若有）] + [技能清单（若有）] + [知识库素材（若有）] + [最近 N 轮原文]
 
     为什么不无脑全塞：虽然有 1M 上下文，但输入 token 是要花钱的。
     保留最近 N 轮原文 + 更早内容压缩成摘要，是成本与效果的平衡点。
@@ -215,9 +216,13 @@ async def build_context(
     回灌既白烧 token，又有 provider 兼容风险。
 
     `knowledge` 是已拼好的素材文本（拼装见 `services/knowledge.build_snippets`），
-    这里只负责塞进去。**必须是独立 system 消息，不能拼进 system_prompt**：
+    `skills` 是已拼好的技能清单（拼装见 `services/skill.build_catalog`），
+    这里只负责塞进去。**两者都必须是独立 system 消息，不能拼进 system_prompt**：
     `prompts.platforms.strip_tool_discipline()` 会从「工具使用纪律」标记一刀切，
     拼在 system_prompt 尾部的素材在 CF 通道会被整段丢弃（2026-10-21 实测确认）。
+
+    技能清单排在知识库之前：它是「怎么做」的方法论，优先级高于「参考什么」；
+    而且越靠前越容易被当成背景设定，而不是刚说过的话。
     """
     msgs = await list_messages(db, conv.id)
 
@@ -231,6 +236,10 @@ async def build_context(
         result.append(
             {"role": "system", "content": f"【此前对话摘要】\n{conv.summary}"}
         )
+
+    # 技能清单：独立 system 消息，理由同上（见 build_context 文档串）
+    if skills:
+        result.append({"role": "system", "content": skills})
 
     # 知识库素材：独立一条 system 消息，紧跟摘要、在最近 N 轮之前 ——
     # 越靠前越容易被模型当作「背景设定」而不是「刚说过的话」。
