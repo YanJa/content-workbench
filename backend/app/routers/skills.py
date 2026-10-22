@@ -1,12 +1,12 @@
 """Skill 管理路由。
 
-三种录入方式，覆盖「从哪来」的全部现实情况：
-  - 上传 SKILL.md（最常见：从 Claude / 别人的技能包拷过来）
+四种录入方式，覆盖「从哪来」的全部现实情况：
+  - 上传 SKILL.md 或技能 zip 包（最常见：从 Claude / 别人的技能包拷过来）
+  - 从链接导入（知乎开放平台等会直接给下载链接，省一次「先下载再上传」）
   - 粘贴正文（懒得拼文件，直接贴）
   - 手表单（填 name + description + 正文）
 
-打包 .zip 暂不支持：阶段一只做「正文注入」，附属文件不会进上下文，
-收下 zip 却用不上其中的 references/ 反而是误导。等阶段二做了按需读文件再加。
+zip 的规则见 parse_zip：SKILL.md 为准，文本附件进 files，防炸弹 + 挡路径穿越。
 """
 from __future__ import annotations
 
@@ -152,6 +152,139 @@ async def upload_skill(
             raise HTTPException(400, "无法识别文件编码，请转成 UTF-8 后重试")
     else:
         raise HTTPException(400, "请上传 .md 文件（SKILL.md）或技能 zip 包")
+
+    try:
+        skill, _created = await skill_svc.upsert_skill(db, owner, text, name_for_parse, files)
+    except skill_svc.SkillParseError as exc:
+        raise HTTPException(400, f"格式有误，原技能未改动：{exc}") from exc
+    await db.commit()
+    return _out(skill)
+
+
+class SkillImportUrl(BaseModel):
+    url: str = Field(..., description="技能下载链接，.md / .zip 后缀")
+
+
+# URL 下载的字节上限：zip 官方技能包通常几十 KB~ 几 MB，20MB 是很宽的兜底
+SKILL_URL_MAX = 20_000_000
+
+
+def _check_url_public(url: str) -> None:
+    """挡 SSRF：只放行公网地址。
+
+    这个端点会用服务器身份去请求用户填的任意 URL —— 不挡的话，
+    填 http://169.254.169.254/ 就能摸到云元数据、填内网地址能探测内网。
+    解析域名后逐个 IP 检查，私网 / 环回 / 链路本地 / 保留段全部拒绝。
+    重定向后的地址不在检查范围（httpx 会跟），这是已知取舍：
+    本平台是单租户自用、下载源是白名单性质的开发站，挡住「直接填内网地址」
+    这条最常见的路已经够了。
+    """
+    import ipaddress
+    import socket
+    from urllib.parse import urlparse
+
+    u = urlparse(url)
+    if u.scheme not in ("http", "https"):
+        raise HTTPException(400, "只支持 http/https 链接")
+    host = u.hostname or ""
+    if not host:
+        raise HTTPException(400, "链接格式不对")
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except OSError as exc:
+        raise HTTPException(400, f"域名解析失败：{host}") from exc
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
+            or ip.is_unspecified
+        ):
+            raise HTTPException(400, "不允许访问内网/保留地址")
+
+
+async def _fetch_skill_url(url: str) -> tuple[bytes, str]:
+    """下载 URL 内容，返回 (原始字节, 从路径截出的文件名)。
+
+    抽成独立函数是为了测试能 monkeypatch 掉网络。
+    """
+    import httpx
+
+    _check_url_public(url)
+    from urllib.parse import urlparse, unquote
+
+    path = urlparse(url).path
+    name = unquote(path.rstrip("/").rsplit("/", 1)[-1] or "skill.md")
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=30) as client:
+            async with client.stream("GET", url) as resp:
+                if resp.status_code != 200:
+                    raise HTTPException(400, f"下载失败：HTTP {resp.status_code}")
+                chunks: list[bytes] = []
+                size = 0
+                async for chunk in resp.aiter_bytes(65536):
+                    size += len(chunk)
+                    if size > SKILL_URL_MAX:
+                        raise HTTPException(400, "文件过大（上限 20MB）")
+                    chunks.append(chunk)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(400, f"下载失败：{exc}") from exc
+    return b"".join(chunks), name
+
+
+@router.post("/import_url", response_model=SkillOut)
+async def import_skill_url(
+    req: SkillImportUrl,
+    db: AsyncSession = Depends(get_db),
+    owner: str = Depends(current_owner_id),
+    _perm: User = Depends(require_use("skill.manage", "skill")),
+):
+    """从链接导入技能：下载 .md / .zip 后走与上传完全相同的解析入库。
+
+    知乎开放平台等站点会直接给一个技能包下载链接（如 hot_list_skills.zip），
+    让用户先下载再上传是多余的往返。
+    """
+    url = (req.url or "").strip()
+    if not url:
+        raise HTTPException(400, "链接不能为空")
+    raw, name = await _fetch_skill_url(url)
+
+    # 分支逻辑与 upload_skill 相同；后缀判断优先看链接路径，
+    # 没有 recognizable 后缀时再看 content-type —— 但下载器没回传 header，
+    # 简化：靠路径后缀 + zip 魔数嗅探（PK\x03\x04）
+    if name.lower().endswith(".zip") or raw[:4] == b"PK\x03\x04":
+        if len(raw) > SKILL_ZIP_MAX:
+            raise HTTPException(400, "zip 包过大")
+        try:
+            parsed_zip = skill_svc.parse_zip(raw)
+        except skill_svc.SkillParseError as exc:
+            raise HTTPException(400, f"zip 无法导入：{exc}") from exc
+        text, name_for_parse, files = (
+            parsed_zip["text"],
+            parsed_zip["filename"],
+            parsed_zip["files"],
+        )
+    elif name.lower().endswith((".md", ".markdown", ".txt")):
+        if len(raw) > SKILL_TEXT_MAX:
+            raise HTTPException(400, "文件过大")
+        files = None
+        name_for_parse = name
+        text = ""
+        for enc in ("utf-8", "utf-8-sig", "gbk", "gb18030", "latin-1"):
+            try:
+                text = raw.decode(enc)
+                break
+            except UnicodeDecodeError:
+                continue
+        if not text.strip():
+            raise HTTPException(400, "无法识别文件编码")
+    else:
+        raise HTTPException(400, f"链接文件名 {name} 不是 .md / .zip，无法识别技能格式")
 
     try:
         skill, _created = await skill_svc.upsert_skill(db, owner, text, name_for_parse, files)

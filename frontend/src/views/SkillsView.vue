@@ -38,6 +38,7 @@ import {
   listSkills,
   patchSkill,
   skillsMeta,
+  importSkillUrl,
   uploadSkill,
   type Skill,
   type SkillsMeta,
@@ -82,6 +83,8 @@ const formShow = ref(false)
 const formText = ref('')
 const formSaving = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
+const formUrl = ref('')
+const formUrlLoading = ref(false)
 
 function openCreate() {
   formText.value = ''
@@ -115,6 +118,37 @@ async function onPickFile(e: Event) {
     message.error((err as Error).message || '上传失败')
   } finally {
     formSaving.value = false
+  }
+}
+
+/** 技能导入成功后的统一提示（与 onPickFile 语义一致） */
+function notifyImported(s: Skill) {
+  if (s.status === 'invalid') {
+    message.warning(`已导入，但配置有误：${s.error}`)
+  } else if (s.files?.length) {
+    message.success(`已导入技能「${s.name}」，含 ${s.files.length} 个附件文件`)
+  } else {
+    message.success(`已导入技能「${s.name}」`)
+  }
+}
+
+async function importFromUrl() {
+  const url = formUrl.value.trim()
+  if (!url) {
+    message.warning('先粘贴技能包链接（.md 或 .zip）')
+    return
+  }
+  formUrlLoading.value = true
+  try {
+    const s = await importSkillUrl(url)
+    formShow.value = false
+    formUrl.value = ''
+    notifyImported(s)
+    await load()
+  } catch (e) {
+    message.error((e as Error).message || '链接导入失败')
+  } finally {
+    formUrlLoading.value = false
   }
 }
 
@@ -387,6 +421,21 @@ const columns = computed<DataTableColumns<Skill>>(() => [
         />
       </div>
 
+      <div class="sk-url">
+        <NInput
+          v-model:value="formUrl"
+          placeholder="技能包链接，如 https://developer.zhihu.com/download/hot_list_skills.zip"
+          :disabled="formUrlLoading"
+          @keyup.enter="importFromUrl"
+        />
+        <IconTextBtn
+          name="download"
+          size="small"
+          :loading="formUrlLoading"
+          @click="importFromUrl"
+        >从链接导入</IconTextBtn>
+      </div>
+
       <div class="sk-or"><span>或者直接写</span></div>
 
       <NInput
@@ -531,6 +580,14 @@ const columns = computed<DataTableColumns<Skill>>(() => [
   font-size: 12.5px;
   line-height: 1.7;
   opacity: 0.8;
+}
+.sk-url {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.sk-url :deep(.n-input) {
+  flex: 1;
 }
 .sk-or {
   display: flex;

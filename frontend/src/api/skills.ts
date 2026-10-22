@@ -54,6 +54,12 @@ export async function uploadSkill(file: File): Promise<Skill> {
   return data
 }
 
+/** 从 URL 导入技能（.md 或 .zip，如 https://developer.zhihu.com/download/hot_list_skills.zip）。 */
+export async function importSkillUrl(url: string): Promise<Skill> {
+  const { data } = await http.post('/skills/import_url', { url })
+  return data
+}
+
 export async function patchSkill(
   id: string,
   patch: { enabled?: boolean; name?: string },
