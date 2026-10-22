@@ -867,7 +867,7 @@ const envColumns: DataTableColumns<EnvRow> = [
               </template>
             </div>
           </NCard>
-        <NCard size="small" title="公众号管理" style="margin-top: 16px">
+        <NCard size="small" title="公众号管理">
           <template #header-extra>
             <IconTextBtn name="plus" size="tiny" type="primary" @click="openCreate">添加公众号</IconTextBtn>
           </template>
