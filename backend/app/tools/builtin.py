@@ -291,6 +291,10 @@ async def save_content(
                 "type": "string",
                 "description": "作者名（可选）。写入草稿的 author 字段；留空则回退系统「作者信息」设置里的 author_name。",
             },
+            "need_open_comment": {
+                "type": "boolean",
+                "description": "是否打开留言（可选，默认 true）。留空即打开；显式传 false 才关闭。",
+            },
             "account_id": {
                 "type": "string",
                 "description": "公众号账号 ID（可选）。留空则用默认公众号；一个都没配时回退 .env。",
@@ -306,6 +310,7 @@ async def push_wechat_draft(
     digest: str = "",
     content_id: str = "",
     author: str = "",
+    need_open_comment: bool = True,
     account_id: str = "",
     ctx: dict | None = None,
 ):
@@ -412,7 +417,12 @@ async def push_wechat_draft(
             logger.warning("读取作者信息失败（草稿 author 留空）: %s", exc)
 
     result = await client.add_draft(
-        title=title, html=html, digest=digest, thumb_media_id=thumb_id, author=final_author
+        title=title,
+        html=html,
+        digest=digest,
+        thumb_media_id=thumb_id,
+        author=final_author,
+        need_open_comment=need_open_comment,
     )
     logger.info(
         "推送草稿箱: title=%s ok=%s 凭证来源=%s 封面=%s",

@@ -334,6 +334,7 @@ class WeChatClient:
         digest: str = "",
         thumb_media_id: str = "",
         author: str = "",
+        need_open_comment: bool = True,
     ) -> dict[str, Any]:
         """创建草稿。
 
@@ -344,6 +345,11 @@ class WeChatClient:
         40007「invalid media_id」（2026-10-21 探测确认），没有“无封面草稿”
         这种状态。所以这里显式拦截并给出可操作的提示，而不是把微信的
         40007 原样抛给用户。
+
+        need_open_comment：是否打开留言。微信默认 0（关闭），但内容号几乎
+        都需要留言来承接互动，所以本平台**默认打开**（传 True → 1）。
+        传 False 时同时把 only_fans_can_comment 置 0（所有人可评论）——
+        关着留言却留着「仅粉丝可评论」没有意义，且会让后台状态看着矛盾。
         """
         if not self.configured:
             return {"ok": False, "error": "未配置 WECHAT_APPID / WECHAT_SECRET"}
@@ -368,7 +374,7 @@ class WeChatClient:
                     "content": html,
                     "content_source_url": "",
                     "thumb_media_id": thumb_media_id,  # 封面（永久素材 id），可为空
-                    "need_open_comment": 0,
+                    "need_open_comment": 1 if need_open_comment else 0,
                     "only_fans_can_comment": 0,
                 }
             ]
