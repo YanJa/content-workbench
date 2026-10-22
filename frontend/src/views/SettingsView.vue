@@ -676,225 +676,225 @@ const envColumns: DataTableColumns<EnvRow> = [
            左列放「服务健康 + AI 对话」（都是「当前系统状态」类只读信息），
            右列单独放「可用工具」（它是最长的一张，独占一列才不会把左列
            拉到 470px 又在下面留出第二块空白）。 -->
-      <div class="grid">
-        <div class="grid-col">
-          <NCard size="small" title="服务健康">
-          <!-- label 位置响应式：移动端 label 置顶，内容（通道 tag + 模型名 +
-               分工注释）吃满行宽，不与 label 互相挤压把行撑高 -->
-          <NDescriptions
-            :column="1"
-            size="small"
-            :label-placement="isMobile ? 'top' : 'left'"
-            bordered
-          >
-            <NDescriptionsItem label="服务状态">
-              <NBadge
-                :type="health?.status === 'ok' ? 'success' : 'error'"
-                dot
-                style="margin-right: 6px"
-              />
-              {{ health?.status ?? '未知' }}
-            </NDescriptionsItem>
-            <NDescriptionsItem label="运行环境">
-              <NTag size="small" :bordered="false">{{ health?.env ?? '-' }}</NTag>
-            </NDescriptionsItem>
-            <NDescriptionsItem label="AI 模型">
-              <template v-if="health?.llm_configured">
-                <!-- 这里展示的是**已生效**的通道，读 savedProvider/savedModel
-                     而不是 chatProvider/chatModel。后者是「编辑中的草稿」：
-                     用户点「修改」拨到 DeepSeek 但还没保存时，服务健康要
-                     继续显示 Cloudflare —— 它描述的是系统现状，不是预览。 -->
-                <div class="ai-model-cell">
-                  <NTag
-                    size="small"
-                    :bordered="false"
-                    :type="savedProvider === 'cloudflare' ? 'info' : 'success'"
-                  >
-                    {{ savedProvider === 'cloudflare' ? 'Cloudflare 通道' : 'DeepSeek 通道' }}
-                  </NTag>
-                  <span class="ai-model-name">
+      <!-- 两行两组（2026-10-22 用户定的排布）：
+           第一行 服务健康 + 可用工具（都是「系统现状」只读信息），
+           第二行 AI 对话 + 公众号管理（都是「可操作的配置」）。
+           等高：.fill-grid 里 grid stretch + 每张卡 height:100%。 -->
+      <div class="grid fill-grid">
+            <NCard size="small" title="服务健康" class="card-health">
+            <!-- label 位置响应式：移动端 label 置顶，内容（通道 tag + 模型名 +
+                 分工注释）吃满行宽，不与 label 互相挤压把行撑高 -->
+            <NDescriptions
+              :column="1"
+              size="small"
+              :label-placement="isMobile ? 'top' : 'left'"
+              bordered
+            >
+              <NDescriptionsItem label="服务状态">
+                <NBadge
+                  :type="health?.status === 'ok' ? 'success' : 'error'"
+                  dot
+                  style="margin-right: 6px"
+                />
+                {{ health?.status ?? '未知' }}
+              </NDescriptionsItem>
+              <NDescriptionsItem label="运行环境">
+                <NTag size="small" :bordered="false">{{ health?.env ?? '-' }}</NTag>
+              </NDescriptionsItem>
+              <NDescriptionsItem label="AI 模型">
+                <template v-if="health?.llm_configured">
+                  <!-- 这里展示的是**已生效**的通道，读 savedProvider/savedModel
+                       而不是 chatProvider/chatModel。后者是「编辑中的草稿」：
+                       用户点「修改」拨到 DeepSeek 但还没保存时，服务健康要
+                       继续显示 Cloudflare —— 它描述的是系统现状，不是预览。 -->
+                  <div class="ai-model-cell">
+                    <NTag
+                      size="small"
+                      :bordered="false"
+                      :type="savedProvider === 'cloudflare' ? 'info' : 'success'"
+                    >
+                      {{ savedProvider === 'cloudflare' ? 'Cloudflare 通道' : 'DeepSeek 通道' }}
+                    </NTag>
+                    <span class="ai-model-name">
+                      <template v-if="savedProvider === 'cloudflare'">
+                        {{ savedCfModel || '未选择模型' }}
+                      </template>
+                      <template v-else>
+                        {{ health.model_flash }}<span class="ai-model-sep">·</span>{{ health.model_pro }}
+                      </template>
+                    </span>
+                  </div>
+                  <div class="ai-model-note">
                     <template v-if="savedProvider === 'cloudflare'">
-                      {{ savedCfModel || '未选择模型' }}
+                      下方「AI 对话」卡片所选；该通道不支持对话内工具调用
                     </template>
                     <template v-else>
-                      {{ health.model_flash }}<span class="ai-model-sep">·</span>{{ health.model_pro }}
+                      Flash 管文案/轻任务，Pro 管复杂推理<template v-if="health.fallback_model">；兜底 {{ health.fallback_model }}</template>
                     </template>
-                  </span>
-                </div>
-                <div class="ai-model-note">
-                  <template v-if="savedProvider === 'cloudflare'">
-                    下方「AI 对话」卡片所选；该通道不支持对话内工具调用
-                  </template>
-                  <template v-else>
-                    Flash 管文案/轻任务，Pro 管复杂推理<template v-if="health.fallback_model">；兜底 {{ health.fallback_model }}</template>
-                  </template>
-                </div>
-              </template>
-              <NTag v-else size="small" :bordered="false" type="warning">未配置</NTag>
-            </NDescriptionsItem>
-            <NDescriptionsItem label="缓存后端">
-              <NTag size="small" :type="health?.redis ? 'success' : 'default'" :bordered="false">
-                {{ health?.redis ? 'Redis' : '内存（单实例）' }}
-              </NTag>
-            </NDescriptionsItem>
-            <NDescriptionsItem label="工具调用">
-              <NTag size="small" :type="health?.tools_enabled ? 'success' : 'default'" :bordered="false">
-                {{ health?.tools_enabled ? '已开启' : '已关闭' }}
-              </NTag>
-            </NDescriptionsItem>
-          </NDescriptions>
+                  </div>
+                </template>
+                <NTag v-else size="small" :bordered="false" type="warning">未配置</NTag>
+              </NDescriptionsItem>
+              <NDescriptionsItem label="缓存后端">
+                <NTag size="small" :type="health?.redis ? 'success' : 'default'" :bordered="false">
+                  {{ health?.redis ? 'Redis' : '内存（单实例）' }}
+                </NTag>
+              </NDescriptionsItem>
+              <NDescriptionsItem label="工具调用">
+                <NTag size="small" :type="health?.tools_enabled ? 'success' : 'default'" :bordered="false">
+                  {{ health?.tools_enabled ? '已开启' : '已关闭' }}
+                </NTag>
+              </NDescriptionsItem>
+            </NDescriptions>
 
-          <IconTextBtn name="reset" style="margin-top: 12px" @click="refresh">重新检测</IconTextBtn>
-        </NCard>
-
-        <!-- AI 对话通道：DeepSeek（默认，全功能）/ Cloudflare Workers AI（免费额度大，
-             但不支持对话内工具调用、计费按估价）。只影响对话，后台任务仍走 DeepSeek。
-             切换权仅管理员（member 只读，后端同样 403）。2026-10-21 从个人中心搬来：
-             它是系统级通道决策，不是个人偏好。 -->
-        <NCard size="small" title="AI 对话">
-          <template #header-extra>
-            <NTag v-if="providerReadonly" size="small" :bordered="false" type="default">只读</NTag>
-          </template>
-          <NSpin :show="cfModelsLoading">
-            <!-- 两行结构：通道 + 操作按钮一行（按钮推到最右），模型下拉独占第二行。
-                 原来全部塞一行，CF 模型名是「DeepSeek-V4-Flash-0731 is the official
-                 release...」这种长 label，把「已保存」挤得换行孤零零挂在下面
-                 （2026-10-22 用户反馈，要求优化展示）。 -->
-            <div class="provider-row">
-              <NRadioGroup
-                :value="chatProvider.provider"
-                size="small"
-                :disabled="providerLocked"
-                @update:value="onProviderChange"
-              >
-                <NRadioButton value="deepseek">DeepSeek（默认）</NRadioButton>
-                <NRadioButton value="cloudflare">Cloudflare Workers AI</NRadioButton>
-              </NRadioGroup>
-              <div class="provider-actions">
-                <!-- 「点了改、再点保存」这个节奏要一致：没改动时通道和模型都锁住，
-                     点「修改」才解锁。否则只有左半边锁着、右边的模型还能随便拨，
-                     语义就对不上了。 -->
-                <NButton
-                  v-if="!providerDirty && !providerReadonly && chatProvider.provider === 'cloudflare'"
-                  size="small"
-                  quaternary
-                  :disabled="!chatProvider.cloudflare_ready"
-                  @click="beginProviderEdit"
-                >
-                  修改
-                </NButton>
-                <IconTextBtn
-                  name="check"
-                  :type="providerDirty ? 'primary' : 'default'"
-                  :loading="providerSaving"
-                  :disabled="providerReadonly || !providerDirty"
-                  @click="saveChatProvider"
-                >
-                  {{ providerDirty ? '保存修改' : '已保存' }}
-                </IconTextBtn>
-                <NButton
-                  v-if="providerDirty && !providerReadonly"
-                  size="small"
-                  quaternary
-                  :disabled="providerSaving"
-                  @click="cancelProviderEdit"
-                >
-                  撤销
-                </NButton>
-              </div>
-            </div>
-            <NSelect
-              v-if="chatProvider.provider === 'cloudflare'"
-              v-model:value="chatModel"
+            <IconTextBtn name="reset" style="margin-top: 12px" @click="refresh">重新检测</IconTextBtn>
+          </NCard>
+          <NCard size="small" :title="`可用工具（${tools.length}）`">
+            <NDataTable
+              v-if="tools.length"
+              :columns="toolColumns"
+              :data="tools"
+              :row-key="(r: ToolInfo) => r.name"
               size="small"
-              class="provider-model-select"
-              :options="cfModelOptions"
-              :loading="cfModelsLoading"
-              :disabled="!chatProvider.cloudflare_ready || providerLocked"
-              placeholder="选择对话模型"
-              filterable
+              :bordered="false"
+              :max-height="300"
+              :scroll-x="480"
             />
-          </NSpin>
-          <div class="api-base-hint" style="margin-top: 8px; opacity: 0.75">
-            <template v-if="providerReadonly">
-              对话供应商由管理员统一配置，此处只读。当前通道：<b>{{ chatProvider.provider === 'cloudflare' ? 'Cloudflare Workers AI' : 'DeepSeek' }}</b>。
-            </template>
-            <template v-else-if="chatProvider.provider === 'cloudflare'">
-              <template v-if="chatProvider.cloudflare_ready">
-                <b>Cloudflare 模型不支持对话内工具</b>（查队列、推草稿箱等需切回
-                DeepSeek），用量按估价计费；中文创作效果弱于 DeepSeek，严肃成稿建议默认通道。
-                <span v-if="cfModelsErr" style="color: var(--app-amber-text)">
-                  模型清单拉取失败：{{ cfModelsErr }}（不影响已保存的选择）
-                </span>
+            <NText v-else depth="3" style="font-size: 13px">
+              没有取到工具列表。检查 <code>ENABLE_TOOLS</code> 是否为 true。
+            </NText>
+            <div class="tip">
+              标「需人工确认」的工具（推送草稿箱、提交渲染）不会由 AI 自动执行，
+              必须在对话里点确认。这既是平台合规要求，也是账号安全底线。
+              <template v-if="chatProvider.provider === 'cloudflare'">
+                当前是 Cloudflare 通道，<b>对话里这些工具全部不可用</b>（该通道不支持
+                function calling），要留在对话里调工具请切回 DeepSeek。
               </template>
-              <template v-else>
-                尚未配置 Cloudflare 凭证：请在 <code>backend/.env</code> 填
-                <code>CLOUDFLARE_API_TOKEN</code> 与 <code>CLOUDFLARE_ACCOUNT_ID</code>
-                并重启后端（获取方式见 .env.example 里的注释）。
-              </template>
-            </template>
-            <template v-else>
-              DeepSeek 全功能通道：支持思维链、工具调用与精确计费。切换供应商对下一轮对话生效，
-              历史消息不受影响；摘要压缩、排版、话题标签等后台任务固定走 DeepSeek。
-            </template>
-          </div>
-        </NCard>
-        </div>
-
-        <!-- 右列：可用工具独占一列。它是最长的一张（7 个工具约 470px），
-             和服务健康（约 320px）分开站，两列各自按内容高度收尾。 -->
-        <NCard size="small" :title="`可用工具（${tools.length}）`">
-          <NDataTable
-            v-if="tools.length"
-            :columns="toolColumns"
-            :data="tools"
-            :row-key="(r: ToolInfo) => r.name"
-            size="small"
-            :bordered="false"
-            :max-height="300"
-            :scroll-x="480"
-          />
-          <NText v-else depth="3" style="font-size: 13px">
-            没有取到工具列表。检查 <code>ENABLE_TOOLS</code> 是否为 true。
-          </NText>
-          <div class="tip">
-            标「需人工确认」的工具（推送草稿箱、提交渲染）不会由 AI 自动执行，
-            必须在对话里点确认。这既是平台合规要求，也是账号安全底线。
-            <template v-if="chatProvider.provider === 'cloudflare'">
-              当前是 Cloudflare 通道，<b>对话里这些工具全部不可用</b>（该通道不支持
-              function calling），要留在对话里调工具请切回 DeepSeek。
-            </template>
-          </div>
-        </NCard>
+            </div>
+          </NCard>
       </div>
 
-      <NCard size="small" title="公众号管理" style="margin-top: 16px">
-        <template #header-extra>
-          <IconTextBtn name="plus" size="tiny" type="primary" @click="openCreate">添加公众号</IconTextBtn>
-        </template>
-        <NAlert type="info" :bordered="false" style="margin-bottom: 12px">
-          <div style="font-size: 12.5px; line-height: 1.7">
-            填 AppID / AppSecret 后即可把排版成品推到草稿箱。
-            <b>务必把服务器出网 IP 加入公众号后台的「IP 白名单」</b>，否则会报 IP 未授权
-            （本沙箱出网 IP 见下方提示）；一个都没配时回退 <code>.env</code> 的
-            <code>WECHAT_APPID / WECHAT_SECRET</code>。
-          </div>
-        </NAlert>
-        <NSpin :show="wechatLoading">
-          <NDataTable
-            v-if="wechatAccounts.length"
-            :columns="wechatColumns"
-            :data="wechatAccounts"
-            :row-key="(r: WeChatAccount) => r.id"
-            size="small"
-            :bordered="false"
-            :scroll-x="820"
-          />
-          <NText v-else depth="3" style="font-size: 13px">
-            还没有公众号。点右上角「添加公众号」开始配置；也可继续用 .env 里的全局凭证。
-          </NText>
-        </NSpin>
-      </NCard>
+      <div class="grid fill-grid" style="margin-top: 16px">
+          <!-- AI 对话通道：DeepSeek（默认，全功能）/ Cloudflare Workers AI（免费额度大，
+               但不支持对话内工具调用、计费按估价）。只影响对话，后台任务仍走 DeepSeek。
+               切换权仅管理员（member 只读，后端同样 403）。2026-10-21 从个人中心搬来：
+               它是系统级通道决策，不是个人偏好。 -->
+          <NCard size="small" title="AI 对话" class="card-ai">
+            <template #header-extra>
+              <NTag v-if="providerReadonly" size="small" :bordered="false" type="default">只读</NTag>
+            </template>
+            <NSpin :show="cfModelsLoading">
+              <!-- 两行结构：通道 + 操作按钮一行（按钮推到最右），模型下拉独占第二行。
+                   原来全部塞一行，CF 模型名是「DeepSeek-V4-Flash-0731 is the official
+                   release...」这种长 label，把「已保存」挤得换行孤零零挂在下面
+                   （2026-10-22 用户反馈，要求优化展示）。 -->
+              <div class="provider-row">
+                <NRadioGroup
+                  :value="chatProvider.provider"
+                  size="small"
+                  :disabled="providerLocked"
+                  @update:value="onProviderChange"
+                >
+                  <NRadioButton value="deepseek">DeepSeek（默认）</NRadioButton>
+                  <NRadioButton value="cloudflare">Cloudflare Workers AI</NRadioButton>
+                </NRadioGroup>
+                <div class="provider-actions">
+                  <!-- 「点了改、再点保存」这个节奏要一致：没改动时通道和模型都锁住，
+                       点「修改」才解锁。否则只有左半边锁着、右边的模型还能随便拨，
+                       语义就对不上了。 -->
+                  <NButton
+                    v-if="!providerDirty && !providerReadonly && chatProvider.provider === 'cloudflare'"
+                    size="small"
+                    quaternary
+                    :disabled="!chatProvider.cloudflare_ready"
+                    @click="beginProviderEdit"
+                  >
+                    修改
+                  </NButton>
+                  <IconTextBtn
+                    name="check"
+                    :type="providerDirty ? 'primary' : 'default'"
+                    :loading="providerSaving"
+                    :disabled="providerReadonly || !providerDirty"
+                    @click="saveChatProvider"
+                  >
+                    {{ providerDirty ? '保存修改' : '已保存' }}
+                  </IconTextBtn>
+                  <NButton
+                    v-if="providerDirty && !providerReadonly"
+                    size="small"
+                    quaternary
+                    :disabled="providerSaving"
+                    @click="cancelProviderEdit"
+                  >
+                    撤销
+                  </NButton>
+                </div>
+              </div>
+              <NSelect
+                v-if="chatProvider.provider === 'cloudflare'"
+                v-model:value="chatModel"
+                size="small"
+                class="provider-model-select"
+                :options="cfModelOptions"
+                :loading="cfModelsLoading"
+                :disabled="!chatProvider.cloudflare_ready || providerLocked"
+                placeholder="选择对话模型"
+                filterable
+              />
+            </NSpin>
+            <div class="api-base-hint card-ai-hint" style="opacity: 0.75">
+              <template v-if="providerReadonly">
+                对话供应商由管理员统一配置，此处只读。当前通道：<b>{{ chatProvider.provider === 'cloudflare' ? 'Cloudflare Workers AI' : 'DeepSeek' }}</b>。
+              </template>
+              <template v-else-if="chatProvider.provider === 'cloudflare'">
+                <template v-if="chatProvider.cloudflare_ready">
+                  <b>Cloudflare 模型不支持对话内工具</b>（查队列、推草稿箱等需切回
+                  DeepSeek），用量按估价计费；中文创作效果弱于 DeepSeek，严肃成稿建议默认通道。
+                  <span v-if="cfModelsErr" style="color: var(--app-amber-text)">
+                    模型清单拉取失败：{{ cfModelsErr }}（不影响已保存的选择）
+                  </span>
+                </template>
+                <template v-else>
+                  尚未配置 Cloudflare 凭证：请在 <code>backend/.env</code> 填
+                  <code>CLOUDFLARE_API_TOKEN</code> 与 <code>CLOUDFLARE_ACCOUNT_ID</code>
+                  并重启后端（获取方式见 .env.example 里的注释）。
+                </template>
+              </template>
+              <template v-else>
+                DeepSeek 全功能通道：支持思维链、工具调用与精确计费。切换供应商对下一轮对话生效，
+                历史消息不受影响；摘要压缩、排版、话题标签等后台任务固定走 DeepSeek。
+              </template>
+            </div>
+          </NCard>
+        <NCard size="small" title="公众号管理" style="margin-top: 16px">
+          <template #header-extra>
+            <IconTextBtn name="plus" size="tiny" type="primary" @click="openCreate">添加公众号</IconTextBtn>
+          </template>
+          <NAlert type="info" :bordered="false" style="margin-bottom: 12px">
+            <div style="font-size: 12.5px; line-height: 1.7">
+              填 AppID / AppSecret 后即可把排版成品推到草稿箱。
+              <b>务必把服务器出网 IP 加入公众号后台的「IP 白名单」</b>，否则会报 IP 未授权
+              （本沙箱出网 IP 见下方提示）；一个都没配时回退 <code>.env</code> 的
+              <code>WECHAT_APPID / WECHAT_SECRET</code>。
+            </div>
+          </NAlert>
+          <NSpin :show="wechatLoading">
+            <NDataTable
+              v-if="wechatAccounts.length"
+              :columns="wechatColumns"
+              :data="wechatAccounts"
+              :row-key="(r: WeChatAccount) => r.id"
+              size="small"
+              :bordered="false"
+              :scroll-x="820"
+            />
+            <NText v-else depth="3" style="font-size: 13px">
+              还没有公众号。点右上角「添加公众号」开始配置；也可继续用 .env 里的全局凭证。
+            </NText>
+          </NSpin>
+        </NCard>
+      </div>
 
       <NModal
         v-model:show="editShow"
@@ -1170,14 +1170,43 @@ const envColumns: DataTableColumns<EnvRow> = [
   align-items: start;
 }
 
-/* 左列：服务健康 + AI 对话竖排。
-   两列都在 2 列网格里按内容高度收尾（align-items:start），不强行等高 ——
-   等高只会把空白从卡片外搬到卡片内。 */
-.grid-col {
+/* 两行两组的等高排布（2026-10-22 用户定的）：第一行服务健康+可用工具，
+   第二行 AI 对话+公众号管理。grid 默认 stretch 已把两列拉齐，这里再把
+   卡片本体变成 flex 列让内容区吃满 —— 否则矮卡（服务健康 323 / AI 对话
+   约 260）的卡壳拉高了、内容还贴在顶上，空白进到卡里。 */
+.fill-grid {
+  align-items: stretch;
+}
+.fill-grid > .n-card {
+  height: 100%;
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  min-width: 0;
+}
+.fill-grid > .n-card :deep(.n-card-content) {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+/* 服务健康是第一行的矮卡：descriptions 吃满剩余高度，表格本体 100% 高
+   （5 行均分多出来的空间，行高变匀称而不是表格下面吊一块空白），
+   「重新检测」钉在卡底。 */
+.card-health :deep(.n-descriptions) {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+.card-health :deep(.n-descriptions-table-wrapper),
+.card-health :deep(.n-descriptions-table) {
+  height: 100%;
+}
+.card-health :deep(.n-card-content > .n-button) {
+  margin-top: auto;
+  align-self: flex-start;
+}
+/* AI 对话是第二行的矮卡：提示文案贴底，控件留在上头 */
+.card-ai :deep(.card-ai-hint) {
+  margin-top: auto;
 }
 
 /* AI 对话卡：第一行通道单选 + 操作按钮（推到最右），第二行模型下拉拉通。
@@ -1259,6 +1288,16 @@ const envColumns: DataTableColumns<EnvRow> = [
 @media (max-width: 900px) {
   .grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+  /* 单列时等高无意义，矮卡不再被拉伸 */
+  .fill-grid {
+    align-items: start;
+  }
+  .fill-grid > .n-card {
+    height: auto;
+  }
+  .card-ai :deep(.card-ai-hint) {
+    margin-top: 8px;
   }
 }
 </style>
