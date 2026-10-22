@@ -87,7 +87,9 @@ const version = useVersionStore()
 // 服务健康的「AI 模型」要显示用户改后的实际模型，只读 health 的
 // .env 配置不够，得和这个拼起来才是真相。
 const chatProvider = ref<ChatProviderInfo>({ provider: 'deepseek', model: '', cloudflare_ready: false })
-const activeCfModel = computed(() => chatProvider.value.model || health.value?.cf_chat_model || '')
+// 已生效的 CF 模型：给「服务健康」用。读 savedModel 而不是 chatProvider.model ——
+// 后者是编辑中的草稿，用户拨了通道还没保存时不该污染「系统现状」这一栏
+const savedCfModel = computed(() => savedModel.value || health.value?.cf_chat_model || '')
 
 // ---------------------------------------------------------------- AI 对话
 // deepseek（默认，全功能）/ cloudflare（Workers AI）。只影响对话轮次，
@@ -115,15 +117,36 @@ const providerSaving = ref(false)
 const savedProvider = ref<ChatProviderInfo['provider']>('deepseek')
 const savedModel = ref('')
 
+// 「点了改才让改」：通道和模型都默认锁住，点「修改」解锁。
+// 光靠 providerDirty 局部禁用模型下拉满足不了这条 —— 通道切换随时可点，
+// 于是出现「下拉框拨不动、旁边单选却能点」的割裂感（用户 2026-10-22 反馈）。
+const providerEditing = ref(false)
+
 const providerDirty = computed(
   () =>
     chatProvider.value.provider !== savedProvider.value ||
     (chatProvider.value.provider === 'cloudflare' && chatModel.value !== savedModel.value),
 )
 
+// 控件是否可操作：只读（member）、未点「修改」、通道未就绪，三者任一都锁住
+const providerLocked = computed(() => providerReadonly.value || !providerEditing.value)
+
+function beginProviderEdit() {
+  providerEditing.value = true
+}
+
+// 撤销：把两个值都还原成已生效的版本，回到「已保存」。
+// 比逐字段手改回原值可靠 —— 模型名是长串，人不会想手抄一遍。
+function cancelProviderEdit() {
+  chatProvider.value = { ...chatProvider.value, provider: savedProvider.value, model: savedModel.value }
+  chatModel.value = savedModel.value
+  providerEditing.value = false
+}
+
 function markProviderSaved(provider: ChatProviderInfo['provider'], model: string) {
   savedProvider.value = provider
   savedModel.value = provider === 'cloudflare' ? model : ''
+  providerEditing.value = false
 }
 
 async function loadCfModels() {
@@ -159,7 +182,7 @@ function onProviderChange(v: string) {
     // 之前这里什么都没做，而切走时又清空了 chatModel —— 于是
     // 「DeepSeek → Cloudflare」这个来回会把 model 从原值变成空串，
     // 脏状态判定为 true，明明改回了原样却还提示「保存修改」。
-    chatModel.value = savedModel.value
+    chatModel.value = savedModel.value || chatModel.value
   }
   // 切到 DeepSeek 不清 chatModel：CF 模型选择原样留在内存里，
   // 切回来能复原，且保存时只看 provider === 'cloudflare' 才提交 model，
@@ -169,12 +192,12 @@ function onProviderChange(v: string) {
 async function saveChatProvider() {
   if (providerReadonly.value) return // 双保险：按钮禁用了，函数这层也拦
   if (!providerDirty.value) return // 没改动就别发请求（按钮本该是灰的）
+  // 切回原有通道但模型空格：直接用已存模型，别把空串提交上去
+  const model =
+    chatProvider.value.provider === 'cloudflare' ? chatModel.value || savedModel.value : ''
   providerSaving.value = true
   try {
-    const p = await updateChatProvider({
-      provider: chatProvider.value.provider,
-      model: chatProvider.value.provider === 'cloudflare' ? chatModel.value : '',
-    })
+    const p = await updateChatProvider({ provider: chatProvider.value.provider, model })
     // 返回值没有 cloudflare_ready（接口只回 ok/provider/model），保留本地这份，
     // 否则服务健康卡片的通道判断会丢掉 CF 就绪状态
     chatProvider.value = {
@@ -636,8 +659,16 @@ const envColumns: DataTableColumns<EnvRow> = [
       <!-- 用户级设置（账号资料 / 使用配额 / 作者信息 / AI 对话偏好）
            已搬到「个人中心」—— 顶栏头像下拉进入 -->
 
+      <!-- 三张卡不强行等高，各按内容高度排（2026-10-22 用户定的方向）：
+           「服务健康」约 320px、「AI 对话」约 200px、「可用工具」约 470px。
+           等高方案试过两轮，结果都是把空白从卡片外搬到卡片内，不如干脆让
+           左列短一截 —— 底部那片由「公众号管理」自然跟进填充。
+           左列放「服务健康 + AI 对话」（都是「当前系统状态」类只读信息），
+           右列单独放「可用工具」（它是最长的一张，独占一列才不会把左列
+           拉到 470px 又在下面留出第二块空白）。 -->
       <div class="grid">
-        <NCard size="small" title="服务健康" class="health-card">
+        <div class="grid-col">
+          <NCard size="small" title="服务健康">
           <!-- label 位置响应式：移动端 label 置顶，内容（通道 tag + 模型名 +
                分工注释）吃满行宽，不与 label 互相挤压把行撑高 -->
           <NDescriptions
@@ -659,17 +690,21 @@ const envColumns: DataTableColumns<EnvRow> = [
             </NDescriptionsItem>
             <NDescriptionsItem label="AI 模型">
               <template v-if="health?.llm_configured">
+                <!-- 这里展示的是**已生效**的通道，读 savedProvider/savedModel
+                     而不是 chatProvider/chatModel。后者是「编辑中的草稿」：
+                     用户点「修改」拨到 DeepSeek 但还没保存时，服务健康要
+                     继续显示 Cloudflare —— 它描述的是系统现状，不是预览。 -->
                 <div class="ai-model-cell">
                   <NTag
                     size="small"
                     :bordered="false"
-                    :type="chatProvider.provider === 'cloudflare' ? 'info' : 'success'"
+                    :type="savedProvider === 'cloudflare' ? 'info' : 'success'"
                   >
-                    {{ chatProvider.provider === 'cloudflare' ? 'Cloudflare 通道' : 'DeepSeek 通道' }}
+                    {{ savedProvider === 'cloudflare' ? 'Cloudflare 通道' : 'DeepSeek 通道' }}
                   </NTag>
                   <span class="ai-model-name">
-                    <template v-if="chatProvider.provider === 'cloudflare'">
-                      {{ activeCfModel || '未选择模型' }}
+                    <template v-if="savedProvider === 'cloudflare'">
+                      {{ savedCfModel || '未选择模型' }}
                     </template>
                     <template v-else>
                       {{ health.model_flash }}<span class="ai-model-sep">·</span>{{ health.model_pro }}
@@ -677,8 +712,8 @@ const envColumns: DataTableColumns<EnvRow> = [
                   </span>
                 </div>
                 <div class="ai-model-note">
-                  <template v-if="chatProvider.provider === 'cloudflare'">
-                    上方「AI 对话」卡片所选；该通道不支持对话内工具调用
+                  <template v-if="savedProvider === 'cloudflare'">
+                    下方「AI 对话」卡片所选；该通道不支持对话内工具调用
                   </template>
                   <template v-else>
                     Flash 管文案/轻任务，Pro 管复杂推理<template v-if="health.fallback_model">；兜底 {{ health.fallback_model }}</template>
@@ -702,11 +737,6 @@ const envColumns: DataTableColumns<EnvRow> = [
           <IconTextBtn name="reset" style="margin-top: 12px" @click="refresh">重新检测</IconTextBtn>
         </NCard>
 
-        <!-- 右列：AI 对话 + 可用工具。
-             这两张卡天然相关（对话通道决定工具能不能用），堆在同一列让右列
-             有内容、左边服务健康独占一列 —— 原来三张卡在 2 列网格里流式排布，
-             右列只剩 AI 对话一张矮卡，右下空出一大片。 -->
-        <div class="grid-col">
         <!-- AI 对话通道：DeepSeek（默认，全功能）/ Cloudflare Workers AI（免费额度大，
              但不支持对话内工具调用、计费按估价）。只影响对话，后台任务仍走 DeepSeek。
              切换权仅管理员（member 只读，后端同样 403）。2026-10-21 从个人中心搬来：
@@ -720,7 +750,7 @@ const envColumns: DataTableColumns<EnvRow> = [
               <NRadioGroup
                 :value="chatProvider.provider"
                 size="small"
-                :disabled="providerReadonly"
+                :disabled="providerLocked"
                 @update:value="onProviderChange"
               >
                 <NRadioButton value="deepseek">DeepSeek（默认）</NRadioButton>
@@ -733,10 +763,22 @@ const envColumns: DataTableColumns<EnvRow> = [
                 style="width: 340px"
                 :options="cfModels.map((m) => ({ label: m.label, value: m.name }))"
                 :loading="cfModelsLoading"
-                :disabled="!chatProvider.cloudflare_ready || providerReadonly"
+                :disabled="!chatProvider.cloudflare_ready || providerLocked"
                 placeholder="选择对话模型"
                 filterable
               />
+              <!-- 「点了改、再点保存」这个节奏要一致：没改动时通道和模型都锁住，
+                   点「修改」才解锁（下拉旁的小按钮）。否则只有左半边锁着、
+                   右上角的模型还能随便拨，语义就对不上了。 -->
+              <NButton
+                v-if="!providerDirty && !providerReadonly && chatProvider.provider === 'cloudflare'"
+                size="small"
+                quaternary
+                :disabled="!chatProvider.cloudflare_ready"
+                @click="beginProviderEdit"
+              >
+                修改
+              </NButton>
               <IconTextBtn
                 name="check"
                 :type="providerDirty ? 'primary' : 'default'"
@@ -746,6 +788,15 @@ const envColumns: DataTableColumns<EnvRow> = [
               >
                 {{ providerDirty ? '保存修改' : '已保存' }}
               </IconTextBtn>
+              <NButton
+                v-if="providerDirty && !providerReadonly"
+                size="small"
+                quaternary
+                :disabled="providerSaving"
+                @click="cancelProviderEdit"
+              >
+                撤销
+              </NButton>
             </div>
           </NSpin>
           <div class="api-base-hint" style="margin-top: 8px; opacity: 0.75">
@@ -772,7 +823,10 @@ const envColumns: DataTableColumns<EnvRow> = [
             </template>
           </div>
         </NCard>
+        </div>
 
+        <!-- 右列：可用工具独占一列。它是最长的一张（7 个工具约 470px），
+             和服务健康（约 320px）分开站，两列各自按内容高度收尾。 -->
         <NCard size="small" :title="`可用工具（${tools.length}）`">
           <NDataTable
             v-if="tools.length"
@@ -796,7 +850,6 @@ const envColumns: DataTableColumns<EnvRow> = [
             </template>
           </div>
         </NCard>
-        </div>
       </div>
 
       <NCard size="small" title="公众号管理" style="margin-top: 16px">
@@ -1101,24 +1154,14 @@ const envColumns: DataTableColumns<EnvRow> = [
   align-items: start;
 }
 
-/* 右列：两张卡竖排。原来三张卡直接塞进 2 列网格，流式排布下
-   右列只有一张矮卡，右下留一大片空白（2026-10-22 用户反馈）。 */
+/* 左列：服务健康 + AI 对话竖排。
+   两列都在 2 列网格里按内容高度收尾（align-items:start），不强行等高 ——
+   等高只会把空白从卡片外搬到卡片内。 */
 .grid-col {
   display: flex;
   flex-direction: column;
   gap: 16px;
   min-width: 0;
-}
-
-/* 让「服务健康」与右列等高：grid 默认 align-items:start 会让左卡只占
-   内容高度，右列两卡叠起来比它高，左下就是一块空白。拉伸后再把卡片
-   内部撑满（NABCard 的 .n-card 是 flex column），空白变成留白而不是断崖。
-   移动端单列时无意义，媒体查询里放开。 */
-.health-card {
-  height: 100%;
-}
-.health-card :deep(.n-card) {
-  height: 100%;
 }
 
 .tip {
@@ -1180,10 +1223,6 @@ const envColumns: DataTableColumns<EnvRow> = [
 @media (max-width: 900px) {
   .grid {
     grid-template-columns: minmax(0, 1fr);
-  }
-  /* 单列时两列各自按内容高度排，拉伸反而会让服务健康卡莫名变很高 */
-  .health-card {
-    height: auto;
   }
 }
 </style>
