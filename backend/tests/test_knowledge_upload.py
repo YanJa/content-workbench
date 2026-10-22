@@ -188,3 +188,22 @@ def test_upload_too_large_rejected(env, monkeypatch):
         assert ei.value.status_code == 400
 
     asyncio.run(_run())
+
+
+def test_delete_item_removes_uploaded_file(env):
+    """删素材要连原文件一起删，不留孤儿文件占盘。"""
+    raw = "删除测试文档内容".encode("utf-8")
+
+    async def _run():
+        res = await _call_upload(env, raw, "del.txt")
+        item_id = res["item"]["id"]
+        async with env.Maker() as db:
+            row = (
+                await db.execute(select(KnowledgeItem).where(KnowledgeItem.id == item_id))
+            ).scalar_one()
+            f = env.tmp / "uploads" / row.file_path
+            assert f.exists(), "上传后原文件应存在"
+            assert await kb.delete_item(db, "default", item_id) is True
+        assert not f.exists(), "删除素材后原文件应一并删除"
+
+    asyncio.run(_run())

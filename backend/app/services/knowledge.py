@@ -665,10 +665,16 @@ async def recall_for_prompt(
 # ---------------------------------------------------------------- 删除 / 查询
 
 async def delete_item(db: AsyncSession, owner: str, item_id: str) -> bool:
-    """删素材及其全部片段（级联由这里手动做，SQLite 不配外键）。"""
+    """删素材及其全部片段，连同上传的原始文件（级联用手动做，SQLite 不配外键）。
+
+    原文件必须一起删：用户点「删除」的语义是「这份素材彻底没了」，
+    留下孤儿文件既占盘，也会让「重新上传同一文件」时 hash 命中的历史
+    元数据对不上（虽然去重只认活跃素材，但脏文件越积越多没法清理）。
+    """
     item = await db.get(KnowledgeItem, item_id)
     if not item or item.owner != owner:
         return False
+    file_path = item.file_path  # 先记下：delete 之后对象属性可能失效
     rows = (
         await db.execute(
             select(KnowledgeChunk).where(KnowledgeChunk.item_id == item_id)
@@ -679,6 +685,18 @@ async def delete_item(db: AsyncSession, owner: str, item_id: str) -> bool:
     await db.delete(item)
     await db.commit()
     invalidate_cache(owner)
+
+    if file_path:
+        try:
+            from pathlib import Path
+
+            full = (Path(settings.UPLOAD_DIR) / file_path).resolve()
+            root = Path(settings.UPLOAD_DIR).resolve()
+            # 守卫：只删 UPLOAD_DIR 内的文件，防止 file_path 被写坏成绝对路径越界删除
+            if root in full.parents and full.is_file():
+                full.unlink()
+        except Exception as exc:  # noqa: BLE001 - 删文件失败不该让删素材回滚
+            logger.warning("删除素材原文件失败（素材记录已删）: %s", exc)
     return True
 
 
