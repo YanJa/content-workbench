@@ -63,6 +63,18 @@ class DynamicTool:
     base_description: str = ""
     base_parameters: dict[str, Any] = field(default_factory=dict)
 
+    @property
+    def description(self) -> str:
+        """和静态 Tool 同名的展示字段。
+
+        `/api/tools`（系统设置页的「可用工具」卡片）是**无上下文**的接口，
+        它按 `t.description` / `t.requires_confirm` 读属性。少了这个 property
+        就会 AttributeError → 整个接口 500 → 前端 catch 成空数组 → 页面显示
+        「可用工具（0）」（2026-10-22 实际踩到）。补 property 而不是去改调用方：
+        任何按 Tool 接口读属性的地方，都应该能读动态工具。
+        """
+        return self.base_description
+
 
 class ToolRegistry:
     def __init__(self) -> None:

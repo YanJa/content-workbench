@@ -38,14 +38,25 @@ router = APIRouter(prefix="/tools", tags=["工具"])
 
 @router.get("", response_model=list[ToolOut])
 async def list_tools():
-    """列出所有可用工具及其是否需要人工确认。"""
+    """列出所有可用工具及其是否需要人工确认。
+
+    刻意走 `registry.schemas()` 而不是遍历 `registry.all()` 逐字段读属性：
+    静态 `Tool` 和动态 `DynamicTool` 是两种 dataclass，逐字段读迟早会在某一种
+    上 AttributeError（2026-10-22 就是这么 500 的，前端 catch 成空数组，整张
+    卡片显示「可用工具（0）」）。`schemas()` 是注册表自己保证出口形状的地方，
+    展示和发给模型用的是同一份定义。
+    """
+    need_confirm = {
+        s["function"]["name"]: registry.needs_confirm(s["function"]["name"])
+        for s in registry.schemas()
+    }
     return [
         ToolOut(
-            name=t.name,
-            description=t.description,
-            requires_confirm=t.requires_confirm,
+            name=t["function"]["name"],
+            description=t["function"]["description"],
+            requires_confirm=need_confirm.get(t["function"]["name"], False),
         )
-        for t in registry.all()
+        for t in registry.schemas()
     ]
 
 

@@ -538,3 +538,35 @@ def test_route_rejects_non_markdown_upload(tmp_path):
         await engine.dispose()
 
     _run(go())
+
+
+# ---------------------------------------------------------------- /api/tools 展示
+#
+# 系统设置页「可用工具」卡片读的是 GET /api/tools。它是**无上下文**端点，
+# 曾经因为 DynamicTool 缺 description 属性直接 500，前端 catch 成空数组，
+# 整张卡片显示「可用工具（0）」（2026-10-22 实际踩到）。这两项守住回归。
+
+
+def test_list_tools_endpoint_includes_dynamic_tool():
+    async def go():
+        from app.routers.tools import list_tools
+
+        rows = await list_tools()
+        names = [r.name for r in rows]
+        assert "query_queue" in names
+        assert "activate_skill" in names
+        act = next(r for r in rows if r.name == "activate_skill")
+        # 无上下文时不能带 enum（否则会泄漏别人的技能名）
+        assert act.description
+        assert act.requires_confirm is False
+        # 其他工具的确认标记不能被带歪
+        assert next(r for r in rows if r.name == "push_wechat_draft").requires_confirm is True
+
+    _run(go())
+
+
+def test_dynamic_tool_exposes_tool_like_attributes():
+    """任何按 Tool 接口读属性的地方都该能读动态工具。"""
+    dt = next(t for t in registry.all() if t.name == "activate_skill")
+    assert isinstance(dt.description, str) and dt.description
+    assert dt.requires_confirm is False
