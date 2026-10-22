@@ -454,6 +454,11 @@ assistant 的 `tool_calls[i].result`）。思维链只给人看，`build_context
 - `chat.py` 在 `build_context` 前调 `skill.build_catalog_for_owner(db, owner)`，
   catalog 作为**独立 system 消息**注入（和知识库同理：`strip_tool_discipline()`
   会把拼在 system_prompt 尾部的内容整段切掉）；
+- 对话请求带 `use_skills`（默认 true，与 `use_knowledge` 同款）。为 false 时**既不
+  注入 catalog、也不提供 `activate_skill` 工具** —— 只关一半的话，模型会凭工具
+  description 去猜一个技能名调用。前端输入框上方有对应开关；
+- 回复上方的工具痕迹里，`activate_skill` 单独渲染成「技能 · 按「X」的说明来做」，
+  不显示原始 JSON —— 「这轮 AI 读了哪个技能」是用户排查技能不生效时唯一能看的线索；
 - **Cloudflare 通道不注入**：CF 模型没有 function calling，清单里「调用
   activate_skill」的指令只会让它编造工具调用；
 - `activate_skill` 是**动态工具**（`dynamic_tool`）：`name` 参数的 enum 按当前

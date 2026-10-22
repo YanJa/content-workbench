@@ -735,21 +735,30 @@ async function restoreFromQueue() {
           >
             <div class="msg-role">{{ m.role === 'user' ? '我' : 'AI' }}</div>
             <div class="msg-body">
-              <!-- 工具调用过程 -->
+              <!-- 工具调用过程。activate_skill 单独渲染：它平时不出现在
+                   用户视野里，但「这轮 AI 读了哪个技能」是用户最该知道的
+                   一件事 —— 否则技能不生效时完全无从排查。 -->
               <div v-if="m.toolCalls?.length" class="tool-trace">
                 <div v-for="t in m.toolCalls" :key="t.id" class="tool-row">
-                  <NTag size="tiny" :bordered="false" type="info">工具</NTag>
-                  <span class="tool-name">{{ t.name }}</span>
-                  <span v-if="Object.keys(t.arguments || {}).length" class="tool-args">
-                    {{ JSON.stringify(t.arguments).slice(0, 60) }}
-                  </span>
+                  <template v-if="t.name === 'activate_skill' && t.result?.ok">
+                    <NTag size="tiny" :bordered="false" type="success">技能</NTag>
+                    <span class="tool-name">按「{{ t.result.name }}」的说明来做</span>
+                    <span class="tool-args skill-desc">{{ t.result.description }}</span>
+                  </template>
+                  <template v-else>
+                    <NTag size="tiny" :bordered="false" type="info">工具</NTag>
+                    <span class="tool-name">{{ t.name }}</span>
+                    <span v-if="Object.keys(t.arguments || {}).length" class="tool-args">
+                      {{ JSON.stringify(t.arguments).slice(0, 60) }}
+                    </span>
+                  </template>
                   <NTag
                     v-if="t.result"
                     size="tiny"
                     :bordered="false"
-                    :type="t.result?.error ? 'error' : 'success'"
+                    :type="t.result?.error || t.result?.ok === false ? 'error' : 'success'"
                   >
-                    {{ t.result?.error ? '失败' : '完成' }}
+                    {{ t.result?.error || t.result?.ok === false ? '失败' : '完成' }}
                   </NTag>
                   <NSpin v-else :size="12" />
                 </div>
@@ -855,9 +864,9 @@ async function restoreFromQueue() {
           </div>
         </NScrollbar>
 
-        <!-- 知识库素材开关：默认开。关掉后本轮完全不召回素材 ——
-             想让 AI 自由发挥、或本轮话题跟库存素材无关时用。
-             只作用于「这一句」，不是全局设置：写稿是逐轮的事。 -->
+        <!-- 知识库素材 / 技能包开关：都默认开，都只作用于「这一句」。
+             关素材 → 本轮不召回；
+             关技能 → 本轮不注入技能清单、也不提供 activate_skill。 -->
         <div class="composer-tools">
           <NTooltip placement="top-start" :style="{ maxWidth: '280px' }">
             <template #trigger>
@@ -869,6 +878,18 @@ async function restoreFromQueue() {
             <span style="font-size: 12px">
               开启后，每句话都会去你的私有知识库里按语义找相关片段，命中了就
               悄悄参考（不照抄、不在成稿里标注）。关掉则本轮完全不查。
+            </span>
+          </NTooltip>
+          <NTooltip placement="top-start" :style="{ maxWidth: '300px' }">
+            <template #trigger>
+              <label class="kb-toggle">
+                <input v-model="chat.useSkills" type="checkbox" />
+                <span>技能包</span>
+              </label>
+            </template>
+            <span style="font-size: 12px">
+              开启后，AI 知道你有哪几套技能；任务匹配时它会先读那份说明再照做
+              （回复上方会出现「技能 · 按 X 的说明来做」）。关掉则本轮完全不用技能。
             </span>
           </NTooltip>
         </div>
@@ -1418,12 +1439,23 @@ async function restoreFromQueue() {
   white-space: nowrap;
 }
 
+/* 技能痕迹里那句 description 会很长，给它单独放宽一点并允许收缩 */
+.skill-desc {
+  flex: 1;
+  min-width: 0;
+  max-width: 420px;
+}
+
 /* 知识库开关：贴在输入框上方一排，刻意用轻量 checkbox 而不是按钮组 ——
    它是「状态」不是「动作」，用户要的是一眼看见当前带不带素材 */
 .composer-tools {
   padding-top: 12px;
   border-top: 1px solid var(--app-border);
   margin-top: 12px;
+  /* 两个开关（素材 / 技能）并排，间距跟着字号走别写死 */
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
 }
 
 .kb-toggle {

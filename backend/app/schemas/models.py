@@ -66,6 +66,9 @@ class ChatRequest(BaseModel):
     # 本轮是否从私有知识库召回素材（默认开，前端输入框旁开关控制）。
     # null 视为 true：老客户端不带这个字段时保持「自动召回」的默认体验。
     use_knowledge: bool | None = None
+    # 本轮是否挂载技能包（默认开）。关掉后既不注入 catalog，也不提供
+    # activate_skill 工具 —— 相当于临时把技能全停用一轮。
+    use_skills: bool | None = None
 
 
 # ---------------------------------------------------------------- 知识库

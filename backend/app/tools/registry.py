@@ -186,15 +186,27 @@ class ToolRegistry:
             return {"error": f"工具 {name} 执行失败: {exc}"}
 
 
+def _list_call_args(list_fn: Callable[..., Any], ctx: dict[str, Any]) -> list[Any]:
+    """按 list_fn 的签名决定怎么调它。
+
+    三种约定都兼容：
+      - `(ctx)`          → 只给 ctx，工具自己取 db/owner（最灵活，能读本轮开关）
+      - `(db, owner, ctx)` → 三个都给
+      - `(db, owner)`    → 最简，只要上下文里的两个东西
+    """
+    params = inspect.signature(list_fn).parameters
+    db = ctx.get("db")
+    owner = ctx.get("owner") or "default"
+    if tuple(params) == ("ctx",) or (len(params) == 1 and "ctx" in params):
+        return [ctx]
+    if "ctx" in params:
+        return [db, owner, ctx]
+    return [db, owner]
+
+
 async def _call_list(list_fn: Callable[..., Any], ctx: dict[str, Any]) -> Any:
-    """调 list_fn。同步/异步、要不要 ctx 都兼容。"""
-    sig = inspect.signature(list_fn)
-    if "ctx" in sig.parameters:
-        res = list_fn(ctx)
-    else:
-        db = ctx.get("db")
-        owner = ctx.get("owner") or "default"
-        res = list_fn(db, owner)
+    """调 list_fn。同步/异步都兼容。"""
+    res = list_fn(*_list_call_args(list_fn, ctx))
     if inspect.isawaitable(res):
         res = await res
     return res

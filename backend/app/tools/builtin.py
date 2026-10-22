@@ -136,11 +136,19 @@ def _skill_parameters(names: list[str]) -> dict[str, Any]:
     }
 
 
-async def _list_skill_names(db, owner: str) -> list[str]:
-    """本次请求可激活的技能名。空列表 → 工具整体不提供给模型。"""
+async def _list_skill_names(db, owner: str, ctx: dict | None = None) -> list[str]:
+    """本次请求可激活的技能名。空列表 → 工具整体不提供给模型。
+
+    `ctx` 是可选的：`dynamic_tool` 优先把 ctx 传进来（这样才读得到
+    `use_skills` 这个本轮开关）；老调用只给 (db, owner) 也能工作。
+    """
     from app.core.config import settings
 
     if not settings.ENABLE_SKILLS or db is None:
+        return []
+    # 用户在输入框旁关掉了技能：本轮连工具都不给，否则模型会凭 description
+    # 去猜名字调用（catalog 不在，但工具还在 = 只关了一半）。
+    if ctx is not None and ctx.get("use_skills") is False:
         return []
     from app.services import skill as skill_svc
 

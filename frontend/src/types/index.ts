@@ -53,6 +53,11 @@ export interface ChatRequest {
    * 关掉后这一轮完全不查素材——临时想让 AI 自由发挥时用。
    */
   use_knowledge?: boolean | null
+  /**
+   * 本轮是否挂载技能包。默认开（后端 null 视为 true）。
+   * 关掉后这一轮不注入技能清单、也不提供 activate_skill 工具。
+   */
+  use_skills?: boolean | null
 }
 
 /**

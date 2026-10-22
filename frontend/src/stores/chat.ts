@@ -27,6 +27,15 @@ export const useChatStore = defineStore('chat', () => {
    * 写稿是逐轮的事，用户要的是「这一句不带素材」。
    */
   const useKnowledge = ref(true)
+  /**
+   * 本轮是否挂载技能包（默认开）。
+   *
+   * 关掉的意义：技能会「按它那套做法来」，偶尔不是你要的——比如想让 AI
+   * 自由发挥、或某个技能的规矩跟本轮任务冲突。关掉后这一轮既不注入技能
+   * 清单、也不提供 activate_skill 工具，等于临时把它们全停用。同样只作用于
+   * **本轮请求**。
+   */
+  const useSkills = ref(true)
 
   let controller: AbortController | null = null
 
@@ -130,6 +139,7 @@ export const useChatStore = defineStore('chat', () => {
         // 历史消息 id 对上，队列页「回到对话」才定位得到这条回复
         assistant_msg_id: assistant.id,
         use_knowledge: useKnowledge.value,
+        use_skills: useSkills.value,
       },
       {
         onEvent: (evt) => {
@@ -246,6 +256,7 @@ export const useChatStore = defineStore('chat', () => {
     streaming,
     platform,
     useKnowledge,
+    useSkills,
     loadConversations,
     openConversation,
     newConversation,

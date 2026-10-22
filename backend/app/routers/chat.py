@@ -141,8 +141,10 @@ async def chat_stream(
         # 技能清单（catalog）：和知识库一样是旁路，读失败就本轮无技能。
         # CF 通道不给 —— 它没有 function calling，清单里「调用 activate_skill」
         # 的指令只会让它凭空编造工具调用；而且 8b 模型上下文小，省点预算。
+        # use_skills=False 时本轮连工具都不提供，前后端一致。
         skill_catalog = ""
-        if provider != "cloudflare":
+        use_skills = req.use_skills is not False
+        if use_skills and provider != "cloudflare":
             skill_catalog = await skill_svc.build_catalog_for_owner(db, owner)
 
         messages = await conv_svc.build_context(
@@ -158,6 +160,10 @@ async def chat_stream(
             # 只作用于对话轮次；摘要压缩（maybe_summarize）固定走 DeepSeek。
             "provider": provider,
             "model_override": cf_model or None,
+            # 本轮是否挂技能。run_chat 靠它决定要不要把 activate_skill 放进
+            # tools 列表 —— 只靠不注入 catalog 是不够的：catalog 不在，但工具
+            # 还在的话，模型仍可能凭 description 去猜一个名字调用。
+            "use_skills": use_skills,
         }
 
         # 本轮 assistant 消息的累积器。全部攒着，流结束后一次性落库 ——

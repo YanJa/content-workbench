@@ -367,7 +367,174 @@ def test_activate_skill_tool_enum_follows_owner(tmp_path):
     _run(go())
 
 
+def test_use_skills_false_hides_tool(tmp_path):
+    """本轮关掉技能：即使有可用技能，activate_skill 也不出现在 tools 里。
+
+    只靠「不注入 catalog」是不够的 —— 工具还在的话，模型仍可能凭 description
+    去猜一个名字调用。开关必须同时关掉这两半。
+    """
+
+    async def go():
+        engine, Maker = await _mk_session(tmp_path)
+        async with Maker() as db:
+            await skill_svc.upsert_skill(db, "o1", GOOD_MD, "SKILL.md")
+            await db.commit()
+
+            on = await registry.schemas_for({"db": db, "owner": "o1", "use_skills": True})
+            assert "activate_skill" in [s["function"]["name"] for s in on]
+
+            off = await registry.schemas_for({"db": db, "owner": "o1", "use_skills": False})
+            assert "activate_skill" not in [s["function"]["name"] for s in off]
+        await engine.dispose()
+
+    _run(go())
+
+
+def test_use_skills_none_or_missing_means_on(tmp_path):
+    """不带这个字段（老客户端 / ctx 里没有）按开启处理，保持默认体验。"""
+
+    async def go():
+        engine, Maker = await _mk_session(tmp_path)
+        async with Maker() as db:
+            await skill_svc.upsert_skill(db, "o1", GOOD_MD, "SKILL.md")
+            await db.commit()
+            for ctx in (
+                {"db": db, "owner": "o1"},
+                {"db": db, "owner": "o1", "use_skills": None},
+            ):
+                names = [s["function"]["name"] for s in await registry.schemas_for(ctx)]
+                assert "activate_skill" in names
+        await engine.dispose()
+
+    _run(go())
+
+
 def test_registry_schemas_without_ctx_has_no_enum():
     """无上下文的展示用定义不能带 enum —— 否则会把别人的技能名泄漏出去。"""
     act = next(s for s in registry.schemas() if s["function"]["name"] == "activate_skill")
     assert "enum" not in act["function"]["parameters"]["properties"]["name"]
+
+
+# ---------------------------------------------------------------- 路由层（直调，不走 HTTP）
+#
+# 照 tests/test_knowledge_upload.py 的套路：临时库 + 直调端点函数。
+# 这样能覆盖 HTTP 层看不到的两件事——编码容错、以及「坏文件返回 400 而不是
+# 覆盖好版本」这条语义。
+
+import io  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
+
+from fastapi import HTTPException  # noqa: E402
+from starlette.datastructures import UploadFile  # noqa: E402
+
+from app.routers import skills as skills_router  # noqa: E402
+
+
+def _uf(filename: str, content: bytes) -> UploadFile:
+    return UploadFile(filename=filename, file=io.BytesIO(content))
+
+
+def _perm():
+    return SimpleNamespace(id="u1")
+
+
+def test_route_paste_then_toggle_then_delete(tmp_path):
+    async def go():
+        engine, Maker = await _mk_session(tmp_path)
+        async with Maker() as db:
+            created = await skills_router.create_skill(
+                skills_router.SkillCreate(text=GOOD_MD),
+                db=db,
+                owner="o1",
+                _perm=_perm(),
+            )
+            assert created.name == "wechat-hot-title"
+            assert created.status == "ready"
+
+            off = await skills_router.patch_skill(
+                created.id,
+                skills_router.SkillPatch(enabled=False),
+                db=db,
+                owner="o1",
+                _perm=_perm(),
+            )
+            assert off.enabled is False
+
+            listed = await skills_router.list_skills(db=db, owner="o1")
+            assert len(listed) == 1 and listed[0].enabled is False
+
+            assert (await skills_router.delete_skill(
+                created.id, db=db, owner="o1", _perm=_perm()
+            ))["ok"] is True
+            assert await skills_router.list_skills(db=db, owner="o1") == []
+        await engine.dispose()
+
+    _run(go())
+
+
+def test_route_upload_gbk_encoded_file(tmp_path):
+    """Windows 导出的 SKILL.md 常是 GBK —— 必须能正确解码，不能乱码进正文。"""
+
+    async def go():
+        engine, Maker = await _mk_session(tmp_path)
+        async with Maker() as db:
+            raw = GOOD_MD.encode("gbk")
+            out = await skills_router.upload_skill(
+                file=_uf("wechat-hot-title.md", raw),
+                db=db,
+                owner="o1",
+                _perm=_perm(),
+            )
+            assert out.status == "ready"
+            assert "公众号爆款标题" in out.description
+            assert "数字开头" in out.body
+        await engine.dispose()
+
+    _run(go())
+
+
+def test_route_upload_bad_file_returns_400_and_keeps_good(tmp_path):
+    async def go():
+        engine, Maker = await _mk_session(tmp_path)
+        async with Maker() as db:
+            good = await skills_router.upload_skill(
+                file=_uf("wechat-hot-title.md", GOOD_MD.encode("utf-8")),
+                db=db,
+                owner="o1",
+                _perm=_perm(),
+            )
+            assert good.status == "ready"
+
+            with pytest.raises(HTTPException) as e:
+                await skills_router.upload_skill(
+                    file=_uf("wrong-name.md", GOOD_MD.encode("utf-8")),
+                    db=db,
+                    owner="o1",
+                    _perm=_perm(),
+                )
+            assert e.value.status_code == 400
+            assert "原技能未改动" in e.value.detail
+
+            rows = await skills_router.list_skills(db=db, owner="o1")
+            assert len(rows) == 1 and rows[0].status == "ready"
+        await engine.dispose()
+
+    _run(go())
+
+
+def test_route_rejects_non_markdown_upload(tmp_path):
+    async def go():
+        engine, Maker = await _mk_session(tmp_path)
+        async with Maker() as db:
+            with pytest.raises(HTTPException) as e:
+                await skills_router.upload_skill(
+                    file=_uf("skill.zip", b"PK\x03\x04"),
+                    db=db,
+                    owner="o1",
+                    _perm=_perm(),
+                )
+            assert e.value.status_code == 400
+            assert ".md" in e.value.detail
+        await engine.dispose()
+
+    _run(go())
