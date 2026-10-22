@@ -9,6 +9,7 @@ export interface RevenueAccount {
 export interface TrendItem {
   date: string
   income_fen: number
+  req_succ: number
   exposure: number
   click: number
 }
@@ -16,12 +17,14 @@ export interface TrendItem {
 export interface CompositionItem {
   slot: string
   income_fen: number
+  req_succ: number
   exposure: number
   click: number
 }
 
 export interface RevenueSummary {
   income_fen: number
+  req_succ: number
   exposure: number
   click: number
   click_rate: number

@@ -163,6 +163,7 @@ async def _collect_rows(
             {
                 "date": it.get("date", ""),
                 "ad_slot_name": slot_name(it.get("ad_slot")),
+                "req_succ": it.get("req_succ_count") or 0,
                 "exposure": it.get("exposure_count") or 0,
                 "click": it.get("click_count") or 0,
                 "income_fen": it.get("income") or 0,
@@ -192,6 +193,7 @@ def _row_to_dict(r: WechatAdDaily) -> dict:
     return {
         "date": r.date,
         "ad_slot_name": r.ad_slot_name,
+        "req_succ": r.req_succ_count,
         "exposure": r.exposure_count,
         "click": r.click_count,
         "income_fen": r.income_fen,
@@ -201,6 +203,7 @@ def _row_to_dict(r: WechatAdDaily) -> dict:
 # ---------------------------------------------------------------- 聚合
 def _aggregate(rows: list[dict]) -> dict:
     """把天级数据聚合成 汇总 / 趋势 / 收益构成。金额单位：分。"""
+    req_succ = sum(r["req_succ"] for r in rows)
     exposure = sum(r["exposure"] for r in rows)
     click = sum(r["click"] for r in rows)
     income_fen = sum(r["income_fen"] for r in rows)
@@ -210,13 +213,22 @@ def _aggregate(rows: list[dict]) -> dict:
     # 趋势：按日期
     by_date: dict[str, dict[str, int]] = {}
     for r in rows:
-        e = by_date.setdefault(r["date"], {"income_fen": 0, "exposure": 0, "click": 0})
+        e = by_date.setdefault(
+            r["date"], {"income_fen": 0, "req_succ": 0, "exposure": 0, "click": 0}
+        )
         e["income_fen"] += r["income_fen"]
+        e["req_succ"] += r["req_succ"]
         e["exposure"] += r["exposure"]
         e["click"] += r["click"]
     trend = sorted(
         (
-            {"date": d, "income_fen": v["income_fen"], "exposure": v["exposure"], "click": v["click"]}
+            {
+                "date": d,
+                "income_fen": v["income_fen"],
+                "req_succ": v["req_succ"],
+                "exposure": v["exposure"],
+                "click": v["click"],
+            }
             for d, v in by_date.items()
         ),
         key=lambda x: x["date"],
@@ -225,13 +237,22 @@ def _aggregate(rows: list[dict]) -> dict:
     # 收益构成：按广告位类型
     by_slot: dict[str, dict[str, int]] = {}
     for r in rows:
-        s = by_slot.setdefault(r["ad_slot_name"], {"income_fen": 0, "exposure": 0, "click": 0})
+        s = by_slot.setdefault(
+            r["ad_slot_name"], {"income_fen": 0, "req_succ": 0, "exposure": 0, "click": 0}
+        )
         s["income_fen"] += r["income_fen"]
+        s["req_succ"] += r["req_succ"]
         s["exposure"] += r["exposure"]
         s["click"] += r["click"]
     composition = sorted(
         (
-            {"slot": k, "income_fen": v["income_fen"], "exposure": v["exposure"], "click": v["click"]}
+            {
+                "slot": k,
+                "income_fen": v["income_fen"],
+                "req_succ": v["req_succ"],
+                "exposure": v["exposure"],
+                "click": v["click"],
+            }
             for k, v in by_slot.items()
         ),
         key=lambda x: x["income_fen"],
@@ -240,6 +261,7 @@ def _aggregate(rows: list[dict]) -> dict:
 
     summary = {
         "income_fen": income_fen,
+        "req_succ": req_succ,
         "exposure": exposure,
         "click": click,
         "click_rate": click_rate,
@@ -405,28 +427,28 @@ def _build_xlsx(detail: list[dict], agg: dict, start: str, end: str) -> bytes:
 
     # 2) 每日汇总（看板「收益趋势」同源）
     ws2 = wb.create_sheet("每日汇总")
-    ws2.append(["日期", "收益(元)", "曝光量", "点击量"])
+    ws2.append(["日期", "收益(元)", "拉取量", "曝光量", "点击量"])
     for t in agg["trend"]:
-        ws2.append([t["date"], _yuan(t["income_fen"]), t["exposure"], t["click"]])
+        ws2.append([t["date"], _yuan(t["income_fen"]), t["req_succ"], t["exposure"], t["click"]])
     for row in ws2.iter_rows(min_row=2, min_col=2, max_col=2):
         for c in row:
             c.number_format = "0.00"
-    _style_sheet(ws2, [12, 12, 12, 12])
+    _style_sheet(ws2, [12, 12, 12, 12, 12])
 
     # 3) 收益构成（按广告位）
     ws3 = wb.create_sheet("收益构成")
-    ws3.append(["广告位", "收益(元)", "占比", "曝光量", "点击量"])
+    ws3.append(["广告位", "收益(元)", "占比", "拉取量", "曝光量", "点击量"])
     total = sum(c["income_fen"] for c in agg["composition"])
     for c in agg["composition"]:
         share = round(c["income_fen"] / total, 4) if total else 0
-        ws3.append([c["slot"], _yuan(c["income_fen"]), share, c["exposure"], c["click"]])
+        ws3.append([c["slot"], _yuan(c["income_fen"]), share, c["req_succ"], c["exposure"], c["click"]])
     for row in ws3.iter_rows(min_row=2, min_col=2, max_col=2):
         for c in row:
             c.number_format = "0.00"
     for row in ws3.iter_rows(min_row=2, min_col=3, max_col=3):
         for c in row:
             c.number_format = "0.00%"
-    _style_sheet(ws3, [16, 12, 10, 12, 12])
+    _style_sheet(ws3, [16, 12, 10, 12, 12, 12])
 
     # 元信息页：口径说明，避免导出文件被单独转发后误读
     ws4 = wb.create_sheet("说明")
@@ -434,6 +456,7 @@ def _build_xlsx(detail: list[dict], agg: dict, start: str, end: str) -> bytes:
     ws4.append(["导出区间", f"{start} ~ {end}"])
     ws4.append(["数据来源", "微信广告分析接口（流量主），T+1 更新，仅统计广告收益"])
     ws4.append(["区间收益合计(元)", _yuan(s["income_fen"])])
+    ws4.append(["区间拉取量", s["req_succ"]])
     ws4.append(["区间曝光量", s["exposure"]])
     ws4.append(["区间点击量", s["click"]])
     ws4.append(["金额口径", "已按分→元换算；微信明细合计与结算口径可能有 1 分以内差异"])

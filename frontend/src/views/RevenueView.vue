@@ -400,7 +400,7 @@ function slotColor(i: number): string {
             <div class="kpi accent">
               <span class="k-label">统计收益</span>
               <strong class="k-value">¥{{ yuan(summary!.income_fen) }}</strong>
-              <span class="k-foot">本期明细合计 · 曝光 {{ int(summary!.exposure) }}</span>
+              <span class="k-foot">本期明细合计 · 拉取 {{ int(summary!.req_succ) }} · 曝光 {{ int(summary!.exposure) }}</span>
             </div>
           </NGridItem>
           <NGridItem>
@@ -426,8 +426,12 @@ function slotColor(i: number): string {
           </NGridItem>
         </NGrid>
 
-        <!-- 广告效果指标 -->
+        <!-- 广告效果指标：拉取 → 曝光 → 点击 是漏斗顺序 -->
         <div class="metrics">
+          <div class="metric">
+            <span class="m-label">广告拉取量</span>
+            <strong class="m-value">{{ int(summary!.req_succ) }}</strong>
+          </div>
           <div class="metric">
             <span class="m-label">广告曝光量</span>
             <strong class="m-value">{{ int(summary!.exposure) }}</strong>
@@ -548,7 +552,9 @@ function slotColor(i: number): string {
                       :style="{ width: slotShare(c.income_fen) + '%', background: slotColor(i) }"
                     />
                   </div>
-                  <div class="comp-sub">曝光 {{ int(c.exposure) }} · 点击 {{ int(c.click) }}</div>
+                  <div class="comp-sub">
+                    拉取 {{ int(c.req_succ) }} · 曝光 {{ int(c.exposure) }} · 点击 {{ int(c.click) }}
+                  </div>
                 </div>
               </div>
               <NEmpty v-else description="暂无收益构成数据" size="small" />
@@ -783,7 +789,8 @@ function slotColor(i: number): string {
 /* 广告效果指标条 */
 .metrics {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  /* 拉取量加入后是 5 项：固定 4 列会把第 5 项挤到第二行孤零零挂着 */
+  grid-template-columns: repeat(5, 1fr);
   gap: 12px;
   background: var(--app-surface);
   border: 1px solid var(--app-border);
@@ -978,6 +985,10 @@ function slotColor(i: number): string {
 @media (max-width: 880px) {
   .settle-flow {
     grid-template-columns: repeat(2, 1fr);
+  }
+  /* 5 列指标在中屏挤不下，退到 3 列（640 以下再退 2 列） */
+  .metrics {
+    grid-template-columns: repeat(3, 1fr);
   }
 }
 .settle-progress {
