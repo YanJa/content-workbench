@@ -9,6 +9,7 @@
  *      没有这个面板就只能靠猜。
  */
 import { computed, h, onMounted, ref, watch, type VNode } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import {
   NAlert,
   NButton,
@@ -40,6 +41,7 @@ import {
   renameKnowledge,
   retryKnowledge,
   searchKnowledge,
+  uploadKnowledge,
 } from '@/api/knowledge'
 import type { KnowledgeHit, KnowledgeItem, KnowledgeStats, KnowledgeStatus } from '@/types'
 
@@ -49,6 +51,9 @@ const dialog = useDialog()
 /** 录入与删除各自的门控：后端也是这两个权限点，口径一致 */
 const createGate = usePermGate({ perm: 'knowledge.create' })
 const deleteGate = usePermGate({ perm: 'knowledge.delete' })
+
+const route = useRoute()
+const router = useRouter()
 
 const items = ref<KnowledgeItem[]>([])
 const total = ref(0)
@@ -114,23 +119,60 @@ watch([searchKw, sourceFilter], () => {
 const formShow = ref(false)
 const formTitle = ref('')
 const formText = ref('')
+const formFile = ref<File | null>(null)
+const fileInput = ref<HTMLInputElement | null>(null)
 const submitting = ref(false)
 
 function openCreate() {
   formTitle.value = ''
   formText.value = ''
+  formFile.value = null
   formShow.value = true
 }
 
+function onPickFile(e: Event) {
+  const input = e.target as HTMLInputElement
+  const f = input.files?.[0]
+  if (f) formFile.value = f
+  // 允许再次选同一个文件
+  input.value = ''
+}
+
 async function submitCreate() {
+  // 文件优先：选了文件就走上传通道，文本忽略；都没填才报错
+  if (formFile.value) {
+    submitting.value = true
+    try {
+      const { already_exists } = await uploadKnowledge(formFile.value, formTitle.value || undefined)
+      if (already_exists) {
+        message.info('该文件已在知识库中')
+      } else {
+        message.success('已存入知识库，正在后台向量化')
+      }
+      formShow.value = false
+      await load()
+    } catch (e) {
+      message.error((e as Error).message || '上传失败')
+    } finally {
+      submitting.value = false
+    }
+    return
+  }
   if (!formText.value.trim()) {
-    message.warning('请先填写素材内容')
+    message.warning('请填写素材内容，或上传一个文档')
     return
   }
   submitting.value = true
   try {
-    await createKnowledge({ title: formTitle.value, text: formText.value })
-    message.success('已存入知识库，正在后台向量化')
+    const { already_exists } = await createKnowledge({
+      title: formTitle.value,
+      text: formText.value,
+    })
+    if (already_exists) {
+      message.info('该内容已在知识库中')
+    } else {
+      message.success('已存入知识库，正在后台向量化')
+    }
     formShow.value = false
     await load()
   } catch (e) {
@@ -282,7 +324,19 @@ async function runProbe() {
   }
 }
 
-onMounted(load)
+onMounted(() => {
+  void load()
+  // 从发布队列「查看知识库」跳来时带 ?item=<id>，自动打开详情。
+  const itemId = route.query.item as string | undefined
+  if (itemId) void openDetail({ id: itemId } as KnowledgeItem)
+})
+
+/** 素材来自某篇成稿时，跳回发布队列并高亮那一行（双向闭环）。 */
+function gotoSource() {
+  if (detail.value?.source === 'content' && detail.value.origin_ref) {
+    router.push({ path: '/queue', query: { content_id: detail.value.origin_ref } })
+  }
+}
 </script>
 
 <template>
@@ -399,7 +453,29 @@ onMounted(load)
     <div class="kb-form">
       <div class="kb-row">
         <span class="kb-label">标题</span>
-        <NInput v-model:value="formTitle" placeholder="留空自动取首行" maxlength="300" />
+        <NInput v-model:value="formTitle" placeholder="留空自动取首行 / 文件名" maxlength="300" />
+      </div>
+      <div class="kb-row">
+        <span class="kb-label">文档</span>
+        <div class="kb-file">
+          <NButton size="small" tertiary @click="fileInput?.click()">选择文件</NButton>
+          <span v-if="formFile" class="kb-file-name">{{ formFile.name }}</span>
+          <span v-else class="kb-file-hint">支持 PDF / TXT / Word / JSON / Markdown</span>
+          <NButton
+            v-if="formFile"
+            size="tiny"
+            text
+            type="error"
+            @click="formFile = null"
+          >移除</NButton>
+          <input
+            ref="fileInput"
+            type="file"
+            accept=".pdf,.txt,.md,.markdown,.json,.doc,.docx"
+            style="display: none"
+            @change="onPickFile"
+          />
+        </div>
       </div>
       <div class="kb-row kb-row-wide">
         <span class="kb-label">内容</span>
@@ -407,7 +483,8 @@ onMounted(load)
           v-model:value="formText"
           type="textarea"
           :rows="12"
-          placeholder="粘贴或输入素材正文（支持 Markdown）"
+          :disabled="!!formFile"
+          :placeholder="formFile ? '已选文档，将解析文档内容入库' : '粘贴或输入素材正文（支持 Markdown）'"
         />
       </div>
     </div>
@@ -434,6 +511,14 @@ onMounted(load)
           {{ KNOWLEDGE_SOURCE_LABEL[detail.source] }} · {{ detail.char_count }} 字 ·
           {{ detail.chunk_count }} 片
         </NText>
+        <NButton
+          v-if="detail.source === 'content' && detail.origin_ref"
+          size="small"
+          tertiary
+          @click="gotoSource"
+        >
+          查看来源成稿 →
+        </NButton>
       </div>
       <div class="kb-section-title">切分结果</div>
       <div v-for="c in detail.chunks ?? []" :key="c.id" class="kb-chunk">
@@ -528,6 +613,24 @@ onMounted(load)
   font-size: 13px;
   opacity: 0.75;
   padding-top: 4px;
+}
+.kb-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.kb-file-name {
+  font-size: 13px;
+  color: var(--primary-color, #2080f0);
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.kb-file-hint {
+  font-size: 12.5px;
+  opacity: 0.55;
 }
 .kb-detail-meta {
   margin-bottom: 12px;

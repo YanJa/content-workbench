@@ -356,3 +356,66 @@ def test_build_context_without_knowledge_unchanged(env):
 
     msgs = _run(go())
     assert [m for m in msgs if m["role"] == "system"] == [{"role": "system", "content": "SYS"}]
+
+
+# ---------------------------------------------------------------- 去重 / 来源映射
+
+
+def test_get_active_by_origin_dedup_excludes_failed(env):
+    """同一 content_id 已有一条活跃素材时，get_active_by_origin 命中它；
+    failed 的不算（失败的应让用户重试，而不是把成稿又存一份）。"""
+
+    async def go():
+        async with env.Maker() as db:
+            active = KnowledgeItem(
+                owner="u1",
+                source="content",
+                title="成稿A",
+                origin_ref="cid-1",
+                raw_text="正文",
+                status="ready",
+            )
+            failed = KnowledgeItem(
+                owner="u1",
+                source="content",
+                title="成稿A-失败",
+                origin_ref="cid-1",
+                raw_text="正文",
+                status="failed",
+            )
+            db.add_all([active, failed])
+            await db.commit()
+            hit_active = await kb.get_active_by_origin(db, "u1", "cid-1")
+            hit_missing = await kb.get_active_by_origin(db, "u1", "cid-2")
+            hit_none = await kb.get_active_by_origin(db, "u1", "")
+            return hit_active, hit_missing, hit_none
+
+    hit_active, hit_missing, hit_none = _run(go())
+    # 命中活跃那条（failed 被 in_(_ACTIVE_STATUSES) 排除），而不是失败的那条
+    assert hit_active is not None
+    assert hit_active.origin_ref == "cid-1"
+    assert hit_active.status == "ready"
+    assert hit_missing is None
+    assert hit_none is None
+
+
+def test_origin_map_only_active_content(env):
+    """origin_map 只返回活跃 content 素材；非 content 来源、failed、别的 owner 都不进 map。"""
+
+    async def go():
+        async with env.Maker() as db:
+            db.add_all(
+                [
+                    KnowledgeItem(owner="u1", source="content", title="a", origin_ref="c1", raw_text="x", status="ready"),
+                    KnowledgeItem(owner="u1", source="content", title="b", origin_ref="c2", raw_text="x", status="pending"),
+                    KnowledgeItem(owner="u1", source="content", title="c", origin_ref="c3", raw_text="x", status="failed"),
+                    KnowledgeItem(owner="u1", source="manual", title="d", origin_ref="c4", raw_text="x", status="ready"),
+                    KnowledgeItem(owner="u2", source="content", title="e", origin_ref="c1", raw_text="x", status="ready"),
+                ]
+            )
+            await db.commit()
+            return await kb.origin_map(db, "u1", ["c1", "c2", "c3", "c4", "c5"])
+
+    m = _run(go())
+    assert m == {"c1": m["c1"], "c2": m["c2"]}, m  # 只活着的 content 素材
+    assert "c3" not in m and "c4" not in m

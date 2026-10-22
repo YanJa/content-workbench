@@ -39,9 +39,23 @@ export interface CreateKnowledgePayload {
   origin_ref?: string
 }
 
-export async function createKnowledge(payload: CreateKnowledgePayload): Promise<KnowledgeItem> {
+export interface CreateKnowledgeResult {
+  item: KnowledgeItem
+  already_exists: boolean
+}
+
+export async function createKnowledge(payload: CreateKnowledgePayload): Promise<CreateKnowledgeResult> {
   const { data } = await http.post('/knowledge/items', payload)
-  return data.item
+  return { item: data.item, already_exists: Boolean(data.already_exists) }
+}
+
+/** 批量查哪些成稿已存进知识库：content_id -> 素材 id（未存的不出现在 map 里）。 */
+export async function originCheck(contentIds: string[]): Promise<Record<string, string>> {
+  if (!contentIds.length) return {}
+  const { data } = await http.get('/knowledge/origin-check', {
+    params: { content_ids: contentIds },
+  })
+  return data ?? {}
 }
 
 /** 素材详情（含正文与切分结果）。列表接口不带这些，避免列表页背正文。 */
@@ -63,6 +77,19 @@ export async function deleteKnowledge(id: string): Promise<void> {
 export async function retryKnowledge(id: string): Promise<KnowledgeItem> {
   const { data } = await http.post(`/knowledge/items/${id}/retry`)
   return data.item
+}
+
+/** 上传文档入库（PDF / TXT / Word / JSON / Markdown）。返回 {item, already_exists}。 */
+export async function uploadKnowledge(
+  file: File,
+  title?: string,
+): Promise<CreateKnowledgeResult> {
+  const form = new FormData()
+  form.append('file', file)
+  if (title) form.append('title', title)
+  // 不手动设 Content-Type：axios 对 FormData 会自动带上 multipart 边界
+  const { data } = await http.post('/knowledge/upload', form)
+  return { item: data.item, already_exists: Boolean(data.already_exists) }
 }
 
 /** 召回调试：看一句话能命中哪些素材（与写稿时走同一条检索）。 */

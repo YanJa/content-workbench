@@ -25,7 +25,7 @@ import { useQueueStore } from '@/stores/queue'
 import { confirmTool } from '@/api/tools'
 import { cancelProcessing } from '@/api/layout'
 import { getContent, saveToQueue } from '@/api/queue'
-import { createKnowledge } from '@/api/knowledge'
+import { createKnowledge, originCheck } from '@/api/knowledge'
 import type { QueueItem, QueueStatus, ContentItem } from '@/types'
 import LayoutPanel from '@/components/LayoutPanel.vue'
 import { useAuthStore } from '@/stores/auth'
@@ -58,13 +58,64 @@ const savingKbId = ref('')
 async function onSaveKnowledge(row: QueueItem) {
   savingKbId.value = row.content_id
   try {
-    await createKnowledge({ content_id: row.content_id })
-    message.success('已存入知识库，之后写稿时会自动参考')
+    const { already_exists } = await createKnowledge({ content_id: row.content_id })
+    if (already_exists) {
+      message.info('这篇成稿已在知识库，无需重复存入')
+    } else {
+      message.success('已存入知识库，之后写稿时会自动参考')
+    }
+    // 刷新映射：该行立刻从「存入」翻成「已存入 / 查看知识库」
+    await refreshStoredMap()
   } catch (e) {
     message.error((e as Error).message || '存入知识库失败')
   } finally {
     savingKbId.value = ''
   }
+}
+
+/**
+ * content_id -> 知识库素材 id。标出「哪些成稿已经存进知识库」，
+ * 已存的行把「存入知识库」替换成「已存入 / 查看知识库」，避免同一条任务反复存。
+ * 知识库不可用也不阻塞队列 —— 拿不到映射就当都没存。
+ */
+const storedMap = ref<Record<string, string>>({})
+
+async function refreshStoredMap() {
+  console.log('[KBDEBUG] refreshStoredMap items=', queue.items.length)
+  const ids = queue.items.map((i) => i.content_id).filter(Boolean)
+  if (!ids.length) {
+    storedMap.value = {}
+    return
+  }
+  try {
+    storedMap.value = await originCheck(ids)
+    console.log('[KBDEBUG] storedMap=', JSON.stringify(storedMap.value))
+  } catch (e) {
+    console.log('[KBDEBUG] fail', (e as Error).message)
+    storedMap.value = {}
+  }
+  console.log('[KBDEBUG] withKb count=', queueItemsWithKb.value.filter((x) => x.kbStored).length)
+}
+
+watch(
+  () => queue.items,
+  () => void refreshStoredMap(),
+  { immediate: true },
+)
+
+/**
+ * 把「已存进知识库」的状态并进每一行，作为 :data 传给表格。
+ * 关键：NDataTable 会按行数据记忆化单元格，如果只在 render 闭包里读
+ * storedMap，storedMap 变了表格也不重渲染。把状态并进 data，data 引用
+ * 随 storedMap 变 → 表格自然重渲染，行按钮才会翻成「已存入 / 查看知识库」。
+ */
+const queueItemsWithKb = computed(() =>
+  queue.items.map((i) => ({ ...i, kbStored: storedMap.value[i.content_id] ?? '' })),
+)
+
+/** 已存的成稿跳到知识库详情（?item= 由知识库页自动打开）。 */
+function gotoKnowledge(itemId: string) {
+  router.push({ path: '/knowledge', query: { item: itemId } })
 }
 
 /** 从对话页跳来时带的 content_id，用于定位并高亮对应行 */
@@ -274,13 +325,23 @@ const columns = computed<DataTableColumns<QueueItem>>(() => [
             )
           : null,
         // 存入知识库：把这篇成稿变成「AI 写下一篇时的参考素材」。
-        // 重复存不会去重（后端按条记），但删过一次就能在知识库页看到并删掉，
-        // 所以这里不做二次确认。
-        kbGate.blocked.value
-          ? actionBtn('book', '没有存入知识库的权限，请联系管理员', () => {}, { disabled: true })
-          : actionBtn('book', '存入知识库（写稿时 AI 自动参考）', () => onSaveKnowledge(row), {
-              loading: savingKbId.value === row.content_id,
-            }),
+        // 已存过的行（kbStored 命中）不再显示「存入」，换成「已存入 / 查看」，
+        // 避免同一条任务被反复存进知识库。
+        row.kbStored
+          ? [
+              actionBtn('book', '已在知识库（写稿时 AI 自动参考）', () => {}, { disabled: true }),
+              actionBtn(
+                'link',
+                '查看知识库',
+                () => gotoKnowledge(row.kbStored!),
+                { disabled: busy },
+              ),
+            ]
+          : kbGate.blocked.value
+            ? actionBtn('book', '没有存入知识库的权限，请联系管理员', () => {}, { disabled: true })
+            : actionBtn('book', '存入知识库（写稿时 AI 自动参考）', () => onSaveKnowledge(row), {
+                loading: savingKbId.value === row.content_id,
+              }),
         // 删除
         actionBtn('trash', '删除该内容', () => onDelete(row), { type: 'error', disabled: busy }),
         // 来源是某条对话 → 跳回会话并定位到那条 AI 回复（非会话来源没有此字段）
@@ -729,7 +790,7 @@ function onSearchClear() {
       <template v-else>
         <NDataTable
           :columns="columns"
-          :data="queue.items"
+          :data="queueItemsWithKb"
           :loading="queue.loading"
           :row-key="(r: QueueItem) => r.id"
           :row-class-name="rowClassName"

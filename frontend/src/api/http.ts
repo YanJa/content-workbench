@@ -12,6 +12,23 @@ export const http: AxiosInstance = axios.create({
   timeout: 60000,
 })
 
+// 数组参数用 repeat 格式（key=a&key=b），而不是 axios 默认的 key[]=a&key[]=b。
+// 后者 FastAPI 的 `list[str] = Query(...)` 读不到（它只认重复的 key），会导致
+// 像 /knowledge/origin-check?content_ids=... 这种批量接口拿不到数组。
+// 标量参数（绝大多数 GET）两种格式等价，所以这个改动对现有接口无副作用。
+http.defaults.paramsSerializer = {
+  serialize: (params) =>
+    new URLSearchParams(
+      Object.entries(params).flatMap(([k, v]) => {
+        if (v == null) return []
+        if (Array.isArray(v)) {
+          return v.map((x) => [k, x == null ? '' : String(x)]) as [string, string][]
+        }
+        return [[k, String(v)]] as [string, string][]
+      }),
+    ).toString(),
+}
+
 // 用户可能在「设置」页改了后端地址，每次请求前重新取一次，
 // 这样改完立即生效，不用刷新页面。
 // 同时带 Authorization: Bearer <JWT>：用户模块上线后，数据归属由

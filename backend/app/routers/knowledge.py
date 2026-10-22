@@ -13,13 +13,15 @@
 from __future__ import annotations
 
 import time
+import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from sqlalchemy import desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.rbac import current_user, require_use
 from app.core.tenant import current_owner_id
+from app.core.config import settings
 from app.db.session import get_db
 from app.models.content import Content
 from app.models.knowledge import KnowledgeChunk, KnowledgeItem
@@ -30,6 +32,7 @@ from app.schemas.models import (
     KnowledgeUpdate,
 )
 from app.services import knowledge as kb
+from app.services import doc_extract as doc_extract
 
 router = APIRouter(prefix="/knowledge", tags=["知识库"])
 
@@ -60,6 +63,22 @@ async def stats(
 ):
     """知识库概览：条数 / 片数 / 向量化通道是否就绪。"""
     return await kb.item_stats(db, owner)
+
+
+@router.get("/origin-check")
+async def origin_check(
+    content_ids: list[str] = Query(default=[], description="成稿 content_id 列表（可重复传）"),
+    db: AsyncSession = Depends(get_db),
+    owner: str = Depends(current_owner_id),
+    _user: User = Depends(current_user),
+):
+    """批量查「哪些成稿已存进知识库」。
+
+    队列页用来一次性标出已存行：命中返回 `{"<content_id>": "<item_id>"}`，
+    未存的不出现在 map 里。前端据此把「存入知识库」按钮换成「已存入 / 查看」，
+    杜绝同一篇成稿被反复存。只读、登录即可。
+    """
+    return await kb.origin_map(db, owner, content_ids)
 
 
 @router.get("/items")
@@ -139,6 +158,12 @@ async def create(
     if req.content_id:
         source = "content"
 
+    # 复用成稿时，同一篇不该存出两份：先查有没有活跃同源素材，有就复用。
+    if origin_ref:
+        existing = await kb.get_active_by_origin(db, owner, origin_ref)
+        if existing:
+            return {"ok": True, "item": _out(existing), "already_exists": True}
+
     try:
         item = await kb.create_item(
             db,
@@ -150,7 +175,81 @@ async def create(
         )
     except kb.KnowledgeError as exc:
         raise HTTPException(exc.status, str(exc)) from exc
-    return {"ok": True, "item": _out(item)}
+    return {"ok": True, "item": _out(item), "already_exists": False}
+
+
+@router.post("/upload")
+async def upload(
+    file: UploadFile = File(..., description="待入库文档"),
+    title: str = Form(""),
+    db: AsyncSession = Depends(get_db),
+    owner: str = Depends(current_owner_id),
+    _perm: User = Depends(require_use("knowledge.create")),
+):
+    """上传文档入库（source=upload）。
+
+    支持 txt/md/markdown/json/pdf/doc/docx。流程：
+      1. 校验扩展名（不在白名单直接拒）与大小（见 KB_UPLOAD_MAX_BYTES）；
+      2. 落盘到 `UPLOAD_DIR/kb/<owner>/<uid>.<ext>`，保留原文件备查；
+      3. 按扩展名抽纯文本（doc_extract 负责，失败给中文提示）；
+      4. 同一文件（sha256）已存在则复用，不重复入库；
+      5. 交 create_item 切片 + 后台向量化。
+    """
+    filename = file.filename or ""
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if ext not in doc_extract.ALLOWED_EXTS:
+        raise HTTPException(
+            400,
+            f"不支持的文件类型{('.' + ext) if ext else ''}。支持：{', '.join(sorted(doc_extract.ALLOWED_EXTS))}",
+        )
+
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(400, "文件为空")
+    if len(raw) > doc_extract.KB_UPLOAD_MAX_BYTES:
+        mb = doc_extract.KB_UPLOAD_MAX_BYTES // (1024 * 1024)
+        raise HTTPException(400, f"文件过大（上限 {mb}MB）")
+
+    import hashlib
+
+    file_hash = hashlib.sha256(raw).hexdigest()
+
+    # 同文件幂等：已存在活跃素材就复用（用户重复上传不会制造多份）
+    existing = await kb.get_active_by_file_hash(db, owner, file_hash)
+    if existing:
+        return {"ok": True, "item": _out(existing), "already_exists": True}
+
+    # 落盘原文件
+    from pathlib import Path
+
+    kb_dir = Path(settings.UPLOAD_DIR) / "kb" / owner
+    kb_dir.mkdir(parents=True, exist_ok=True)
+    saved_path = kb_dir / f"{uuid.uuid4().hex}.{ext}"
+    saved_path.write_bytes(raw)
+
+    text, err = doc_extract.extract_text(str(saved_path), filename)
+    if err:
+        # 抽不出来就别留半截文件
+        saved_path.unlink(missing_ok=True)
+        raise HTTPException(400, err)
+    if not text.strip():
+        saved_path.unlink(missing_ok=True)
+        raise HTTPException(400, "文件里没有可提取的文字（可能是扫描版 PDF 或空文件）")
+
+    try:
+        item = await kb.create_item(
+            db,
+            owner,
+            source="upload",
+            title=(title or "").strip() or Path(filename).stem,
+            raw_text=text,
+            file_path=str(saved_path.relative_to(Path(settings.UPLOAD_DIR))),
+            meta={"file_hash": file_hash, "filename": filename},
+        )
+    except kb.KnowledgeError as exc:
+        saved_path.unlink(missing_ok=True)
+        raise HTTPException(exc.status, str(exc)) from exc
+    return {"ok": True, "item": _out(item), "already_exists": False}
 
 
 @router.get("/items/{item_id}")

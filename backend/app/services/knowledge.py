@@ -229,6 +229,87 @@ async def create_item(
     return item
 
 
+# 视为「活跃」的状态：这些不会被去重/来源映射忽略。
+# failed 的不算 —— 失败的素材后续应让用户重试，而不是把同一条成稿又存一份。
+_ACTIVE_STATUSES = ("pending", "processing", "ready", "partial")
+
+
+async def get_active_by_origin(
+    db: AsyncSession, owner: str, origin_ref: str
+) -> KnowledgeItem | None:
+    """按来源引用查活跃素材（如 content_id）。
+
+    队列「存入知识库」复用成稿时，origin_ref 就是 content_id。同一篇成稿
+    不应存出两份，所以录入前先查有没有活跃的同源素材，有就复用。
+    """
+    if not origin_ref:
+        return None
+    rows = (
+        await db.execute(
+            select(KnowledgeItem).where(
+                KnowledgeItem.owner == owner,
+                KnowledgeItem.origin_ref == origin_ref,
+                KnowledgeItem.source == "content",
+                KnowledgeItem.status.in_(_ACTIVE_STATUSES),
+            )
+        )
+    ).scalars().all()
+    return rows[0] if rows else None
+
+
+async def origin_map(
+    db: AsyncSession, owner: str, content_ids: list[str]
+) -> dict[str, str]:
+    """content_id -> 知识库素材 id 的映射（仅活跃素材）。
+
+    队列页用它一次性标出「哪些成稿已经存进知识库了」，从而把「存入」按钮
+    替换成「已存入 / 查看知识库」，避免同一条任务被反复存。
+    """
+    ids = [c for c in (content_ids or []) if c]
+    if not ids:
+        return {}
+    rows = (
+        await db.execute(
+            select(KnowledgeItem.id, KnowledgeItem.origin_ref).where(
+                KnowledgeItem.owner == owner,
+                KnowledgeItem.origin_ref.in_(ids),
+                KnowledgeItem.source == "content",
+                KnowledgeItem.status.in_(_ACTIVE_STATUSES),
+            )
+        )
+    ).all()
+    return {r.origin_ref: r.id for r in rows if r.origin_ref}
+
+
+async def get_active_by_file_hash(
+    db: AsyncSession, owner: str, file_hash: str
+) -> KnowledgeItem | None:
+    """按文件 sha256 查活跃的上传素材，避免同一文件被反复上传成多份。
+
+    与 get_active_by_origin 同思路，区别在 key 落在 meta.file_hash 上
+    （上传来源用 hash 做幂等，而不是 content_id）。
+
+    为什么在 Python 里比对而非 SQL JSON 路径：meta 列的 typing 是
+    `dict | None`，跨方言的 JSON 路径索引行为不稳，而单 owner 的上传素材
+    数量本来就少，拉出来在内存里比对既稳妥又不会慢。
+    """
+    if not file_hash:
+        return None
+    rows = (
+        await db.execute(
+            select(KnowledgeItem).where(
+                KnowledgeItem.owner == owner,
+                KnowledgeItem.source == "upload",
+                KnowledgeItem.status.in_(_ACTIVE_STATUSES),
+            )
+        )
+    ).scalars().all()
+    for r in rows:
+        if (r.meta or {}).get("file_hash") == file_hash:
+            return r
+    return None
+
+
 def _auto_title(text: str) -> str:
     """没给标题时，取首行/首句的前 30 字（去掉 Markdown 井号）。"""
     first = text.strip().splitlines()[0] if text.strip() else ""

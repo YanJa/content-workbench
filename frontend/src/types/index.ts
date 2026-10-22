@@ -144,6 +144,8 @@ export interface QueueItem {
   msg_id?: string | null
   created_at: number
   published_at?: number | null
+  /** 已被存进知识库时，这里是知识库素材 id（队列行据此显示「已存入 / 查看」） */
+  kbStored?: string
 }
 
 /** 微信公众号账号 */
