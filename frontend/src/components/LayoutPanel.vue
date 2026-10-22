@@ -434,6 +434,7 @@ async function onPushDraft() {
         title: local.value.title,
         html: html.value,
         content_id: local.value.id,
+        author: authorName.value.trim(),
         account_id: accountId.value,
       },
     })

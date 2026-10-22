@@ -287,6 +287,10 @@ async def save_content(
                 "description": "内容 ID（可选）。带上会把正文里的本地配图转存到微信素材库，"
                 "并用首图作封面。不带则原样推送。",
             },
+            "author": {
+                "type": "string",
+                "description": "作者名（可选）。写入草稿的 author 字段；留空则回退系统「作者信息」设置里的 author_name。",
+            },
             "account_id": {
                 "type": "string",
                 "description": "公众号账号 ID（可选）。留空则用默认公众号；一个都没配时回退 .env。",
@@ -301,6 +305,7 @@ async def push_wechat_draft(
     html: str,
     digest: str = "",
     content_id: str = "",
+    author: str = "",
     account_id: str = "",
     ctx: dict | None = None,
 ):
@@ -393,8 +398,21 @@ async def push_wechat_draft(
             "hint": "先到队列里点「加工排版」生成配图（首图自动用作封面）后再推送",
         }
 
+    # author 字段：前端显式传了就用（排版面板里「作者名」），否则回退系统
+    # 「作者信息」设置里的 author_name。微信草稿的 author 为空也能发，所以缺省不报错，
+    # 只是草稿不显示作者而已。
+    from app.routers.settings import _get_setting
+
+    owner = ctx.get("owner", "default")
+    final_author = (author or "").strip()
+    if not final_author and db is not None:
+        try:
+            final_author = (await _get_setting(db, owner, "author_name") or "").strip()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("读取作者信息失败（草稿 author 留空）: %s", exc)
+
     result = await client.add_draft(
-        title=title, html=html, digest=digest, thumb_media_id=thumb_id
+        title=title, html=html, digest=digest, thumb_media_id=thumb_id, author=final_author
     )
     logger.info(
         "推送草稿箱: title=%s ok=%s 凭证来源=%s 封面=%s",

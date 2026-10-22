@@ -333,6 +333,7 @@ class WeChatClient:
         html: str,
         digest: str = "",
         thumb_media_id: str = "",
+        author: str = "",
     ) -> dict[str, Any]:
         """创建草稿。
 
@@ -362,7 +363,7 @@ class WeChatClient:
             "articles": [
                 {
                     "title": title,
-                    "author": "",
+                    "author": author or "",
                     "digest": digest,
                     "content": html,
                     "content_source_url": "",
