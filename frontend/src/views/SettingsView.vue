@@ -91,6 +91,16 @@ const chatProvider = ref<ChatProviderInfo>({ provider: 'deepseek', model: '', cl
 // 后者是编辑中的草稿，用户拨了通道还没保存时不该污染「系统现状」这一栏
 const savedCfModel = computed(() => savedModel.value || health.value?.cf_chat_model || '')
 
+// 下拉选项：Cloudflare 的模型名自带一大段官方介绍（「... is the official
+// release」之类），原样塞进下拉会把一行挤爆。显示时截到 48 字符，
+// 搜索（filterable 按输入匹配 label）和提交仍用完整 name。
+function shortModelLabel(s: string) {
+  return s.length > 48 ? `${s.slice(0, 48)}…` : s
+}
+const cfModelOptions = computed(() =>
+  cfModels.value.map((m) => ({ label: shortModelLabel(m.label), value: m.name })),
+)
+
 // ---------------------------------------------------------------- AI 对话
 // deepseek（默认，全功能）/ cloudflare（Workers AI）。只影响对话轮次，
 // 摘要压缩/排版/标签等后台任务固定走 DeepSeek。
@@ -746,7 +756,11 @@ const envColumns: DataTableColumns<EnvRow> = [
             <NTag v-if="providerReadonly" size="small" :bordered="false" type="default">只读</NTag>
           </template>
           <NSpin :show="cfModelsLoading">
-            <div class="author-form">
+            <!-- 两行结构：通道 + 操作按钮一行（按钮推到最右），模型下拉独占第二行。
+                 原来全部塞一行，CF 模型名是「DeepSeek-V4-Flash-0731 is the official
+                 release...」这种长 label，把「已保存」挤得换行孤零零挂在下面
+                 （2026-10-22 用户反馈，要求优化展示）。 -->
+            <div class="provider-row">
               <NRadioGroup
                 :value="chatProvider.provider"
                 size="small"
@@ -756,48 +770,50 @@ const envColumns: DataTableColumns<EnvRow> = [
                 <NRadioButton value="deepseek">DeepSeek（默认）</NRadioButton>
                 <NRadioButton value="cloudflare">Cloudflare Workers AI</NRadioButton>
               </NRadioGroup>
-              <NSelect
-                v-if="chatProvider.provider === 'cloudflare'"
-                v-model:value="chatModel"
-                size="small"
-                style="width: 340px"
-                :options="cfModels.map((m) => ({ label: m.label, value: m.name }))"
-                :loading="cfModelsLoading"
-                :disabled="!chatProvider.cloudflare_ready || providerLocked"
-                placeholder="选择对话模型"
-                filterable
-              />
-              <!-- 「点了改、再点保存」这个节奏要一致：没改动时通道和模型都锁住，
-                   点「修改」才解锁（下拉旁的小按钮）。否则只有左半边锁着、
-                   右上角的模型还能随便拨，语义就对不上了。 -->
-              <NButton
-                v-if="!providerDirty && !providerReadonly && chatProvider.provider === 'cloudflare'"
-                size="small"
-                quaternary
-                :disabled="!chatProvider.cloudflare_ready"
-                @click="beginProviderEdit"
-              >
-                修改
-              </NButton>
-              <IconTextBtn
-                name="check"
-                :type="providerDirty ? 'primary' : 'default'"
-                :loading="providerSaving"
-                :disabled="providerReadonly || !providerDirty"
-                @click="saveChatProvider"
-              >
-                {{ providerDirty ? '保存修改' : '已保存' }}
-              </IconTextBtn>
-              <NButton
-                v-if="providerDirty && !providerReadonly"
-                size="small"
-                quaternary
-                :disabled="providerSaving"
-                @click="cancelProviderEdit"
-              >
-                撤销
-              </NButton>
+              <div class="provider-actions">
+                <!-- 「点了改、再点保存」这个节奏要一致：没改动时通道和模型都锁住，
+                     点「修改」才解锁。否则只有左半边锁着、右边的模型还能随便拨，
+                     语义就对不上了。 -->
+                <NButton
+                  v-if="!providerDirty && !providerReadonly && chatProvider.provider === 'cloudflare'"
+                  size="small"
+                  quaternary
+                  :disabled="!chatProvider.cloudflare_ready"
+                  @click="beginProviderEdit"
+                >
+                  修改
+                </NButton>
+                <IconTextBtn
+                  name="check"
+                  :type="providerDirty ? 'primary' : 'default'"
+                  :loading="providerSaving"
+                  :disabled="providerReadonly || !providerDirty"
+                  @click="saveChatProvider"
+                >
+                  {{ providerDirty ? '保存修改' : '已保存' }}
+                </IconTextBtn>
+                <NButton
+                  v-if="providerDirty && !providerReadonly"
+                  size="small"
+                  quaternary
+                  :disabled="providerSaving"
+                  @click="cancelProviderEdit"
+                >
+                  撤销
+                </NButton>
+              </div>
             </div>
+            <NSelect
+              v-if="chatProvider.provider === 'cloudflare'"
+              v-model:value="chatModel"
+              size="small"
+              class="provider-model-select"
+              :options="cfModelOptions"
+              :loading="cfModelsLoading"
+              :disabled="!chatProvider.cloudflare_ready || providerLocked"
+              placeholder="选择对话模型"
+              filterable
+            />
           </NSpin>
           <div class="api-base-hint" style="margin-top: 8px; opacity: 0.75">
             <template v-if="providerReadonly">
@@ -1162,6 +1178,26 @@ const envColumns: DataTableColumns<EnvRow> = [
   flex-direction: column;
   gap: 16px;
   min-width: 0;
+}
+
+/* AI 对话卡：第一行通道单选 + 操作按钮（推到最右），第二行模型下拉拉通。
+   全塞一行的老写法被 CF 的长模型名挤爆，按钮换行孤零零挂着。 */
+.provider-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.provider-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.provider-model-select {
+  width: 100%;
+  max-width: 520px;
+  margin-top: 10px;
 }
 
 .tip {
