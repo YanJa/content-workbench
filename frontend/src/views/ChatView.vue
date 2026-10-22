@@ -884,7 +884,7 @@ async function restoreFromQueue() {
             <template #trigger>
               <label class="kb-toggle">
                 <input v-model="chat.useSkills" type="checkbox" />
-                <span>技能包</span>
+                <span>技能</span>
               </label>
             </template>
             <span style="font-size: 12px">

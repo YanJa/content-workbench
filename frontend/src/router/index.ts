@@ -60,7 +60,7 @@ const router = createRouter({
           name: 'skills',
           component: () => import('@/views/SkillsView.vue'),
           meta: {
-            title: '技能包',
+            title: '技能',
             desc: '教 AI 一套具体做法，匹配时自动照做',
             icon: '✦',
             perm: 'menu.skills',

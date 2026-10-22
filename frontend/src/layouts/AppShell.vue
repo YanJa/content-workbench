@@ -74,7 +74,7 @@ const NAV: NavItem[] = [
   // 知识库**不进移动端底栏**（见 NavItem.mobile 的说明）
   { key: 'knowledge', icon: 'book', label: '知识库', perm: 'menu.knowledge', mobile: false },
   // 技能包同理：管理动作（上传 SKILL.md / 启停），移动端无此诉求
-  { key: 'skills', icon: 'skills', label: '技能包', perm: 'menu.skills', mobile: false },
+  { key: 'skills', icon: 'skills', label: '技能', perm: 'menu.skills', mobile: false },
   { key: 'video', icon: 'video', label: '视频生产', perm: 'menu.video' },
   { key: 'usage', icon: 'usage', label: 'AI 用量', perm: 'menu.usage' },
   { key: 'revenue', icon: 'revenue', label: '收益看板', perm: 'menu.revenue' },
