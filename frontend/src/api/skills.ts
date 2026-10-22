@@ -19,6 +19,8 @@ export interface Skill {
   use_count: number
   created_at: number
   updated_at: number
+  /** zip 上传时带进来的附件路径列表（后端只回 path，不回内容） */
+  files?: string[]
 }
 
 export interface SkillsMeta {

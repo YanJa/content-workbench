@@ -523,12 +523,13 @@ def test_route_upload_bad_file_returns_400_and_keeps_good(tmp_path):
 
 
 def test_route_rejects_non_markdown_upload(tmp_path):
+    """zip 已支持（见下方 zip 用例）；这里守住「其它扩展名仍然被拒」。"""
     async def go():
         engine, Maker = await _mk_session(tmp_path)
         async with Maker() as db:
             with pytest.raises(HTTPException) as e:
                 await skills_router.upload_skill(
-                    file=_uf("skill.zip", b"PK\x03\x04"),
+                    file=_uf("skill.pdf", b"%PDF-1.4"),
                     db=db,
                     owner="o1",
                     _perm=_perm(),
@@ -570,3 +571,98 @@ def test_dynamic_tool_exposes_tool_like_attributes():
     dt = next(t for t in registry.all() if t.name == "activate_skill")
     assert isinstance(dt.description, str) and dt.description
     assert dt.requires_confirm is False
+
+
+# ---------------------------------------------------------------- zip 上传
+#
+# zip 是「一个 skill 一个目录」最常见的传输形态（从 Claude 生态下载的技能包
+# 几乎都是 zip）。核心语义：SKILL.md 为准，其余文本文件进 files；
+# 防炸弹（条目数/单文件/总量）与路径穿越要挡住。
+
+import zipfile  # noqa: E402
+
+
+def _zip_bytes(entries: dict[str, str | bytes]) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for path, content in entries.items():
+            zf.writestr(path, content)
+    return buf.getvalue()
+
+
+def test_parse_zip_root_and_subdir():
+    skill_md = GOOD_MD  # name: wechat-hot-title
+    # 根目录形态
+    r1 = skill_svc.parse_zip(_zip_bytes({"SKILL.md": skill_md, "refs/tips.md": "# tips\n多看少写"}))
+    assert "wechat-hot-title" in r1["text"]
+    assert r1["files"] == [{"path": "refs/tips.md", "content": "# tips\n多看少写"}]
+    # 一层子目录形态
+    r2 = skill_svc.parse_zip(_zip_bytes({"wechat-hot-title/SKILL.md": skill_md, "scripts/gen.py": "print(1)"}))
+    assert r2["files"][0]["path"] == "scripts/gen.py"
+
+
+def test_parse_zip_errors():
+    with pytest.raises(skill_svc.SkillParseError, match="SKILL.md"):
+        skill_svc.parse_zip(_zip_bytes({"readme.md": "没有 SKILL.md"}))
+    with pytest.raises(skill_svc.SkillParseError, match="多个"):
+        skill_svc.parse_zip(_zip_bytes({"a/SKILL.md": GOOD_MD, "b/SKILL.md": GOOD_MD}))
+    with pytest.raises(skill_svc.SkillParseError, match="不是有效的 zip"):
+        skill_svc.parse_zip(b"not a zip")
+
+
+def test_parse_zip_skips_binary_and_traversal():
+    png = bytes(range(256))
+    r = skill_svc.parse_zip(_zip_bytes({
+        "SKILL.md": GOOD_MD,
+        "assets/logo.png": png,            # 二进制：跳过
+        "../evil.md": "x",                 # 穿越：跳过
+        "/abs.md": "y",                    # 绝对路径：跳过
+    }))
+    assert r["files"] == []
+
+
+def test_parse_zip_limits():
+    many = {f"f{i}.md": "x" for i in range(40)}
+    many["SKILL.md"] = GOOD_MD
+    with pytest.raises(skill_svc.SkillParseError, match="最多"):
+        skill_svc.parse_zip(_zip_bytes(many))
+    big = {"SKILL.md": GOOD_MD, "huge.md": "x" * (skill_svc.settings.SKILL_ZIP_FILE_MAX + 1)}
+    with pytest.raises(skill_svc.SkillParseError, match="单文件上限"):
+        skill_svc.parse_zip(_zip_bytes(big))
+
+
+def test_route_upload_zip_saves_files():
+    async def go():
+        engine, Maker = await _mk_session(tmp_path_zip())
+        async with Maker() as db:
+            out = await skills_router.upload_skill(
+                file=_uf("pkg.zip", _zip_bytes({
+                    "wechat-hot-title/SKILL.md": GOOD_MD,
+                    "refs/style.md": "# 风格\n数字开头",
+                })),
+                db=db,
+                owner="o1",
+                _perm=_perm(),
+            )
+            assert out.status == "ready"
+            assert out.files == ["refs/style.md"]
+            # 坏 zip → 400 且不落库
+            try:
+                await skills_router.upload_skill(
+                    file=_uf("bad.zip", b"junk"), db=db, owner="o1", _perm=_perm()
+                )
+                raise AssertionError("应当 400")
+            except HTTPException as e:
+                assert e.status_code == 400 and "zip" in e.detail
+            assert len(await skills_router.list_skills(db=db, owner="o1")) == 1
+        await engine.dispose()
+
+    _run(go())
+
+
+def tmp_path_zip():
+    import tempfile
+    return pathlib.Path(tempfile.mkdtemp())
+
+
+import pathlib  # noqa: E402

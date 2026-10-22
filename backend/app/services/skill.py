@@ -30,8 +30,11 @@
 """
 from __future__ import annotations
 
+import io
+import posixpath
 import re
 import time
+import zipfile
 from typing import Any
 
 from sqlalchemy import select
@@ -120,6 +123,96 @@ def _parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
 def _norm_space(s: str) -> str:
     """折叠换行与多余空格 —— frontmatter 里的多行 description 要还原成一行。"""
     return re.sub(r"\s+", " ", (s or "")).strip()
+
+
+# zip 附件只收文本类文件 —— 二进制（图片/字体/二进制脚本）解析出来也没法
+# 在 activate 时按文本回给模型，硬收只会白白撑大 JSON 列
+_ZIP_TEXT_EXT = {
+    ".md", ".markdown", ".txt", ".py", ".json", ".yaml", ".yml", ".sh",
+    ".js", ".ts", ".html", ".css", ".csv", ".xml", ".sql", ".toml", ".ini",
+}
+
+
+def _decode_bytes(raw: bytes) -> str:
+    """编码容错顺序照抄上传端点：Windows 用户导出的文件常是 GBK。"""
+    for enc in ("utf-8", "utf-8-sig", "gbk", "gb18030", "latin-1"):
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return ""
+
+
+def parse_zip(raw: bytes) -> dict[str, Any]:
+    """解包技能 zip：取 SKILL.md 作主文件，其余文本文件进 `files`。
+
+    官方规范里一个 skill 就是一个目录；zip 是这个目录最常见的传输形态
+    （从 Claude 生态下载下来的技能包几乎都是 zip）。规则：
+
+      - SKILL.md 在 zip 根目录或唯一一层子目录里都认（`pkg/SKILL.md`）；
+      - 找不到或找到多个 → 报错；
+      - 其余文件只收白名单扩展名的文本（scripts/references/assets 里的
+        md/json/py 等），图片等二进制直接跳过不报错 —— 那是阶段三
+        （反向往外暴露）才需要认真处理的东西；
+      - 防 zip 炸弹与路径穿越：条目数 / 单文件 / 总解压量都有上限，
+        绝对路径与含 `..` 的条目跳过。
+
+    返回 {text, filename, files}；files 是 [{path, content}]，可空。
+    """
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(raw))
+    except zipfile.BadZipFile as exc:
+        raise SkillParseError("不是有效的 zip 文件") from exc
+
+    with zf:
+        names = zf.namelist()
+        if len(names) > settings.SKILL_ZIP_MAX_FILES:
+            raise SkillParseError(
+                f"压缩包里最多 {settings.SKILL_ZIP_MAX_FILES} 个文件，当前 {len(names)} 个"
+            )
+        # 1) 找 SKILL.md（根目录或唯一一层子目录）
+        candidates = [
+            n for n in names
+            if posixpath.basename(n) == "SKILL.md" and not n.endswith("/")
+        ]
+        if not candidates:
+            raise SkillParseError("压缩包里没有 SKILL.md（放在根目录或一层子目录里）")
+        if len(candidates) > 1:
+            raise SkillParseError(
+                "压缩包里有多个 SKILL.md（" + "、".join(candidates[:3]) + "），请只保留一个"
+            )
+        skill_path = candidates[0]
+
+        # 2) 主文件 + 附件，逐个限流
+        files: list[dict[str, str]] = []
+        total = 0
+        for info in zf.infolist():
+            if info.is_dir():
+                continue
+            # 路径穿越：绝对路径 / .. 直接跳过，不解析也不报错
+            norm = posixpath.normpath(info.filename)
+            if norm.startswith("/") or norm.startswith("..") or "/../" in norm:
+                continue
+            if info.file_size > settings.SKILL_ZIP_FILE_MAX:
+                raise SkillParseError(
+                    f"文件 {info.filename} 解压后 {info.file_size} 字节，"
+                    f"超过单文件上限 {settings.SKILL_ZIP_FILE_MAX}"
+                )
+            total += info.file_size
+            if total > settings.SKILL_ZIP_TOTAL_MAX:
+                raise SkillParseError(
+                    f"压缩包解压后总量超过 {settings.SKILL_ZIP_TOTAL_MAX} 字节"
+                )
+            content = _decode_bytes(zf.read(info))
+            if info.filename == skill_path:
+                text = content
+            elif posixpath.splitext(info.filename)[1].lower() in _ZIP_TEXT_EXT and content.strip():
+                files.append({"path": norm, "content": content})
+        # text 一定存在：skill_path 已确认在 names 里
+        if not (text or "").strip():  # type: ignore[possibly-undefined]
+            raise SkillParseError("SKILL.md 是空的或无法识别编码")
+
+    return {"text": text, "filename": "SKILL.md", "files": files}  # type: ignore[possibly-undefined]
 
 
 def parse_skill(
@@ -225,7 +318,11 @@ async def list_active(db: AsyncSession, owner: str) -> list[Skill]:
 
 
 async def upsert_skill(
-    db: AsyncSession, owner: str, text: str, filename: str = "SKILL.md"
+    db: AsyncSession,
+    owner: str,
+    text: str,
+    filename: str = "SKILL.md",
+    files: list[dict[str, str]] | None = None,
 ) -> tuple[Skill, bool]:
     """按 name 覆盖式写入。返回 (skill, created)。
 
@@ -262,6 +359,7 @@ async def upsert_skill(
                 r"\.(md|markdown|txt)$", "", (filename or "skill").strip(), flags=re.I
             ).lower() or "skill"
         desc, body, extra = "", "", {}
+        files = None
 
     skill = await get_by_name(db, owner, name)
 
@@ -282,6 +380,9 @@ async def upsert_skill(
     skill.status = status
     skill.error = error
     skill.meta = {"frontmatter": extra} if extra else None
+    # zip 附件随主文件一起落库；粘贴/单文件上传没有 files，保持 None
+    # （别写成空列表 —— None 表示「没有附件」，[] 会被当成「附件被清空」）
+    skill.files = files or None
     skill.updated_at = int(time.time())
     if created:
         skill.enabled = True

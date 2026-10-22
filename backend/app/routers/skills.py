@@ -26,6 +26,8 @@ router = APIRouter(prefix="/skills", tags=["技能"])
 
 # 技能包文本上限（字符）。一个 SKILL.md 通常 2~10KB，1MB 是远高于合理的兜底。
 SKILL_TEXT_MAX = 1_000_000
+# zip 是压缩传输，原始字节上限放宽到 5MB（解压后的量在 parse_zip 里另有限流）
+SKILL_ZIP_MAX = 5_000_000
 
 
 class SkillOut(BaseModel):
@@ -39,6 +41,10 @@ class SkillOut(BaseModel):
     use_count: int
     created_at: int
     updated_at: int
+    # zip 里的附件（[{path, content}]）。列表只回 path 不回 content ——
+    # 附件正文可能上百 KB，列表页/详情页只需要知道有哪些文件；
+    # 真要读内容是阶段三（activate 时按需展开）的事。
+    files: list[str] = []
 
 
 class SkillCreate(BaseModel):
@@ -62,6 +68,7 @@ def _out(s: Skill) -> SkillOut:
         use_count=s.use_count or 0,
         created_at=s.created_at,
         updated_at=s.updated_at,
+        files=[f.get("path", "") for f in (s.files or [])],
     )
 
 
@@ -106,30 +113,48 @@ async def upload_skill(
     owner: str = Depends(current_owner_id),
     _perm: User = Depends(require_use("skill.manage", "skill")),
 ):
-    """上传 SKILL.md。文件名参与 name 校验（等价于「name 必须等于父目录名」）。"""
+    """上传 SKILL.md 或技能 zip 包。文件名参与 name 校验（等价于「name 必须等于父目录名」）。
+
+    zip 是官方「一个 skill 一个目录」的传输形态：解包取 SKILL.md 作主文件，
+    其余文本文件（references/scripts 里的 md/json/py 等）存进 files 字段。
+    """
     filename = file.filename or "SKILL.md"
-    if not filename.lower().endswith((".md", ".markdown", ".txt")):
-        raise HTTPException(400, "请上传 .md 文件（SKILL.md）")
     raw = await file.read()
     if not raw:
         raise HTTPException(400, "文件是空的")
-    if len(raw) > SKILL_TEXT_MAX:
-        raise HTTPException(400, "文件过大")
-
-    # 编码容错顺序照抄 services/doc_extract 的惯例：Windows 用户导出的
-    # SKILL.md 常是 GBK，硬要 utf-8 会直接乱码进正文。
-    text = ""
-    for enc in ("utf-8", "utf-8-sig", "gbk", "gb18030", "latin-1"):
+    if filename.lower().endswith(".zip"):
+        if len(raw) > SKILL_ZIP_MAX:
+            raise HTTPException(400, "zip 包过大")
         try:
-            text = raw.decode(enc)
-            break
-        except UnicodeDecodeError:
-            continue
-    if not text.strip():
-        raise HTTPException(400, "无法识别文件编码，请转成 UTF-8 后重试")
+            parsed_zip = skill_svc.parse_zip(raw)
+        except skill_svc.SkillParseError as exc:
+            raise HTTPException(400, f"zip 无法导入：{exc}") from exc
+        text, name_for_parse, files = (
+            parsed_zip["text"],
+            parsed_zip["filename"],
+            parsed_zip["files"],
+        )
+    elif filename.lower().endswith((".md", ".markdown", ".txt")):
+        if len(raw) > SKILL_TEXT_MAX:
+            raise HTTPException(400, "文件过大")
+        files = None
+        name_for_parse = filename
+        # 编码容错顺序照抄 services/doc_extract 的惯例：Windows 用户导出的
+        # SKILL.md 常是 GBK，硬要 utf-8 会直接乱码进正文。
+        text = ""
+        for enc in ("utf-8", "utf-8-sig", "gbk", "gb18030", "latin-1"):
+            try:
+                text = raw.decode(enc)
+                break
+            except UnicodeDecodeError:
+                continue
+        if not text.strip():
+            raise HTTPException(400, "无法识别文件编码，请转成 UTF-8 后重试")
+    else:
+        raise HTTPException(400, "请上传 .md 文件（SKILL.md）或技能 zip 包")
 
     try:
-        skill, _created = await skill_svc.upsert_skill(db, owner, text, filename)
+        skill, _created = await skill_svc.upsert_skill(db, owner, text, name_for_parse, files)
     except skill_svc.SkillParseError as exc:
         raise HTTPException(400, f"格式有误，原技能未改动：{exc}") from exc
     await db.commit()

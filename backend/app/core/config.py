@@ -209,6 +209,11 @@ class Settings(BaseSettings):
     SKILL_BODY_MAX_CHARS: int = 20000
     # 单轮对话内最多激活几个 skill（同一轮反复激活会让上下文迅速膨胀）
     SKILL_MAX_ACTIVATIONS_PER_TURN: int = 3
+    # zip 上传的防炸弹限流：条目数 / 单文件 / 解压总量（字节）。
+    # 附件只收文本类（references/scripts 里的 md/json/py 等），二进制直接跳过。
+    SKILL_ZIP_MAX_FILES: int = 30
+    SKILL_ZIP_FILE_MAX: int = 200_000
+    SKILL_ZIP_TOTAL_MAX: int = 1_000_000
 
     # ---------- 知乎数据开放平台（热点灵感的数据源） ----------
     # 在 https://developer.zhihu.com/profile 申请。鉴权是 Bearer + 秒级时间戳

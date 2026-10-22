@@ -105,6 +105,8 @@ async function onPickFile(e: Event) {
       // 解析失败不是「传失败了」—— 文件已经存下，只是配置有问题。
       // 用 warning 而不是 error，并把原因说清楚。
       message.warning(`已上传，但配置有误：${s.error}`)
+    } else if (s.files?.length) {
+      message.success(`已导入技能「${s.name}」，含 ${s.files.length} 个附件文件`)
     } else {
       message.success(`已导入技能「${s.name}」`)
     }
@@ -364,20 +366,22 @@ const columns = computed<DataTableColumns<Skill>>(() => [
     <div class="sk-form">
       <div class="sk-upload">
         <div class="sk-upload-hint">
-          从别处拿到的技能包，直接把 <code>SKILL.md</code> 传上来即可；
-          文件名的前缀必须和 frontmatter 里的 <code>name</code> 一致
-          （官方规范：name 必须等于父目录名）。
+          从别处拿到的技能包，支持两种上传：<b>SKILL.md 单文件</b> 或
+          <b>整个技能目录的 zip 包</b>（解包后以包内 SKILL.md 为准，其余文本文件
+          ——references / scripts 之类——作为附件一起存档）。单文件时文件名的前缀
+          必须和 frontmatter 里的 <code>name</code> 一致；zip 里的 SKILL.md 放在
+          根目录或一层子目录里都可以。
         </div>
         <IconTextBtn
           name="upload"
           size="small"
           :loading="formSaving"
           @click="fileInput?.click()"
-        >选择 SKILL.md</IconTextBtn>
+        >选择 SKILL.md 或 zip 包</IconTextBtn>
         <input
           ref="fileInput"
           type="file"
-          accept=".md,.markdown,.txt"
+          accept=".md,.markdown,.txt,.zip"
           style="display: none"
           @change="onPickFile"
         />
@@ -465,6 +469,14 @@ const columns = computed<DataTableColumns<Skill>>(() => [
             <span style="margin-left: 10px; font-size: 12px; opacity: 0.65">
               被激活 {{ detail.use_count }} 次
             </span>
+          </span>
+        </div>
+        <div v-if="detail.files?.length" class="sk-detail-row">
+          <span class="sk-detail-label">zip 附件</span>
+          <span class="sk-detail-value sk-detail-files">
+            <NTag v-for="f in detail.files" :key="f" size="small" :bordered="false" class="sk-file-tag">
+              {{ f }}
+            </NTag>
           </span>
         </div>
         <div v-if="detail.status === 'invalid'" class="sk-detail-row">
@@ -562,6 +574,16 @@ const columns = computed<DataTableColumns<Skill>>(() => [
   flex: 1;
   min-width: 0;
   word-break: break-word;
+}
+/* zip 附件路径列表：等宽字体贴标签语义，允许换行 */
+.sk-detail-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.sk-file-tag {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
 }
 .sk-detail-body-title {
   font-size: 12px;
