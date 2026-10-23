@@ -53,3 +53,22 @@ class WechatAdDaily(Base):
     __table_args__ = (
         Index("ix_ad_daily_uniq", "owner", "account_id", "date", "slot_id", unique=True),
     )
+
+
+class WechatAdSlotAlias(Base):
+    """广告位别名：给微信 ad_slot 为空/未收录的 slot_id 起人工名。
+
+    微信 `publisher_adpos_general` 对部分广告位（如后上线的留言区广告）
+    不返回 ad_slot 枚举，看板只能显示兜底的「其他」。这里允许运营按
+    slot_id 命名，读路径统一替换 ad_slot_name，看板/导出立即生效。
+    """
+
+    __tablename__ = "wechat_ad_slot_alias"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    owner: Mapped[str] = mapped_column(String(64), default="default", index=True)
+    slot_id: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    name: Mapped[str] = mapped_column(String(40), default="")  # 人工命名，如「留言区广告」
+    updated_at: Mapped[int] = mapped_column(Integer, default=_now, onupdate=_now)
+
+    __table_args__ = (Index("ix_ad_slot_alias_uniq", "owner", "slot_id", unique=True),)

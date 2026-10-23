@@ -81,6 +81,7 @@ PERMISSIONS: list[tuple[str, str, str]] = [
     ("knowledge", "knowledge.create", "新增知识库素材"),
     ("knowledge", "knowledge.delete", "删除知识库素材"),
     ("skill", "skill.manage", "管理技能包（增删改启停）"),
+    ("revenue", "revenue.alias", "管理广告位别名"),
     ("voice", "voice.clone", "声音复刻"),
     ("wechat", "wechat.push", "推送公众号草稿"),
     ("settings", "settings.wechat_edit", "公众号增删改"),

@@ -3,11 +3,16 @@
 数据来源是微信 `publisher/stat`（广告分析接口），按 owner 隔离——
 每个用户只看到自己公众号账号（wechat_accounts.owner == 当前 owner）的收益。
 
-三条接口：
-  GET /revenue/accounts   当前用户可见的公众号列表（看板顶部下拉用）
-  GET /revenue/overview   汇总 + 收益趋势 + 收益构成（支持多账号聚合）
-  GET /revenue/settlement 结算口径（累计收入 / 已结算 / 扣除）
-  GET /revenue/export     导出收益数据（xlsx 三张表 / csv 明细）
+接口：
+  GET  /revenue/accounts     当前用户可见的公众号列表（看板顶部下拉用）
+  GET  /revenue/overview     汇总 + 收益趋势 + 收益构成（支持多账号聚合）
+  GET  /revenue/settlement   结算口径（累计收入 / 已结算 / 扣除）
+  GET  /revenue/export       导出收益数据（xlsx 三张表 / csv 明细）
+  GET  /revenue/slots        见过的全部广告位（slot_id + 原名 + 别名，别名管理弹窗用）
+  PUT  /revenue/slot-aliases 批量设置/清除广告位别名（需 revenue.alias 权限）
+
+广告位别名：微信对部分广告位（如后上线的留言区广告）不返回 ad_slot 枚举，
+本地兜底成「其他」。允许按 slot_id 人工命名，读路径统一替换 ad_slot_name。
 
 缓存策略：
   微信数据 T+1 才出，且按 90 天整段重拉慢又易限频，所以落库。
@@ -25,13 +30,15 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
-from sqlalchemy import select
+from pydantic import BaseModel, Field
+from sqlalchemy import func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.rbac import require_use
 from app.core.tenant import current_owner_id
 from app.db.session import get_db
-from app.models.revenue import WechatAdDaily
+from app.models.revenue import WechatAdDaily, WechatAdSlotAlias
 from app.models.settings import WeChatAccount
 from app.services.wechat import WeChatClient, slot_name
 
@@ -82,6 +89,16 @@ async def _rows_from_db(
             )
         ).scalars().all()
     )
+
+
+async def _alias_map(db: AsyncSession, owner: str) -> dict[int, str]:
+    """当前 owner 的全部广告位别名 {slot_id: name}。一次查库，读路径统一替换。"""
+    rows = (
+        (await db.execute(select(WechatAdSlotAlias).where(WechatAdSlotAlias.owner == owner)))
+        .scalars()
+        .all()
+    )
+    return {r.slot_id: r.name for r in rows if r.name}
 
 
 async def _upsert_rows(db: AsyncSession, owner: str, account_id: str, items: list[dict]) -> None:
@@ -141,10 +158,12 @@ async def _collect_rows(
     """拿到范围内全部天级数据（dict 列表），优先读库、必要时重拉微信。"""
     account_ids = [a.id for a in accounts]
 
+    aliases = await _alias_map(db, owner)
+
     if not refresh:
         cached = await _rows_from_db(db, owner, account_ids, start, end)
         if cached:
-            return [_row_to_dict(r) for r in cached]
+            return [_row_to_dict(r, aliases) for r in cached]
 
     # 重拉：逐账号打微信、upsert 入库，再读回（或直接用内存里的数据聚合）
     all_items: list[dict] = []
@@ -162,7 +181,9 @@ async def _collect_rows(
         return [
             {
                 "date": it.get("date", ""),
-                "ad_slot_name": slot_name(it.get("ad_slot")),
+                "slot_id": it.get("slot_id") or 0,
+                "ad_slot_name": aliases.get(it.get("slot_id") or 0)
+                or slot_name(it.get("ad_slot")),
                 "req_succ": it.get("req_succ_count") or 0,
                 "exposure": it.get("exposure_count") or 0,
                 "click": it.get("click_count") or 0,
@@ -173,7 +194,7 @@ async def _collect_rows(
 
     # 微信也没数据（新号 / 区间无曝光）：回落读库（可能仍是空）
     cached = await _rows_from_db(db, owner, account_ids, start, end)
-    return [_row_to_dict(r) for r in cached]
+    return [_row_to_dict(r, aliases) for r in cached]
 
 
 def _dedupe(items: list[dict]) -> list[dict]:
@@ -189,10 +210,12 @@ def _dedupe(items: list[dict]) -> list[dict]:
     return out
 
 
-def _row_to_dict(r: WechatAdDaily) -> dict:
+def _row_to_dict(r: WechatAdDaily, aliases: dict[int, str] | None = None) -> dict:
+    name = (aliases or {}).get(r.slot_id) or r.ad_slot_name
     return {
         "date": r.date,
-        "ad_slot_name": r.ad_slot_name,
+        "slot_id": r.slot_id,
+        "ad_slot_name": name,
         "req_succ": r.req_succ_count,
         "exposure": r.exposure_count,
         "click": r.click_count,
@@ -351,6 +374,94 @@ async def revenue_settlement(
             "penalty_all_fen": tot_penalty,
         },
     }
+
+
+# ---------------------------------------------------------------- 广告位别名
+class SlotAliasItem(BaseModel):
+    slot_id: int
+    name: str = Field(default="", max_length=40)
+
+
+class SlotAliasPatch(BaseModel):
+    aliases: list[SlotAliasItem] = Field(default_factory=list)
+
+
+@router.get("/slots")
+async def list_revenue_slots(
+    db: AsyncSession = Depends(get_db),
+    owner: str = Depends(current_owner_id),
+) -> dict:
+    """当前 owner 见过的全部广告位（按 slot_id 聚合，不限时间区间）。
+
+    给「广告位别名」弹窗用：微信不给部分 slot 返枚举（如留言区广告），
+    这里列出 slot_id + 本地兜底名 + 已有别名 + 累计收益。
+    """
+    stmt = (
+        select(
+            WechatAdDaily.slot_id,
+            func.max(WechatAdDaily.ad_slot),
+            func.max(WechatAdDaily.ad_slot_name),
+            func.sum(WechatAdDaily.income_fen),
+        )
+        .where(WechatAdDaily.owner == owner)
+        .group_by(WechatAdDaily.slot_id)
+        .order_by(func.sum(WechatAdDaily.income_fen).desc())
+    )
+    aliases = await _alias_map(db, owner)
+    items = [
+        {
+            "slot_id": slot_id,
+            "ad_slot": ad_slot or "",
+            "name": name or "",
+            "alias": aliases.get(slot_id, ""),
+            "income_fen": income or 0,
+        }
+        for slot_id, ad_slot, name, income in (await db.execute(stmt)).all()
+    ]
+    return {"items": items}
+
+
+@router.put("/slot-aliases")
+async def put_revenue_slot_aliases(
+    body: SlotAliasPatch,
+    db: AsyncSession = Depends(get_db),
+    owner: str = Depends(current_owner_id),
+    _perm=Depends(require_use("revenue.alias")),
+) -> dict:
+    """批量设置/清除广告位别名。name 传空串 = 清除该 slot 的别名（恢复原名）。"""
+    wanted: dict[int, str] = {}
+    for it in body.aliases:
+        name = it.name.strip()
+        if it.slot_id < 0:
+            raise HTTPException(400, "slot_id 不合法")
+        if name:
+            wanted[it.slot_id] = name[:40]
+
+    existing = {
+        r.slot_id: r
+        for r in (
+            await db.execute(
+                select(WechatAdSlotAlias).where(WechatAdSlotAlias.owner == owner)
+            )
+        )
+        .scalars()
+        .all()
+    }
+    for slot_id, row in existing.items():
+        if slot_id not in wanted:
+            await db.delete(row)
+    now = int(time.time())
+    for slot_id, name in wanted.items():
+        row = existing.get(slot_id)
+        if row is None:
+            db.add(
+                WechatAdSlotAlias(owner=owner, slot_id=slot_id, name=name, updated_at=now)
+            )
+        elif row.name != name:
+            row.name = name
+            row.updated_at = now
+    await db.flush()
+    return {"ok": True, "aliases": {str(k): v for k, v in (await _alias_map(db, owner)).items()}}
 
 
 # ---------------------------------------------------------------- 导出
@@ -526,6 +637,7 @@ async def revenue_export(
 
     accounts = await _resolve_accounts(db, owner, account_id)
     name_of = {a.id: a.name for a in accounts}
+    aliases = await _alias_map(db, owner)
     rows = await _rows_from_db(db, owner, list(name_of), start, end)
     if not rows:
         raise HTTPException(404, "该区间暂无已缓存数据，请先在看板页加载/刷新后再导出")
@@ -535,7 +647,10 @@ async def revenue_export(
             {
                 "date": r.date,
                 "account": name_of.get(r.account_id, r.account_id),
-                "ad_slot": r.ad_slot_name or r.ad_slot or f"广告位{r.slot_id}",
+                "ad_slot": aliases.get(r.slot_id)
+                or r.ad_slot_name
+                or r.ad_slot
+                or f"广告位{r.slot_id}",
                 "req_succ_count": r.req_succ_count,
                 "exposure": r.exposure_count,
                 "exposure_rate": r.exposure_rate,
@@ -558,7 +673,7 @@ async def revenue_export(
             headers={"Content-Disposition": _attachment(fname)},
         )
 
-    agg = _aggregate([_row_to_dict(r) for r in rows])
+    agg = _aggregate([_row_to_dict(r, aliases) for r in rows])
     content = _build_xlsx(detail, agg, start, end)
     fname = f"流量主收益_{start}_{end}.xlsx"
     return Response(

@@ -78,6 +78,29 @@ export interface RevenueSettlement {
   }
 }
 
+export interface RevenueSlot {
+  slot_id: number
+  ad_slot: string
+  name: string
+  alias: string
+  income_fen: number
+}
+
+export interface SlotAliasItem {
+  slot_id: number
+  name: string
+}
+
+export async function revenueSlots(): Promise<RevenueSlot[]> {
+  const { data } = await http.get('/revenue/slots')
+  return data.items ?? []
+}
+
+/** 批量设置/清除广告位别名。name 传空串 = 清除（恢复微信原名）。 */
+export async function putSlotAliases(aliases: SlotAliasItem[]): Promise<void> {
+  await http.put('/revenue/slot-aliases', { aliases })
+}
+
 export async function revenueAccounts(): Promise<RevenueAccount[]> {
   const { data } = await http.get('/revenue/accounts')
   return data

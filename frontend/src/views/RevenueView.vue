@@ -22,6 +22,8 @@ import {
   NEmpty,
   NGrid,
   NGridItem,
+  NInput,
+  NModal,
   NRadioButton,
   NRadioGroup,
   NSelect,
@@ -32,15 +34,19 @@ import {
 } from 'naive-ui'
 
 import IconTextBtn from '@/components/IconTextBtn.vue'
+import { usePermGate } from '@/composables/usePermGate'
 import {
+  putSlotAliases,
   revenueAccounts,
   revenueExport,
   revenueOverview,
   revenueSettlement,
+  revenueSlots,
   type CompositionItem,
   type RevenueAccount,
   type RevenueOverview,
   type RevenueSettlement,
+  type RevenueSlot,
   type TrendItem,
 } from '@/api/revenue'
 
@@ -119,6 +125,43 @@ async function onExport(key: string) {
     msg.error(e?.message || '导出失败')
   } finally {
     exporting.value = false
+  }
+}
+
+// ---------------------------------------------------------------- 广告位别名
+// 微信对部分广告位（如后上线的留言区广告）不返回 ad_slot 枚举，看板只能显示
+// 兜底的「其他」。这里允许按 slot_id 人工命名，后端读路径统一替换（含导出）。
+const aliasGate = usePermGate({ perm: 'revenue.alias' })
+const aliasShow = ref(false)
+const aliasLoading = ref(false)
+const aliasSaving = ref(false)
+const slotRows = ref<RevenueSlot[]>([])
+
+async function openAliasModal() {
+  aliasShow.value = true
+  aliasLoading.value = true
+  try {
+    slotRows.value = await revenueSlots()
+  } catch (e: any) {
+    msg.error(e?.message || '加载广告位列表失败')
+  } finally {
+    aliasLoading.value = false
+  }
+}
+
+async function saveAliases() {
+  aliasSaving.value = true
+  try {
+    await putSlotAliases(
+      slotRows.value.map((r) => ({ slot_id: r.slot_id, name: r.alias.trim() })),
+    )
+    msg.success('别名已保存，看板与导出同步生效')
+    aliasShow.value = false
+    await load()
+  } catch (e: any) {
+    msg.error(e?.message || '保存失败')
+  } finally {
+    aliasSaving.value = false
   }
 }
 
@@ -349,6 +392,13 @@ function slotColor(i: number): string {
           size="small"
           placeholder="选择公众号"
         />
+        <IconTextBtn
+          v-if="aliasGate.allowed.value"
+          name="edit"
+          size="small"
+          quaternary
+          @click="openAliasModal"
+        >广告位别名</IconTextBtn>
         <NDropdown trigger="click" :options="exportOptions" @select="onExport">
           <IconTextBtn name="download" size="small" quaternary :loading="exporting">
             导出
@@ -669,6 +719,52 @@ function slotColor(i: number): string {
 
       <NEmpty v-else description="该区间暂无广告数据（新号或尚未产生曝光）" class="empty" />
     </NSpin>
+
+    <!-- 广告位别名：给微信不返枚举的 slot_id 起人工名（如留言区广告） -->
+    <NModal
+      v-model:show="aliasShow"
+      preset="card"
+      title="广告位别名"
+      style="max-width: 640px"
+    >
+      <NSpin :show="aliasLoading">
+        <div v-if="slotRows.length" class="alias-list">
+          <div v-for="r in slotRows" :key="r.slot_id" class="alias-row">
+            <div class="alias-info">
+              <div class="alias-name">{{ r.alias || r.name || '广告位' + r.slot_id }}</div>
+              <div class="alias-sub">
+                原名 {{ r.name || '（微信未返回）' }} · slot_id {{ r.slot_id }} · 累计收益 ¥{{ yuan(r.income_fen) }}
+              </div>
+            </div>
+            <NInput
+              v-model:value="r.alias"
+              placeholder="留空 = 恢复原名"
+              size="small"
+              style="width: 200px"
+            />
+          </div>
+        </div>
+        <NEmpty v-else description="还没有任何广告位数据，先加载看板再来命名" />
+      </NSpin>
+      <template #footer>
+        <div class="alias-foot">
+          <NText depth="3" style="font-size: 12px">
+            微信对部分广告位（如留言区广告）不返回名称，看板只能显示「其他」。在这里按
+            slot_id 命名，看板与导出同步生效；清空即恢复原名。
+          </NText>
+          <div class="alias-foot-btns">
+            <IconTextBtn name="close" size="small" @click="aliasShow = false">取消</IconTextBtn>
+            <IconTextBtn
+              name="check"
+              size="small"
+              type="primary"
+              :loading="aliasSaving"
+              @click="saveAliases"
+            >保存</IconTextBtn>
+          </div>
+        </div>
+      </template>
+    </NModal>
   </div>
 </template>
 
@@ -918,6 +1014,47 @@ function slotColor(i: number): string {
 .comp-sub {
   font-size: 11px;
   color: var(--app-text-3);
+}
+
+/* 广告位别名弹窗 */
+.alias-list {
+  display: flex;
+  flex-direction: column;
+}
+.alias-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--app-border);
+}
+.alias-row:last-child {
+  border-bottom: none;
+}
+.alias-info {
+  min-width: 0;
+}
+.alias-name {
+  font-size: 14px;
+  font-weight: 600;
+}
+.alias-sub {
+  font-size: 11.5px;
+  color: var(--app-text-3);
+  margin-top: 2px;
+}
+.alias-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.alias-foot-btns {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
 }
 
 /* 结算进度卡 */

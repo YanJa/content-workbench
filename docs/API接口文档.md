@@ -582,6 +582,8 @@ ffmpeg -y -i out.mp4 -map 0:s:0 extracted.srt
 | GET | `/api/revenue/overview?account_id=&start=&end=&refresh=` | 汇总 + 收益趋势 + 收益构成；支持多账号聚合，`refresh=1` 强制重拉微信 |
 | GET | `/api/revenue/settlement?account_id=&start=&end=` | 结算口径：累计收入 / 已结算 / 扣罚 + 月度结算单 |
 | GET | `/api/revenue/export?account_id=&start=&end=&format=xlsx\|csv` | 导出收益数据（文件下载） |
+| GET | `/api/revenue/slots` | 当前用户见过的全部广告位（slot_id + 原名 + 别名 + 累计收益，别名弹窗用） |
+| PUT | `/api/revenue/slot-aliases` | 批量设置/清除广告位别名（需 revenue.alias 权限；`name` 传空串=清除恢复原名。微信不返枚举的 slot——如留言区广告——可人工命名，看板与导出同步生效） |
 
 口径说明（前端页面已如实标注，本模块**不作为对账依据**）：
 
