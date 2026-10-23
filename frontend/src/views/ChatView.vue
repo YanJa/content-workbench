@@ -776,7 +776,9 @@ async function restoreFromQueue() {
               </div>
 
               <!-- 正文：AI 回复按 Markdown 渲染，用户消息保持纯文本 -->
-              <div class="msg-content">
+              <!-- 条件加 m.content：模型调用失败的占位行整条只有 error 红条，
+                    HTML 会被渲染成一个空气泡，挂着「AI」标签很别扭 -->
+              <div v-if="m.content || m.streaming" class="msg-content">
                 <MarkdownView v-if="m.role === 'assistant' && !m.streaming" :content="m.content" />
                 <template v-else>{{ m.content }}</template>
                 <span v-if="m.streaming" class="cursor">▍</span>

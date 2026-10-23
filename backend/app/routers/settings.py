@@ -386,7 +386,10 @@ async def put_chat_provider(
                 logger.warning("CF 模型清单拉取失败，跳过 model 校验: %s", exc)
                 known = set()
             if known and model not in known:
-                raise HTTPException(400, f"模型 {model} 不在当前账号的可用清单里")
+                raise HTTPException(
+                    400,
+                    f"模型 {model} 不在免费模型清单里（可能已下线，或需要 Workers Paid 计划、免费账号不可用）",
+                )
     else:
         model = ""  # 切回 DeepSeek 时清掉 CF 模型选择，防止串味
     await _set_setting(db, owner, _CHAT_PROVIDER_KEY, req.provider)
@@ -395,11 +398,66 @@ async def put_chat_provider(
     return {"ok": True, "provider": req.provider, "model": model}
 
 
+# Cloudflare「需要付费计费方式」模型的判定属性。
+# 官方口径（2026-10-23 核对）：
+#   - 定价页 Note：Some models require a paid billing method —— kimi-k2.6 /
+#     kimi-k2.7-code、glm-5.2 / 5.3 / 5.3-flash、deepseek-v4-flash-0731 /
+#     deepseek-v4-pro-0813；
+#   - 变更日志 2026-07-28：免费计划调用这些模型返回 403（内部错误 5035）。
+# 模型搜索接口对这类模型返回 property `require_workers_paid=true`，
+# 与官方清单逐条吻合 —— 用户账号在免费计划上，选了也用不了，下拉直接过滤。
+_CF_PAID_PROP = "require_workers_paid"
+
+
+def _cf_props(m: dict) -> dict[str, object]:
+    """模型条目 → {property_id: value}。
+
+    properties 的元素形如 {"property_id": "price", "value": ...} —— 键名是
+    property_id，不是 name（那是条目自己的字段）。老代码按 "name" 找
+    deprecated / task，永远找不到，两道过滤器等于没装。
+    """
+    out: dict[str, object] = {}
+    for p in m.get("properties") or []:
+        if isinstance(p, dict) and p.get("property_id"):
+            out[str(p["property_id"])] = p.get("value")
+    return out
+
+
+def _cf_model_allowed(m: dict) -> bool:
+    """这个模型能不能进「免费计划可用」的下拉清单。
+
+    三道过滤：
+      1. 只收 @cf/ 前缀（官方模型，排除用户私有部署）；
+      2. task 必须是文本生成类。task 在**顶层对象** m["task"]["name"] 里，
+         不在 properties 里 —— 老代码去 properties 找 "task" 永远找不到，
+         task 过滤空转（图像/语音模型全靠 @cf/ 前缀侥幸挡掉一部分）；
+      3. 剔 deprecated（还能调，但别让人选）与 require_workers_paid=true
+         （官方「需要付费计费方式」，免费计划 403，见上方注释）。
+    """
+    name = m.get("name") or ""
+    if not name.startswith("@cf/"):
+        return False
+    task = ((m.get("task") or {}).get("name") or "")
+    if task and task not in ("Text Generation", "Text-to-Text"):
+        return False
+    props = _cf_props(m)
+    if props.get("deprecated"):
+        return False
+    if props.get(_CF_PAID_PROP):
+        return False
+    return True
+
+
 async def _fetch_cf_models() -> list[dict[str, str]]:
     """拉 Cloudflare 账号下可用于对话的模型清单（带 TTL 缓存）。
 
-    返回 [{name, label}]。task 过滤参数以实测为准：先试带 task=text-generation，
-    失败则退化为拉全量本地过滤。deprecated 的模型剔除（还能调，但别让人选）。
+    返回 [{name, label}]，**只含免费计划可用的模型**（付费模型过滤见
+    _cf_model_allowed）。用户 2026-10-23 反馈「不是所有模型都能用，
+    只能用 free 的，只帮我显示」—— 免费账号选到 kimi / glm-5 / deepseek-v4
+    这类模型，对话直接 403，选前就该挡住。
+
+    deprecated 的模型剔除（还能调，但别让人选）。task 以实测结构为准：
+    顶层对象 m["task"]["name"]，值为 "Text Generation" / "Text-to-Text" 等。
     """
     import httpx
 
@@ -423,23 +481,12 @@ async def _fetch_cf_models() -> list[dict[str, str]]:
 
     models: list[dict[str, str]] = []
     for m in data.get("result") or []:
-        name = m.get("name") or ""
-        if not name or not name.startswith("@cf/"):
-            continue
-        props = m.get("properties") or []
-        if any(p.get("name") == "deprecated" for p in props if isinstance(p, dict)):
-            continue
-        # 只留文本生成类：task 属性在 properties 里（没有该字段的保留，宁多勿漏）
-        task = next(
-            (p.get("value") for p in props if isinstance(p, dict) and p.get("name") == "task"),
-            "",
-        )
-        if task and task not in ("Text Generation", "Text-to-Text"):
+        if not isinstance(m, dict) or not _cf_model_allowed(m):
             continue
         desc = (m.get("description") or "").split("\n")[0][:60]
-        models.append({"name": name, "label": desc or name})
+        models.append({"name": m["name"], "label": desc or m["name"]})
     if not models:
-        raise RuntimeError("账号下没有可用的对话模型")
+        raise RuntimeError("账号下没有免费计划可用的对话模型")
     # 按名字排一下，@cf/meta/llama 系列在前（默认模型优先可见）
     models.sort(key=lambda x: (0 if "llama" in x["name"] else 1, x["name"]))
     _CF_MODELS_CACHE[account_id] = (now + _CF_MODELS_TTL, models)

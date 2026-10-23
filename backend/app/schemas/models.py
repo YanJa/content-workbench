@@ -40,6 +40,8 @@ class MessageOut(BaseModel):
     completion_tokens: int = 0
     # 推理模型的思维链（历史回显「思考过程」折叠块用）
     reasoning: str = ""
+    # 模型调用失败的错误信息（该轮回复挂的红色提示；历史回显仍可见）
+    error: str = ""
     # 展示型工具痕迹：{"calls": [{id, name, arguments, result, status}]}
     # 前端直接映射成 toolCalls，无需解析 OpenAI 格式
     tool_calls: dict[str, Any] | None = None

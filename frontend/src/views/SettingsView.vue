@@ -124,7 +124,19 @@ const chatModel = ref('')
 const cfModels = ref<{ name: string; label: string }[]>([])
 const cfModelsLoading = ref(false)
 const cfModelsErr = ref('')
+/** 已保存的模型不在免费清单里（需要 Workers Paid / 已下线）时的提示。
+ *  2026-10-23：CF 不是所有模型免费账号都能用，下拉只显示免费模型；
+ *  老库里存着的付费模型（如 deepseek-v4-flash）据此提示用户重选。 */
+const cfStaleNotice = ref('')
 const providerSaving = ref(false)
+
+/** 已生效的 CF 模型是否已失效（清单拉到过、且不在其中）。 */
+const cfSavedStale = computed(
+  () =>
+    !!savedModel.value &&
+    cfModels.value.length > 0 &&
+    !cfModels.value.some((m) => m.name === savedModel.value),
+)
 
 // 上一次「已生效」的选择。用来判断用户有没有真的改过 ——
 // 没改就把保存按钮置灰，而不是让人点了才看到一个什么都不做的保存。
@@ -168,15 +180,16 @@ function markProviderSaved(provider: ChatProviderInfo['provider'], model: string
 async function loadCfModels() {
   cfModelsLoading.value = true
   cfModelsErr.value = ''
+  cfStaleNotice.value = ''
   try {
     cfModels.value = await getCloudflareModels()
-    // 已存的模型不在清单里（换账号/模型下线）→ 兜底插一条，别让下拉显示空、
-    // 用户一保存又把它冲掉
-    if (chatModel.value && !cfModels.value.some((m) => m.name === chatModel.value)) {
-      cfModels.value = [
-        { name: chatModel.value, label: `${chatModel.value}（已不在线）` },
-        ...cfModels.value,
-      ]
+    // 已保存的模型不在清单里（需要 Workers Paid 的付费模型 / 已下线）：
+    // 不再像以前那样兜底插回下拉 —— 那会把付费模型又变成可选项，
+    // 与「只显示免费模型」自相矛盾。清掉草稿并提示重选，保存时提交
+    // 空值即回落到 .env 默认模型（llama-3.1-8b，免费）。
+    if (cfSavedStale.value) {
+      chatModel.value = ''
+      cfStaleNotice.value = `已保存的模型 ${savedModel.value} 不在免费模型清单里（需要 Workers Paid 计划或已下线），请重新选择`
     }
   } catch (e) {
     cfModelsErr.value = (e as Error).message || '拉取失败'
@@ -198,7 +211,8 @@ function onProviderChange(v: string) {
     // 之前这里什么都没做，而切走时又清空了 chatModel —— 于是
     // 「DeepSeek → Cloudflare」这个来回会把 model 从原值变成空串，
     // 脏状态判定为 true，明明改回了原样却还提示「保存修改」。
-    chatModel.value = savedModel.value || chatModel.value
+    // 已生效的若是失效模型（付费/下线），不恢复它，保持空等用户重选。
+    chatModel.value = cfSavedStale.value ? '' : savedModel.value || chatModel.value
   }
   // 切到 DeepSeek 不清 chatModel：CF 模型选择原样留在内存里，
   // 切回来能复原，且保存时只看 provider === 'cloudflare' 才提交 model，
@@ -208,9 +222,12 @@ function onProviderChange(v: string) {
 async function saveChatProvider() {
   if (providerReadonly.value) return // 双保险：按钮禁用了，函数这层也拦
   if (!providerDirty.value) return // 没改动就别发请求（按钮本该是灰的）
-  // 切回原有通道但模型空格：直接用已存模型，别把空串提交上去
+  // 切回原有通道但模型空格：直接用已存模型，别把空串提交上去。
+  // 但已存模型若是失效的付费模型，不回退 —— 提交上去后端也会 400，
+  // 空值让后端回落到 .env 默认（免费）模型。
+  const fallback = cfSavedStale.value ? '' : savedModel.value
   const model =
-    chatProvider.value.provider === 'cloudflare' ? chatModel.value || savedModel.value : ''
+    chatProvider.value.provider === 'cloudflare' ? chatModel.value || fallback : ''
   providerSaving.value = true
   try {
     const p = await updateChatProvider({ provider: chatProvider.value.provider, model })
@@ -754,6 +771,9 @@ const envColumns: DataTableColumns<EnvRow> = [
                     <span class="ai-model-name">
                       <template v-if="savedProvider === 'cloudflare'">
                         {{ savedCfModel || '未选择模型' }}
+                        <!-- 存的是免费清单外的模型（付费/下线）：健康卡片是用户看「现状」
+                             的地方，这里必须点名，否则只在下拉旁提示不够显眼 -->
+                        <span v-if="cfSavedStale" style="color: var(--app-red)">（不在免费清单）</span>
                       </template>
                       <template v-else>
                         {{ health.model_flash }}<span class="ai-model-sep">·</span>{{ health.model_pro }}
@@ -812,7 +832,8 @@ const envColumns: DataTableColumns<EnvRow> = [
 
       <div class="grid fill-grid" style="margin-top: 16px">
           <!-- AI 对话通道：DeepSeek（默认，全功能）/ Cloudflare Workers AI（免费额度大，
-               但不支持对话内工具调用、计费按估价）。只影响对话，后台任务仍走 DeepSeek。
+               但不支持对话内工具调用、计费按估价，且下拉仅列免费计划可用的模型）。
+               只影响对话，后台任务仍走 DeepSeek。
                切换权仅管理员（member 只读，后端同样 403）。2026-10-21 从个人中心搬来：
                它是系统级通道决策，不是个人偏好。 -->
           <NCard size="small" title="AI 对话" class="card-ai">
@@ -887,8 +908,13 @@ const envColumns: DataTableColumns<EnvRow> = [
                 <template v-if="chatProvider.cloudflare_ready">
                   <b>Cloudflare 模型不支持对话内工具</b>（查队列、推草稿箱等需切回
                   DeepSeek），用量按估价计费；中文创作效果弱于 DeepSeek，严肃成稿建议默认通道。
+                  模型下拉<b>只显示免费计划可用的模型</b>（Kimi K2 / GLM-5 / DeepSeek V4 Pro
+                  等需要 Workers Paid 计划，免费账号调用会 403，已过滤）。
                   <span v-if="cfModelsErr" style="color: var(--app-amber-text)">
                     模型清单拉取失败：{{ cfModelsErr }}（不影响已保存的选择）
+                  </span>
+                  <span v-if="cfStaleNotice" style="color: var(--app-red)">
+                    {{ cfStaleNotice }}
                   </span>
                 </template>
                 <template v-else>

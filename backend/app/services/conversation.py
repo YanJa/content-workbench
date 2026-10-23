@@ -73,6 +73,7 @@ async def add_message(
     prompt_tokens: int = 0,
     completion_tokens: int = 0,
     reasoning: str = "",
+    error: str = "",
     msg_id: str | None = None,
 ) -> Message:
     """落一条消息。
@@ -80,6 +81,10 @@ async def add_message(
     `msg_id`：调用方指定主键。对话流让前端预生成的 assistant 消息 id 当主键，
     这样「保存到队列」上报的 msg_id 与历史消息 id 是同一个值，队列页才能
     反跳定位到那条回复（否则一个是客户端 uid、一个是库内 uuid，永远对不上）。
+
+    `error`：模型调用失败的错误信息。失败轮次可能一个字都没吐出来，
+    这时 content/reasoning/tool_calls 全空，只有 error —— 调用方靠
+    「四者任一非空就落行」的判据把这种占位行也写进库，历史回显才看得到。
     """
     msg = Message(
         id=msg_id or str(uuid.uuid4()),
@@ -92,6 +97,7 @@ async def add_message(
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
         reasoning=reasoning,
+        error=error,
     )
     db.add(msg)
     # 更新会话活跃时间
@@ -254,6 +260,11 @@ async def build_context(
             if m.content:
                 result.append({"role": "assistant", "content": m.content})
             result.extend(_tool_calls_to_context(m.tool_calls))
+        elif m.role == "assistant" and not m.content:
+            # 纯错误占位行（模型调用失败、一个字没吐出来）不进上下文：
+            # 空正文的 assistant 消息对模型没有信息量，部分 provider 还会
+            # 因为空 content 报错。给人看的错误提示走 Message.error 回显。
+            continue
         else:
             result.append({"role": m.role, "content": m.content})
 

@@ -66,6 +66,8 @@ export const useChatStore = defineStore('chat', () => {
           role: m.role as ChatMessage['role'],
           content: m.content,
           reasoning: m.reasoning || undefined,
+          // 模型调用失败的错误信息：后端随该轮回复落库，历史回显继续显示红条
+          error: m.error || undefined,
           toolCalls: calls?.length ? calls : undefined,
           usage,
         }

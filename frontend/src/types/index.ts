@@ -30,6 +30,8 @@ export interface Message {
   completion_tokens?: number
   /** 推理模型的思维链（历史回显「思考过程」折叠块） */
   reasoning?: string
+  /** 模型调用失败的错误信息（该轮回复挂的红色提示；刷新/重进会话仍在） */
+  error?: string
   /** 展示型工具痕迹：{calls: [{id, name, arguments, result, status}]} */
   tool_calls?: Record<string, unknown> | null
 }

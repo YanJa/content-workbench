@@ -131,10 +131,11 @@ Base URL：`/api`（前端 axios baseURL 同此）。交互式文档：后端启
 流结束前可能交替出现多个 delta/tool 事件（工具循环最多 5 轮）。
 
 **落库内容（2026-10 起）**：正文、思维链（`reasoning`）、工具痕迹（`tool_calls`）、
-token 用量全部落库。历史会话重开时完整回显：思维链默认折叠、工具痕迹附在所属
+token 用量、**模型调用错误信息**（`error`）全部落库。历史会话重开时完整回显：思维链默认折叠、工具痕迹附在所属
 assistant 消息上（**不落 `role="tool"` 行**——工具执行结果回填进发起调用的那条
 assistant 的 `tool_calls[i].result`）。思维链只给人看，`build_context` 不回灌模型
-（省 token、避免 provider 兼容问题）。
+（省 token、避免 provider 兼容问题）；同理，纯错误占位行（一个字没吐出来的失败轮次，
+只有 `error` 没有正文）也不回灌模型——空正文的 assistant 消息对模型没有信息量。
 
 ### POST `/api/chat/confirm` — 确认执行危险工具
 
@@ -205,6 +206,7 @@ assistant 的 `tool_calls[i].result`）。思维链只给人看，`build_context
 | `id` / `role` / `content` / `created_at` | — | 基础字段（`tool_name` 为历史遗留，可忽略） |
 | `prompt_tokens` / `completion_tokens` | int | 该条消息的 token 用量，前端还原用量行 |
 | `reasoning` | str | 思维链全文（只给人看，不回灌模型）；空串=普通模型 |
+| `error` | str | 模型调用失败的错误信息（该轮回复挂的红条，刷新/重进会话仍在）；空串=正常回复 |
 | `tool_calls` | object \| null | 展示型工具痕迹 `{"calls": [{id, name, arguments, result, status}]}`；`status` = `running`/`done`/`error`/`pending_user_confirmation`（pending 时无 `result`） |
 
 ---
@@ -811,7 +813,7 @@ curl -X POST localhost:8000/api/video/render -H 'Content-Type: application/json'
 | PUT | `/api/settings/author` | 保存作者默认信息 `{author_name, author_intro}`，排版时用于替换占位符 |
 | GET | `/api/settings/chat-provider` | 取对话供应商 `{provider: "deepseek"\|"cloudflare", model, cloudflare_ready}`；未配置返回 `deepseek` |
 | PUT | `/api/settings/chat-provider` | 保存对话供应商 `{provider, model}`；`model` 仅 cloudflare 有效，选了清单外模型 400（清单接口不可用时放宽为非空即可）；切回 deepseek 自动清空 model |
-| GET | `/api/settings/cloudflare-models` | Cloudflare 可用对话模型清单 `{models: [{name, label}]}`（TTL 缓存 10 分钟）；未配凭证 400，拉取失败 502 |
+| GET | `/api/settings/cloudflare-models` | Cloudflare **免费计划可用**对话模型清单 `{models: [{name, label}]}`（TTL 缓存 10 分钟）；未配凭证 400，拉取失败 502 |
 
 **对话供应商（`chat-provider`）**：`deepseek`（默认）全功能——思维链、工具调用、精确计费；
 `cloudflare`（Workers AI）免费额度大，但**模型不支持 function calling**：切过去后对话内的
@@ -819,6 +821,12 @@ curl -X POST localhost:8000/api/video/render -H 'Content-Type: application/json'
 里的「工具使用纪律」段也会剥掉；流式响应不带 token 用量，用量页按「估价」展示。只影响
 对话轮次——摘要压缩、排版、话题标签等后台任务固定走 DeepSeek。CF 凭证与生图通道共用
 `.env` 里的 `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID`（Workers AI 权限两者通用）。
+
+**CF 模型清单只含免费模型**（2026-10-23 起）：Cloudflare 官方定价页点名 7 个「需要付费
+计费方式」的模型（Kimi K2.6/K2.7-code、GLM-5.2/5.3/5.3-flash、DeepSeek V4 Flash/V4 Pro），
+免费计划调用返回 403（内部错误 5035）；模型搜索接口对这些模型返回 property
+`require_workers_paid=true`，与官方清单逐条吻合。`_fetch_cf_models` 据此过滤——免费账号
+选到它们也只会 403，选前就应挡住。`PUT /chat-provider` 的清单校验用同一份过滤后清单。
 
 **关注引导字段**（`WeChatAccountOut`）：除原有字段外新增
 `gzh_name`（对外号名，替换 `{{号名}}`）、`slogan`（关注卡副标，替换 `{{slogan}}`）、

@@ -60,6 +60,13 @@ class Message(Base):
     # 只给人看：build_context 不回灌模型（省 token，且避免 provider 兼容问题）。
     reasoning: Mapped[str] = mapped_column(Text, default="")
 
+    # 模型调用失败的错误信息（随这条 assistant 回复持久化）。
+    # SSE 一旦 200 就改不了状态码，错误只能以事件形式推给前端 —— 不落库的话，
+    # 刷新/重进会话这条错误就没了，出问题无法回溯（2026-10-23 用户要求记录）。
+    # 回灌上下文时跳过（见 services/conversation.build_context）：错误占位行
+    # 往往没有正文，塞给模型只会干扰它。
+    error: Mapped[str] = mapped_column(Text, default="")
+
     # Function Calling 相关
     tool_calls: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     tool_call_id: Mapped[str | None] = mapped_column(String(64), nullable=True)

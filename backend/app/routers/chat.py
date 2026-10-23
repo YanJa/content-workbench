@@ -171,6 +171,9 @@ async def chat_stream(
         # 否则历史回显只剩干巴巴的正文。
         collected_text = ""
         collected_reasoning = ""
+        # 模型调用失败的错误信息（SSE 已 200，错误只能以事件推给前端）。
+        # 随这条回复落库：失败轮次常一个字都没吐出来，不记就彻底没法回溯。
+        collected_error = ""
         # 展示型工具痕迹：[{id, name, arguments, result, status}]，按发生顺序
         tool_trace: list[dict] = []
         usage = {"prompt_tokens": 0, "completion_tokens": 0}
@@ -218,6 +221,12 @@ async def chat_stream(
                 if rec:
                     rec["result"] = event.get("result") or {}
                     rec["status"] = "error" if event["result"].get("error") else "done"
+            elif etype == "error":
+                # 模型调用失败（凭证失效 / 模型不存在 / 超长 / CF 未配置 …）。
+                # 事件照常推给前端（下面的 yield），同时攒下来随这条回复落库。
+                # run_chat 收到 error 后立即 return，流到此结束 —— 走到下面的
+                # 落库块时四类累积器可能全空，所以判据里必须带上 error。
+                collected_error = (event.get("message") or "")[:2000]
             elif etype == "tool_confirm":
                 # 危险工具：先把「到目前为止」的这条回复落库，等用户确认后由
                 # /chat/confirm 把结果回填到同一行的 tool_calls.calls 里。
@@ -246,13 +255,16 @@ async def chat_stream(
                 await db.commit()
                 collected_text = ""
                 collected_reasoning = ""
+                collected_error = ""
                 tool_trace = []
 
             yield _sse(event)
 
         # 正文落库（含思维链与工具痕迹）。
-        # 注意：没有正文但有工具调用时也要落行 —— 那种回复整条都是工具动作。
-        if collected_text or collected_reasoning or tool_trace:
+        # 注意：没有正文但有工具调用时也要落行 —— 那种回复整条都是工具动作；
+        # 同理，模型调用失败（一个字没吐出来）也要落一行，只带 error 字段，
+        # 历史回显时这条失败才看得见（2026-10-23 用户要求：错误要可回溯）。
+        if collected_text or collected_reasoning or tool_trace or collected_error:
             await conv_svc.add_message(
                 db,
                 conv.id,
@@ -262,16 +274,18 @@ async def chat_stream(
                 tool_calls={"calls": tool_trace} if tool_trace else None,
                 prompt_tokens=usage["prompt_tokens"],
                 completion_tokens=usage["completion_tokens"],
+                error=collected_error,
                 msg_id=req.assistant_msg_id,
             )
             await db.commit()
 
         logger.info(
-            "对话完成 conv=%s tokens=%s/%s tools=%s",
+            "对话完成 conv=%s tokens=%s/%s tools=%s error=%s",
             conv.id,
             usage["prompt_tokens"],
             usage["completion_tokens"],
             tools_used,
+            collected_error[:120] or None,
         )
 
     return StreamingResponse(

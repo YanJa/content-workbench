@@ -350,11 +350,29 @@ def fake_httpx(monkeypatch):
     settings_router._CF_MODELS_CACHE.clear()
 
 
-def _cf_model(name: str, task: str = "Text Generation", deprecated: bool = False) -> dict:
-    props = [{"name": "task", "value": task}]
+def _cf_model(
+    name: str,
+    task: str = "Text Generation",
+    deprecated: bool = False,
+    paid: bool = False,
+) -> dict:
+    """按模型搜索接口的**真实结构**造条目（2026-10-23 实测校正）。
+
+    老版本这里把 task / deprecated 塞进 properties 且用 "name" 作键 ——
+    真实响应的 property 键名是 property_id、task 在顶层对象里。照着错结构
+    写的过滤器永远不命中（空转），实现侧已修正，夹具跟着改。
+    """
+    props = []
     if deprecated:
-        props.append({"name": "deprecated", "value": True})
-    return {"name": name, "description": f"desc of {name}", "properties": props}
+        props.append({"property_id": "deprecated", "value": True})
+    if paid:
+        props.append({"property_id": "require_workers_paid", "value": True})
+    return {
+        "name": name,
+        "description": f"desc of {name}",
+        "task": {"id": "t1", "name": task},
+        "properties": props,
+    }
 
 
 def test_fetch_cf_models_filters_and_caches(monkeypatch, fake_httpx):
@@ -367,6 +385,7 @@ def test_fetch_cf_models_filters_and_caches(monkeypatch, fake_httpx):
                 _cf_model("@cf/mistral/mistral-7b-instruct-v0.1"),
                 _cf_model("@cf/old/model", deprecated=True),  # 剔除
                 _cf_model("@cf/black-forest-labs/flux-1-schnell", task="Text-to-Image"),  # 非对话，剔除
+                _cf_model("@cf/moonshotai/kimi-k2.6", paid=True),  # 需 Workers Paid，剔除（2026-10-23）
                 {"name": "not-cf", "description": ""},  # 非 @cf/ 前缀，剔除
             ],
         }
@@ -375,6 +394,7 @@ def test_fetch_cf_models_filters_and_caches(monkeypatch, fake_httpx):
         assert "@cf/meta/llama-3.1-8b-instruct" in names
         assert "@cf/mistral/mistral-7b-instruct-v0.1" in names
         assert not any("old" in n or "flux" in n or n == "not-cf" for n in names)
+        assert "kimi" not in " ".join(names), "付费模型不进免费清单"
         assert names[0].startswith("@cf/meta"), "llama 系排前面（默认模型优先可见）"
         # 缓存命中：第二次不再打 CF
         assert _FakeHttpxClient.calls == 1

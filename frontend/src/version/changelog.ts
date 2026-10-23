@@ -22,6 +22,16 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '1.4.1',
+    date: '2026-10-23',
+    title: '模型调用错误可回溯 + Cloudflare 只显示免费模型',
+    highlights: [
+      '对话时模型调用返回的错误信息现在会随当轮回复一起记录：刷新页面、重进会话，那条红色的错误提示依然在，出问题能回头查（此前错误只在当次对话里闪一下）。',
+      'Cloudflare 模型下拉只显示免费计划可用的模型：Kimi K2、GLM-5、DeepSeek V4 Pro 等需要 Workers Paid 计划的模型已过滤——免费账号选到它们只会收到 403，选前就帮您挡住。',
+      '已保存的 Cloudflare 模型若不在免费清单里（升级前存的付费模型），系统设置页会标红提示「不可用，需重选」，一键改回免费模型即可。',
+    ],
+  },
+  {
     version: '1.4.0',
     date: '2026-10-21',
     title: '知识库：给 AI 的私有素材库',

@@ -78,6 +78,8 @@ _SQLITE_COLUMN_PATCHES: dict[str, dict[str, str]] = {
     # 消息表：推理模型的思维链。老库的消息行补一列空串，回显时不显示折叠块。
     "messages": {
         "reasoning": "TEXT DEFAULT ''",
+        # 模型调用错误信息：老库消息行补空串，无错误时不显示红色提示条。
+        "error": "TEXT DEFAULT ''",
     },
     # RBAC：用户表加角色与停用标记。老库已有用户行，所以两列都必须带
     # DEFAULT —— 补出来的是 'member' / 1，真正的管理员由启动时自愈
