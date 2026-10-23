@@ -666,3 +666,114 @@ def tmp_path_zip():
 
 
 import pathlib  # noqa: E402
+
+
+# ---------------------------------------------------------------- 编辑内容
+
+
+def test_update_skill_text_roundtrip(tmp_path):
+    async def go():
+        engine, Maker = await _mk_session(tmp_path)
+        async with Maker() as db:
+            s, _ = await skill_svc.upsert_skill(db, "o1", GOOD_MD, "SKILL.md")
+            await db.commit()
+            sid = s.id
+
+            newer = GOOD_MD.replace(
+                "description: 写公众号爆款标题。当用户要起标题、改标题、要更吸引人时使用。",
+                "description: 写知乎爆款标题。当用户要起标题、改标题时使用。",
+            ).replace("# 怎么做", "# 新做法")
+            updated, err = await skill_svc.update_skill_text(db, "o1", sid, newer)
+            assert err == ""
+            assert updated.description.startswith("写知乎爆款标题")
+            assert "# 新做法" in updated.body
+            assert updated.status == "ready" and updated.error == ""
+            assert updated.name == "wechat-hot-title"  # name 不动
+            await db.commit()
+
+            # 坏内容原样不动
+            bad, err2 = await skill_svc.update_skill_text(db, "o1", sid, "# 没有 frontmatter")
+            assert bad is None and "frontmatter" in err2
+            after = await skill_svc.get_skill(db, "o1", sid)
+            assert "# 新做法" in after.body
+
+            # 想在这里改名 → 拒绝
+            renamed = GOOD_MD.replace("name: wechat-hot-title", "name: zhihu-hot-title")
+            _, err3 = await skill_svc.update_skill_text(db, "o1", sid, renamed)
+            assert "name" in err3
+
+            # 不存在的 id
+            _, err4 = await skill_svc.update_skill_text(db, "o1", "nope", GOOD_MD)
+            assert err4 == "技能不存在"
+        await engine.dispose()
+
+    _run(go())
+
+
+def test_update_skill_text_fixes_invalid(tmp_path):
+    """invalid 的技能（如之前导入失败的）可以通过编辑救活。"""
+    async def go():
+        engine, Maker = await _mk_session(tmp_path)
+        async with Maker() as db:
+            s, _ = await skill_svc.upsert_skill(db, "o1", GOOD_MD, "SKILL.md")
+            await db.commit()
+            sid = s.id
+            # 手动搞成 invalid（模拟导入失败留下的行）
+            s.status = "invalid"
+            s.error = "frontmatter 缺少 description"
+            s.description = ""
+            s.body = ""
+            await db.commit()
+
+            updated, err = await skill_svc.update_skill_text(db, "o1", sid, GOOD_MD)
+            assert err == ""
+            assert updated.status == "ready"
+            assert updated.error == ""
+            assert updated.description != ""
+            await db.commit()
+        await engine.dispose()
+
+    _run(go())
+
+
+def test_route_patch_text(tmp_path):
+    async def go():
+        engine, Maker = await _mk_session(tmp_path)
+        async with Maker() as db:
+            created = await skills_router.create_skill(
+                skills_router.SkillCreate(text=GOOD_MD), db=db, owner="o1", _perm=_perm()
+            )
+            await db.commit()
+            sid = created.id
+
+            newer = GOOD_MD.replace("# 怎么做", "# 改过的做法")
+            out = await skills_router.patch_skill(
+                sid,
+                skills_router.SkillPatch(text=newer),
+                db=db,
+                owner="o1",
+                _perm=_perm(),
+            )
+            await db.commit()
+            assert out.status == "ready"
+            assert "# 改过的做法" in out.body
+
+            # 坏内容 → 400，且原内容不动
+            try:
+                await skills_router.patch_skill(
+                    sid,
+                    skills_router.SkillPatch(text="空的"),
+                    db=db,
+                    owner="o1",
+                    _perm=_perm(),
+                )
+                raise AssertionError("应当 400")
+            except HTTPException as e:
+                assert e.status_code == 400
+            after = await skills_router.patch_skill(
+                sid, skills_router.SkillPatch(enabled=True), db=db, owner="o1", _perm=_perm()
+            )
+            assert "# 改过的做法" in after.body
+        await engine.dispose()
+
+    _run(go())

@@ -180,6 +180,7 @@ const detail = ref<Skill | null>(null)
 
 function openDetail(s: Skill) {
   detail.value = s
+  editing.value = false
   detailShow.value = true
 }
 
@@ -217,6 +218,55 @@ async function doRename() {
     message.success('已改名')
   } catch (e) {
     message.error((e as Error).message || '改名失败')
+  }
+}
+
+// ---------------------------------------------------------------- 编辑内容
+// 详情弹窗内切换「查看 / 编辑」。name 不可在此改（改名有独立入口），
+// zip 附件也不受编辑影响——要换附件只能重新上传 zip（同名覆盖）。
+const editing = ref(false)
+const editDesc = ref('')
+const editBody = ref('')
+const editSaving = ref(false)
+
+function startEdit() {
+  const d = detail.value
+  if (!d) return
+  editDesc.value = d.description || ''
+  editBody.value = d.body || ''
+  editing.value = true
+}
+
+function cancelEdit() {
+  editing.value = false
+}
+
+async function saveEdit() {
+  const d = detail.value
+  if (!d) return
+  const desc = editDesc.value.trim()
+  if (!desc) {
+    message.warning('「什么时候用」不能空——模型靠它决定要不要激活这个技能')
+    return
+  }
+  if (!editBody.value.trim()) {
+    message.warning('正文不能空——正文才是技能的「怎么做」')
+    return
+  }
+  editSaving.value = true
+  try {
+    // description 用 YAML 折叠块（>）拼回去：内容里带冒号/引号都不会炸解析
+    const text = `---\nname: ${d.name}\ndescription: >\n  ${desc}\n---\n\n${editBody.value.replace(/^\n+/, '')}\n`
+    const updated = await patchSkill(d.id, { text })
+    detail.value = updated
+    const row = skills.value.find((s) => s.id === d.id)
+    if (row) Object.assign(row, updated)
+    editing.value = false
+    message.success('内容已更新')
+  } catch (e) {
+    message.error((e as Error).message || '保存失败')
+  } finally {
+    editSaving.value = false
   }
 }
 
@@ -535,13 +585,53 @@ const columns = computed<DataTableColumns<Skill>>(() => [
           </span>
         </div>
       </div>
-      <div class="sk-detail-body-title">完整说明（AI 激活时读到的原文）</div>
-      <NCode
-        :code="detail.body || '（无正文）'"
-        language="markdown"
-        word-wrap
-        style="max-height: 44vh; overflow: auto"
-      />
+      <template v-if="!editing">
+        <div class="sk-detail-body-title">完整说明（AI 激活时读到的原文）</div>
+        <NCode
+          :code="detail.body || '（无正文）'"
+          language="markdown"
+          word-wrap
+          style="max-height: 44vh; overflow: auto"
+        />
+        <div class="sk-detail-foot">
+          <IconTextBtn
+            name="edit"
+            size="small"
+            :disabled="manageGate.blocked.value"
+            @click="startEdit"
+          >编辑内容</IconTextBtn>
+        </div>
+      </template>
+      <div v-else class="sk-edit">
+        <div class="sk-edit-label">什么时候用（description）</div>
+        <NInput
+          v-model:value="editDesc"
+          placeholder="做什么，什么时候用——模型靠它决定要不要激活这个技能"
+        />
+        <div class="sk-edit-label">正文（具体做法）</div>
+        <NInput
+          v-model:value="editBody"
+          type="textarea"
+          :autosize="{ minRows: 12, maxRows: 24 }"
+          style="font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px"
+        />
+        <div class="sk-edit-btns">
+          <NText depth="3" style="font-size: 12px">
+            name（<b>{{ detail.name }}</b>）不能在这里改，要改名用表格里的「改名」；
+            zip 附件也不受编辑影响，换附件请重新上传 zip
+          </NText>
+          <div class="sk-edit-btns-r">
+            <IconTextBtn name="close" size="small" @click="cancelEdit">取消</IconTextBtn>
+            <IconTextBtn
+              name="check"
+              size="small"
+              type="primary"
+              :loading="editSaving"
+              @click="saveEdit"
+            >保存</IconTextBtn>
+          </div>
+        </div>
+      </div>
     </template>
   </NModal>
 </template>
@@ -641,6 +731,33 @@ const columns = computed<DataTableColumns<Skill>>(() => [
 .sk-file-tag {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11.5px;
+}
+.sk-detail-foot {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 10px;
+}
+.sk-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.sk-edit-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--app-text-2, #666);
+}
+.sk-edit-btns {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.sk-edit-btns-r {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
 }
 .sk-detail-body-title {
   font-size: 12px;

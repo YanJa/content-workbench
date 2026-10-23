@@ -54,6 +54,9 @@ class SkillCreate(BaseModel):
 class SkillPatch(BaseModel):
     enabled: bool | None = None
     name: str | None = None
+    # 完整的 SKILL.md 内容（含 frontmatter）。name 必须与现有一致——
+    # 改名走 name 字段，两边查重/规范校验不重复。
+    text: str | None = None
 
 
 def _out(s: Skill) -> SkillOut:
@@ -302,13 +305,17 @@ async def patch_skill(
     owner: str = Depends(current_owner_id),
     _perm: User = Depends(require_use("skill.manage", "skill")),
 ):
-    """启用/停用、改名。"""
+    """启用/停用、改名、改内容（text 传完整 SKILL.md）。"""
     if req.enabled is not None:
         skill = await skill_svc.set_enabled(db, owner, skill_id, req.enabled)
         if skill is None:
             raise HTTPException(404, "技能不存在")
     if req.name is not None:
         skill, err = await skill_svc.rename_skill(db, owner, skill_id, req.name)
+        if skill is None:
+            raise HTTPException(400 if err else 404, err or "技能不存在")
+    if req.text is not None:
+        skill, err = await skill_svc.update_skill_text(db, owner, skill_id, req.text)
         if skill is None:
             raise HTTPException(400 if err else 404, err or "技能不存在")
     skill = await skill_svc.get_skill(db, owner, skill_id)

@@ -62,7 +62,7 @@ export async function importSkillUrl(url: string): Promise<Skill> {
 
 export async function patchSkill(
   id: string,
-  patch: { enabled?: boolean; name?: string },
+  patch: { enabled?: boolean; name?: string; text?: string },
 ): Promise<Skill> {
   const { data } = await http.patch(`/skills/${id}`, patch)
   return data

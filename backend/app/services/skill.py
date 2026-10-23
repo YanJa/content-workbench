@@ -444,6 +444,35 @@ async def rename_skill(
     return skill, ""
 
 
+async def update_skill_text(
+    db: AsyncSession, owner: str, skill_id: str, text: str
+) -> tuple[Skill | None, str]:
+    """修改已存在技能的正文（description + body），name 不变。
+
+    返回 (skill, error)。两条纪律与 upsert_skill 一致：
+      - 解析失败原样不动（别让一次手滑把好技能改没）；
+      - name 只能走 rename_skill 改 —— 那边有查重和规范校验，这里重复一遍必歪。
+    """
+    skill = await get_skill(db, owner, skill_id)
+    if skill is None:
+        return None, "技能不存在"
+    try:
+        parsed = parse_skill(text, f"{skill.name}.md")
+    except SkillParseError as exc:
+        return None, f"格式有误，原内容未改动：{exc}"
+    if parsed["name"] != skill.name:
+        return None, "frontmatter 里的 name 不能修改，要改名请用「改名」"
+    skill.description = parsed["description"]
+    skill.body = parsed["body"]
+    skill.status = "ready"
+    skill.error = ""
+    skill.meta = {"frontmatter": parsed["extra"]} if parsed["extra"] else None
+    skill.updated_at = int(time.time())
+    await db.flush()
+    logger.info("skill `%s` 内容已更新", skill.name)
+    return skill, ""
+
+
 # ---------------------------------------------------------------- catalog / 激活
 
 # catalog 的注入头。和 KNOWLEDGE_HEADER 同样的措辞纪律：
