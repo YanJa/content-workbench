@@ -25,6 +25,7 @@ import shutil
 import sys
 import uuid
 from pathlib import Path
+from typing import Any
 
 from app.core.config import settings
 from app.core.logging import logger
@@ -51,12 +52,15 @@ _TRANSLATE_SYS = (
 )
 
 
-async def _translate_prompt(prompt: str) -> str:
+async def _translate_prompt(prompt: str, owner: str | None = None) -> str:
     """把中文配图描述译成 flux 友好的英文提示词。
 
     只在**含 CJK 字符**时才翻（纯英文描述模型本来就懂）。翻译失败 /
     LLM 未配置 / 结果异常（翻回来还是中文、空、过长）一律回落原提示词——
     翻译是增强，不能因为它把生图整个挡死。
+
+    走模型池的 image_prompt_translate 槽（2026-10-24）：以前这里 `LLMClient()`
+    新建实例、而且**不传 usage_sink** —— 这笔调用从来没进过用量账。
     """
     if not settings.CLOUDFLARE_IMAGE_TRANSLATE:
         return prompt
@@ -64,16 +68,23 @@ async def _translate_prompt(prompt: str) -> str:
         return prompt
 
     try:
-        from app.services.llm import LLMClient
+        from app.db.session import SessionLocal
+        from app.services.llm import get_llm
+        from app.services.usage import make_sink
 
-        client = LLMClient()
-        res = await client.chat(
-            messages=[
-                {"role": "system", "content": _TRANSLATE_SYS},
-                {"role": "user", "content": prompt},
-            ],
-            task="lightweight",
-        )
+        # 生图是后台任务，没有请求级 session —— 自开一个（照 knowledge.py 的惯例）
+        async with SessionLocal() as db:
+            res = await get_llm().chat(
+                messages=[
+                    {"role": "system", "content": _TRANSLATE_SYS},
+                    {"role": "user", "content": prompt},
+                ],
+                task="lightweight",
+                feature="image_prompt_translate",
+                owner=owner,
+                usage_sink=make_sink(db, owner=owner or "default", scene="imagegen"),
+            )
+            await db.commit()
         out = (res.content or "").strip().strip('"').strip()
         # sanity：非空、别又把中文吐回来、别长到离谱
         if out and not _CJK_RE.search(out) and len(out) <= 400:
@@ -100,6 +111,24 @@ def script_configured() -> bool:
 def cloudflare_configured() -> bool:
     """Cloudflare Workers AI 文生图是否可用（需 token + account_id）。"""
     return bool(settings.CLOUDFLARE_API_TOKEN and settings.CLOUDFLARE_ACCOUNT_ID)
+
+
+async def remote_ready(owner: str | None = None, db: Any = None) -> bool:
+    """「远程生图」通道是否可用：模型池的 image 槽，或老的 CF 直连。
+
+    2026-10-24：模型池上线后 CF 不再是唯一的远程通道。上层（路由层的前置
+    校验、状态面板）应该用这个，而不是 `cloudflare_configured()` —— 后者只认
+    .env，池里配了别的厂商也会被判成「未配置」。
+    """
+    if cloudflare_configured():
+        return True
+    try:
+        from app.services.model_pool import resolve_for
+
+        return await resolve_for("image", owner, db) is not None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("模型池生图通道探测失败: %s", exc)
+        return False
 
 
 async def _run_script(prompt: str, size: str, n: int, out_dir: Path) -> list[Path]:
@@ -164,25 +193,76 @@ async def _run_script(prompt: str, size: str, n: int, out_dir: Path) -> list[Pat
 
 
 async def generate_image(
-    prompt: str, size: str = "", n: int = 1, out_dir: Path | None = None, provider: str = "script"
+    prompt: str,
+    size: str = "",
+    n: int = 1,
+    out_dir: Path | None = None,
+    provider: str = "script",
+    owner: str | None = None,
+    db: Any = None,
 ) -> list[Path]:
     """生成 n 张图，返回文件路径列表。out_dir 为空则用默认临时目录。
 
-    provider:
+    provider（沿用前端既有取值，语义已扩展）:
       - "script"（默认）：调本地生图脚本（IMAGE_SCRIPT）；
-      - "cloudflare"：调 Cloudflare Workers AI 文生图。
+      - "cloudflare"：**远程生图**——优先走模型池的 image 槽（可以是 CF，
+        也可以是火山/硅基/百炼等任何配进来的厂商），池里没有可用的才回落
+        .env 里的 Cloudflare 直连。名字是历史遗留，不是「只能用 CF」。
     """
     out = out_dir or (Path(settings.UPLOAD_DIR) / "gen" / "_tmp")
     out.mkdir(parents=True, exist_ok=True)
 
     if provider == "cloudflare":
-        if not cloudflare_configured():
-            raise RuntimeError("未配置 Cloudflare（CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID）")
-        return await _run_cloudflare(prompt, n, out)
+        return await _run_remote(prompt, n, out, owner=owner, db=db)
 
     if not script_configured():
         raise RuntimeError("未配置生图脚本（IMAGE_SCRIPT）")
     return await _run_script(prompt, size or settings.IMAGE_SIZE, n, out)
+
+
+async def _run_remote(
+    prompt: str, n: int, out_dir: Path, owner: str | None = None, db: Any = None
+) -> list[Path]:
+    """远程生图：模型池优先，.env 的 CF 通道兜底。
+
+    这个「兜底」不是保守，是必须的：模型池是后加的增强，池里一条 image
+    模型都没配（或全被额度熔断）时，老用户点生图不能突然就不可用了。
+    """
+    from app.services.model_pool import resolve_for
+
+    spec = None
+    try:
+        spec = await resolve_for("image", owner, db)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("模型池解析生图模型失败，回落 .env 通道: %s", exc)
+
+    if spec is None:
+        if not cloudflare_configured():
+            raise RuntimeError(
+                "没有可用的生图模型：模型池的「文生图」槽为空，"
+                "且未配置 Cloudflare（CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID）"
+            )
+        return await _run_cloudflare(prompt, n, out_dir)
+
+    # 中文提示词翻译是 CF flux 的专属补丁：它对中文语义基本不识。国内厂商的
+    # 文生图模型中文理解普遍没问题，翻译反而会丢语义——只给 CF 开。
+    if spec.provider_key == "cloudflare":
+        prompt = await _translate_prompt(prompt, owner)
+    return await _run_pool(spec, prompt, n, out_dir)
+
+
+async def _run_pool(spec: Any, prompt: str, n: int, out_dir: Path) -> list[Path]:
+    """走模型池执行器生图，把字节存盘。"""
+    from app.services import model_exec
+
+    logger.info("模型池生图: %s / %s (n=%d)", spec.provider_key, spec.model, n)
+    raw_list = await model_exec.run_image(spec, prompt, n=n, size=settings.IMAGE_SIZE)
+    out_paths: list[Path] = []
+    for raw in raw_list:
+        dest = out_dir / f"pool_{uuid.uuid4().hex[:12]}.png"
+        dest.write_bytes(raw)
+        out_paths.append(dest)
+    return out_paths
 
 
 async def _run_cloudflare(prompt: str, n: int, out_dir: Path) -> list[Path]:

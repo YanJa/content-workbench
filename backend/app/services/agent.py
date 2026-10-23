@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import logger
 from app.services.llm import get_llm
+from app.services.model_pool import resolve_for
 from app.tools.registry import registry
 
 # 单轮对话里最多允许的"模型→工具→模型"循环次数，防止失控
@@ -116,6 +117,10 @@ async def run_chat(
     from app.services.usage import make_sink
 
     llm = get_llm()
+    # 模型池：整条回答只解析一次模型。
+    # 每轮工具循环都重新解析的话，可能第 1 轮用模型 A、第 3 轮 A 的额度刚好
+    # 耗尽换成 B —— 同一条回答里风格突变，用户会很困惑。
+    spec = await resolve_for(ctx.get("feature") or "chat", ctx.get("owner"), ctx.get("db"))
     # schemas_for(ctx)：动态工具（activate_skill）的 enum 要按本次 owner 算，
     # 静态的 schemas() 只会给出一个 enum 为空的空壳。
     tools = await registry.schemas_for(ctx)
@@ -123,7 +128,7 @@ async def run_chat(
     provider = ctx.get("provider") or "deepseek"
     model_override = ctx.get("model_override") or None
     convo = list(messages)
-    if provider == "cloudflare":
+    if spec is not None and not spec.supports_tools or provider == "cloudflare":
         # CF 的 llama 系模型不支持 function calling：① 不带 tools（工具循环
         # 自然不会触发，pending_tools 恒为空）；② 历史消息里的工具痕迹必须剥掉
         # —— build_context 会把带 tool_calls 的 assistant 行展开成
@@ -152,6 +157,9 @@ async def run_chat(
             usage_sink=sink,
             provider=provider,
             model_override=model_override,
+            feature=ctx.get("feature") or "chat",
+            owner=ctx.get("owner"),
+            preferred=spec,
         ):
             etype = evt["type"]
 
@@ -175,6 +183,10 @@ async def run_chat(
             elif etype == "error":
                 yield evt
                 return
+
+            else:
+                # 额度预警 / 模型切换这类展示型事件直接透传，别被这层吞掉
+                yield evt
 
         # 没有工具调用 → 本轮结束
         if not pending_tools:

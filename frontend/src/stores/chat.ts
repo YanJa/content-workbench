@@ -37,6 +37,14 @@ export const useChatStore = defineStore('chat', () => {
    */
   const useSkills = ref(true)
 
+  /**
+   * 本轮的「环境提示」：额度预警 / 自动切换模型。
+   *
+   * 刻意**不塞进消息列表**：它不是对话内容，也不该进历史（重载后消失正好——
+   * 额度是当下的状态，昨天用尽了不代表今天还用尽）。
+   */
+  const modelNotice = ref<{ kind: 'info' | 'warning'; text: string } | null>(null)
+
   let controller: AbortController | null = null
 
   async function loadConversations() {
@@ -96,6 +104,7 @@ export const useChatStore = defineStore('chat', () => {
     currentId.value = null
     messages.value = []
     platform.value = null
+    modelNotice.value = null
   }
 
   async function removeConversation(id: string) {
@@ -118,6 +127,8 @@ export const useChatStore = defineStore('chat', () => {
     if (!text.trim() || streaming.value) return
 
     messages.value.push({ id: uid(), role: 'user', content: text })
+    // 上一轮的额度/切换提示不跨轮保留：那是当时的状态，不是本轮的事实
+    modelNotice.value = null
 
     const assistant: ChatMessage = {
       id: uid(),
@@ -196,6 +207,24 @@ export const useChatStore = defineStore('chat', () => {
               last.error = evt.message
               break
 
+            /**
+             * 额度预警 / 自动切换模型：这两个事件不属于任何一条消息，
+             * 是「本轮调用的环境变化」，单独放一条页面级提示。
+             *
+             * 切模型必须让用户看见：同一句提问，用免费小模型和用付费大模型
+             * 的产出质量差很远，用户以为是「系统今天变笨了」，其实是换模型了。
+             */
+            case 'quota_warning':
+              modelNotice.value = {
+                kind: evt.level === 'exhausted' ? 'warning' : 'info',
+                text: evt.message,
+              }
+              break
+
+            case 'model_switched':
+              modelNotice.value = { kind: 'info', text: evt.message }
+              break
+
             case 'done':
               last.streaming = false
               break
@@ -259,6 +288,7 @@ export const useChatStore = defineStore('chat', () => {
     platform,
     useKnowledge,
     useSkills,
+    modelNotice,
     loadConversations,
     openConversation,
     newConversation,

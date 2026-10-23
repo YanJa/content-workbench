@@ -687,6 +687,20 @@ async function restoreFromQueue() {
           @jump="onJumpToTurn"
         />
         <NScrollbar ref="scrollRef" class="msg-scroll" @scroll="onMsgScroll">
+          <!-- 本轮的环境提示：额度预警 / 自动切换了模型。
+               必须让用户看见 —— 同一句提问，免费小模型与付费大模型的产出
+               质量差很远，不提示的话用户只会觉得「系统今天变笨了」。 -->
+          <NAlert
+            v-if="chat.modelNotice"
+            :type="chat.modelNotice.kind"
+            :bordered="false"
+            closable
+            class="model-notice"
+            @close="chat.modelNotice = null"
+          >
+            {{ chat.modelNotice.text }}
+          </NAlert>
+
           <!-- 空态：不要用 NEmpty 的画布（它会渲染自带的「无数据」占位图），
                首屏欢迎内容自己排版更干净 -->
           <div v-if="!chat.messages.length" class="welcome">
@@ -1385,6 +1399,12 @@ async function restoreFromQueue() {
 
 .msg-alert {
   margin-top: 10px;
+}
+
+/* 额度预警 / 模型切换提示：贴在消息区顶部，随消息一起滚动 */
+.model-notice {
+  margin: 0 0 10px;
+  font-size: 12.5px;
 }
 
 .confirm-body {

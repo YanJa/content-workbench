@@ -90,6 +90,10 @@ export type SSEEvent =
     }
   | { type: 'done'; finish_reason: string }
   | { type: 'error'; message: string }
+  /** 模型额度预警（80% / 100%）。后端 model_pool.take_warnings 产出 */
+  | { type: 'quota_warning'; level: 'warn' | 'exhausted'; feature: string; model: string; label: string; ratio: number; message: string }
+  /** 开流阶段失败 → 已自动切到备选模型（已产出正文则不切换） */
+  | { type: 'model_switched'; from: string; to: string; message: string }
 
 /** 工具定义 */
 export interface ToolInfo {
@@ -241,6 +245,11 @@ export interface KnowledgeStats {
   /** 向量化通道是否已配置（没配则检索退化为关键词匹配） */
   vector_ready: boolean
   embed_model: string
+  /**
+   * 「已就绪但向量不属于当前模型」的片段数。
+   * 非 0 = 换过 embedding 模型，这些片段检索不到（不报错，只是漏召回）。
+   */
+  stale_chunks: number
 }
 
 export interface KnowledgeHit {
@@ -320,4 +329,142 @@ export interface PlatformMeta {
   icon: string
   color: string
   tagline: string
+}
+
+// ------------------------------------------------------------------ 模型池
+
+/** 功能槽元信息（后端 FEATURES 的展示层） */
+export interface ModelFeature {
+  key: string
+  name: string
+  /** 默认任务档位（模型没配 temperature/max_tokens 时用） */
+  task: string
+  /** 是否禁止备选链（embedding：换模型 = 旧向量全废，不能靠降级换） */
+  no_fallback: boolean
+}
+
+export interface PoolMeta {
+  features: ModelFeature[]
+  protocols: string[]
+  capabilities: string[]
+}
+
+/** 服务商（api_key 已脱敏） */
+export interface ModelProviderRow {
+  id: string
+  key: string
+  name: string
+  kind: 'openai' | 'cloudflare'
+  base_url: string
+  api_key: string
+  has_key: boolean
+  enabled: boolean
+  note: string
+  daily_calls_limit: number | null
+  daily_token_limit: number | null
+  monthly_token_limit: number | null
+  rpm_limit: number | null
+  quota_reset_tz: 'cst' | 'utc'
+  updated_at: number
+}
+
+/** 模型条目 */
+export interface ModelCatalogEntry {
+  id: string
+  provider_key: string
+  model_id: string
+  label: string
+  capabilities: string[]
+  protocol: string
+  context_window: number | null
+  max_tokens: number | null
+  temperature: number | null
+  supports_tools: boolean
+  supports_stream_usage: boolean
+  dimensions: number | null
+  billing: 'free' | 'paid'
+  price_in: number | null
+  price_out: number | null
+  quota_scope: 'model' | 'provider'
+  daily_calls_limit: number | null
+  daily_token_limit: number | null
+  monthly_token_limit: number | null
+  rpm_limit: number | null
+  enabled: boolean
+  last_error: string
+  /** 熔断剩余秒数，>0 表示现在正被跳过 */
+  disabled_for: number
+  sort: number
+  note: string
+  usage: Record<string, number>
+  /** 我是否在这个服务商上填了自己的 Key */
+  using_my_key?: boolean
+}
+
+/** 功能槽绑定（含后端解析出的「实际会用谁」） */
+export interface ModelBinding {
+  feature: string
+  name: string
+  task: string
+  no_fallback: boolean
+  primary: string
+  fallbacks: string[]
+  resolved: string
+  resolved_label: string
+  primary_label: string
+  updated_at: number
+}
+
+/** 远端模型清单同步出来的候选 */
+export interface SyncCandidate {
+  model_id: string
+  label: string
+  capabilities: string[]
+  protocol: string
+  /** 池里是否已存在 */
+  exists: boolean
+}
+
+/** 额度看板一行 */
+export interface QuotaRow {
+  model: string
+  label: string
+  provider: string
+  billing: string
+  /** 'system' = 烧平台 Key；否则是某个用户的 id（烧他自己的 Key） */
+  cred_owner: string
+  used: Record<string, number>
+  limits: Record<string, number>
+  ratio: number
+}
+
+export interface MyProviderKey {
+  provider_key: string
+  provider_name: string
+  using_my_key: boolean
+  api_key: string
+  enabled: boolean
+  verified_at: number | null
+}
+
+/** 流里的额度预警事件（后端 model_pool.take_warnings 产出） */
+export interface QuotaWarning {
+  type: 'quota_warning'
+  level: 'warn' | 'exhausted'
+  feature: string
+  model: string
+  label: string
+  ratio: number
+  used: Record<string, number> | null
+  limits: Record<string, number> | null
+  message: string
+}
+
+/** 流里的「已切换模型」事件（开流即失败时切下一个候选） */
+export interface ModelSwitched {
+  type: 'model_switched'
+  from: string
+  to: string
+  /** 人类可读的一句说明，直接展示 */
+  message: string
 }

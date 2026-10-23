@@ -156,8 +156,10 @@ async def chat_stream(
             "owner": owner,
             "conversation_id": conv.id,
             "scene": req.platform or conv.scene or "chat",
+            # 功能槽：run_chat 靠它去模型池里挑模型（挑不到就回落到下面的 provider）。
+            "feature": "chat",
             # 对话供应商（deepseek / cloudflare）+ 用户选的 CF 模型（空=env 默认）。
-            # 只作用于对话轮次；摘要压缩（maybe_summarize）固定走 DeepSeek。
+            # 这是模型池之前的口径，保留作兜底：池里没有可用条目时照样能跑。
             "provider": provider,
             "model_override": cf_model or None,
             # 本轮是否挂技能。run_chat 靠它决定要不要把 activate_skill 放进
@@ -205,6 +207,8 @@ async def chat_stream(
                         "completion_tokens": usage["completion_tokens"],
                         "total_tokens": usage["prompt_tokens"] + usage["completion_tokens"],
                     },
+                    # 实际生成这条回复的模型（可能已被自动切换过），前端角标用
+                    "model": event.get("model") or "",
                 }
             elif etype == "tool_call":
                 tools_used.append(event["name"])

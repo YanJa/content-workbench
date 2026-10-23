@@ -94,6 +94,16 @@ const router = createRouter({
             perm: 'menu.settings',
           },
         },
+        {
+          path: 'models',
+          name: 'model-pool',
+          component: () => import('@/views/ModelPoolView.vue'),
+          meta: {
+            title: '模型池',
+            desc: '多家厂商的模型、额度与功能绑定',
+            icon: '◫',
+          },
+        },
         // 个人中心：**刻意不进侧栏菜单**。它是按用户走的（顶栏头像下拉进入），
         // 不是按功能模块走的 —— 侧栏那一列是「活儿」，这里是「我是谁」。
         // 也不挂 perm：所有人都该能改自己的资料。

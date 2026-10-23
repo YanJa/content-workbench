@@ -44,8 +44,26 @@ def _fake_embed(texts):
     return out
 
 
-async def _fake_embed_async(texts):
+#: 假通道的「模型名」。检索按 embed_model 过滤（换模型后旧向量必须隔离），
+#: 所以种子写入的模型名必须与 `current_model()` 一致，否则会被判成过期向量。
+_FAKE_MODEL = "fake"
+
+
+async def _fake_embed_async(texts, owner=None, db=None):
     return _fake_embed(texts)
+
+
+async def _fake_embed_with_model(texts, owner=None, db=None):
+    """fake 版 `embed_with_model`：返回 (向量, 实际模型名)。"""
+    return _fake_embed(texts), _FAKE_MODEL
+
+
+async def _fake_ready(owner=None, db=None):
+    return True
+
+
+async def _fake_current_model(owner=None, db=None):
+    return _FAKE_MODEL
 
 
 @pytest.fixture()
@@ -62,6 +80,9 @@ def env(tmp_path, monkeypatch):
     asyncio.run(_init())
 
     monkeypatch.setattr(embedding, "embed_texts", _fake_embed_async)
+    monkeypatch.setattr(embedding, "embed_with_model", _fake_embed_with_model)
+    monkeypatch.setattr(embedding, "ready", _fake_ready)
+    monkeypatch.setattr(embedding, "current_model", _fake_current_model)
     monkeypatch.setattr(embedding, "configured", lambda: True)
     monkeypatch.setattr(kb, "SessionLocal", Maker)
     kb.invalidate_cache()
@@ -132,7 +153,7 @@ async def _seed(env, owner: str, texts: list[str]) -> None:
                     char_len=len(t),
                     vector=vec,
                     norm=embedding.norm_of(vec),
-                    embed_model="fake",
+                    embed_model=_FAKE_MODEL,
                     status="ready",
                 )
             )
@@ -187,7 +208,7 @@ def test_search_is_owner_isolated(env):
 def test_search_degrades_to_keyword_when_embedding_fails(env, monkeypatch):
     """向量化抛错 → 退化成关键词检索，且**不抛异常**（检索是旁路）。"""
 
-    async def boom(_texts):
+    async def boom(_texts, owner=None, db=None):
         raise RuntimeError("Cloudflare 挂了")
 
     monkeypatch.setattr(embedding, "embed_texts", boom)
@@ -292,7 +313,9 @@ def test_create_item_then_embed_task_marks_ready(env):
     item, chunks = _run(go())
     assert item.status == "ready"
     assert all(c.status == "ready" and c.vector for c in chunks)
-    assert all(c.embed_model == settings.CLOUDFLARE_EMBED_MODEL for c in chunks)
+    # 落库的是**实际算出这批向量的那个模型**（embed_with_model 的返回值），
+    # 不是配置里填的那个 —— 检索按它过滤，记错等于把素材埋进黑洞。
+    assert all(c.embed_model == _FAKE_MODEL for c in chunks)
 
 
 def test_delete_item_cascades_chunks(env):

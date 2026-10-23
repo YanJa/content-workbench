@@ -7,6 +7,13 @@ from app.models.content import Content, QueueItem  # noqa: F401
 from app.models.conversation import Conversation, Message  # noqa: F401
 from app.models.invite import InviteCode  # noqa: F401
 from app.models.knowledge import KnowledgeChunk, KnowledgeItem  # noqa: F401
+from app.models.model_pool import (  # noqa: F401
+    ModelBinding,
+    ModelCatalog,
+    ModelProvider,
+    ModelProviderKey,
+    ModelQuotaUsage,
+)
 from app.models.renderjob import RenderJob  # noqa: F401
 from app.models.settings import AppSetting, WeChatAccount  # noqa: F401
 from app.models.skill import Skill  # noqa: F401
@@ -35,6 +42,11 @@ __all__ = [
     "InviteCode",
     "KnowledgeItem",
     "KnowledgeChunk",
+    "ModelProvider",
+    "ModelProviderKey",
+    "ModelCatalog",
+    "ModelBinding",
+    "ModelQuotaUsage",
     "HotSnapshot",
     "HotTopic",
     "ZhihuApiUsage",

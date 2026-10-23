@@ -335,6 +335,28 @@ async def retry(
     return {"ok": True, "item": _out(item)}
 
 
+@router.post("/reembed-all")
+async def reembed_all(
+    db: AsyncSession = Depends(get_db),
+    owner: str = Depends(current_owner_id),
+    _perm: User = Depends(require_use("knowledge.create")),
+):
+    """重建「模型过期」的向量索引。
+
+    换过 embedding 模型（在「模型池」里把「知识库向量化」槽指向了别的模型）
+    之后必须跑一次：旧向量还在库里、状态还是 ready，但它们和当前模型的
+    query 向量不在同一个空间里，检索会**静默**漏掉全部旧素材——不报错，
+    只是什么都搜不到。这个端点把它们全部置回 pending 重新算一遍。
+
+    没有过期片段时返回 `queued: 0`，前端可以直接显示「索引已是最新」。
+    """
+    try:
+        res = await kb.reembed_stale(db, owner)
+    except kb.KnowledgeError as exc:
+        raise HTTPException(getattr(exc, "status", 400), str(exc)) from exc
+    return {"ok": True, **res}
+
+
 @router.post("/search")
 async def search(
     req: KnowledgeSearchRequest,

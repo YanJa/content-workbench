@@ -47,6 +47,7 @@ async def record(
     is_summary: bool = False,
     estimated: bool = False,
     created_at: int | None = None,
+    cred_owner: str = "system",
 ) -> LlmUsage:
     """记录一次调用的用量。
 
@@ -62,6 +63,7 @@ async def record(
         scene=scene or "chat",
         model=canonical_model(model),
         task_type=task_type or "",
+        cred_owner=cred_owner or "system",
         prompt_tokens=int(prompt_tokens or 0),
         completion_tokens=int(completion_tokens or 0),
         reasoning_tokens=int(reasoning_tokens or 0),
@@ -93,6 +95,8 @@ def make_sink(db: AsyncSession, **ctx: Any) -> Callable[[dict[str, Any]], Awaita
             db,
             model=payload.get("model", ""),
             task_type=payload.get("task", ""),
+            # 模型池会带上这次用的是谁的 Key（平台凭证 / 用户个人凭证）
+            cred_owner=payload.get("cred_owner") or "system",
             prompt_tokens=payload.get("prompt_tokens", 0),
             completion_tokens=payload.get("completion_tokens", 0),
             reasoning_tokens=payload.get("reasoning_tokens", 0),
@@ -294,6 +298,7 @@ def _row_out(r: LlmUsage) -> dict:
         "scene": r.scene,
         "model": r.model,
         "task_type": r.task_type,
+        "cred_owner": r.cred_owner or "system",
         "prompt_tokens": r.prompt_tokens,
         "completion_tokens": r.completion_tokens,
         "reasoning_tokens": r.reasoning_tokens,

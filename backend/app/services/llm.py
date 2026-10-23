@@ -20,6 +20,16 @@ from openai import AsyncOpenAI
 
 from app.core.config import settings
 from app.core.logging import logger
+from app.services.model_pool import (
+    ModelSpec,
+    SYSTEM_OWNER,
+    bump_quota,
+    mark_failure,
+    mark_success,
+    resolve_candidates,
+    resolve_model,
+    take_warnings,
+)
 
 TaskType = Literal["copywriting", "reasoning", "lightweight", "vision"]
 
@@ -150,18 +160,40 @@ def is_peak_hour() -> bool:
     return (1 <= h < 4) or (6 <= h < 10)
 
 
+def _legacy_spec(provider: str, model_override: str | None) -> ModelSpec:
+    """把老的 provider 字符串翻译成 ModelSpec。
+
+    改造前 CF 的两个特例（不传 tools、不认 stream_options）是绑在
+    `provider == "cloudflare"` 这个字符串上的；新接一家厂商就得再写一遍
+    if 判断，漏一次就是一个 400。翻译成 flags 之后，新厂商只要在池里把
+    supports_tools / supports_stream_usage 勾对就行。
+    """
+    if provider == "cloudflare":
+        return ModelSpec(
+            model=model_override or settings.CLOUDFLARE_CHAT_MODEL,
+            provider_key="cloudflare",
+            temperature=_CF_TEMPERATURE,
+            max_tokens=_CF_MAX_TOKENS,
+            supports_tools=False,
+            supports_stream_usage=False,
+        )
+    return ModelSpec(model=model_override or "", provider_key="deepseek")
+
+
 class LLMClient:
     """大模型客户端。
 
-    provider（对话供应商）维度：
-      - "deepseek"（默认）：主模型 DeepSeek + 可选 FALLBACK_* 兜底，支持工具调用；
-      - "cloudflare"：Cloudflare Workers AI（OpenAI 兼容端点
-        /client/v4/accounts/{id}/ai/v1）。不支持 function calling、
-        不支持流式 usage，失败不兜底（直接抛错让上层转 SSE error 事件）。
-    非对话任务（排版/摘要/标签）固定走 DeepSeek，不暴露 provider 参数。
+    选模型的两条路：
+      1. **老路**：provider="deepseek" / "cloudflare" 两个字符串 + model_override。
+         行为与改造前完全一致（`_legacy_spec` 保证）。
+      2. **模型池**：传 `feature="chat"` 这样的功能槽，从池里按健康度挑一个。
+         池里没有可用条目时**自动退回老路** —— 模型池是增强，不是必经之路。
+
+    非对话任务（排版/摘要/标签）以前固定走 DeepSeek，现在可以各自绑定槽位。
     """
 
     def __init__(self) -> None:
+        self._pool_clients: dict[tuple[str, str], AsyncOpenAI] = {}
         self._primary = AsyncOpenAI(
             api_key=settings.DEEPSEEK_API_KEY or "sk-placeholder",
             base_url=settings.DEEPSEEK_BASE_URL,
@@ -186,6 +218,47 @@ class LLMClient:
                 timeout=settings.LLM_TIMEOUT,
             )
 
+    def _client_for(self, spec: ModelSpec) -> AsyncOpenAI:
+        """按 spec 取客户端。
+
+        老的三个实例（primary / fallback / cloudflare）继续复用；池里新加的厂商
+        按 (provider_key, cred_owner) 缓存 —— 同一个服务商的全局 Key 和个人 Key
+        是两个不同的 client，额度也要各算各的。
+        """
+        if spec.provider_key == "deepseek":
+            return self._primary
+        if spec.provider_key == "cloudflare":
+            if self._cloudflare is None:
+                raise RuntimeError(
+                    "未配置 Cloudflare（CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID）"
+                )
+            return self._cloudflare
+        key = (spec.provider_key, spec.cred_owner)
+        client = self._pool_clients.get(key)
+        if client is None:
+            client = AsyncOpenAI(
+                api_key=spec.api_key or "sk-placeholder",
+                base_url=spec.base_url or None,
+                timeout=settings.LLM_TIMEOUT,
+            )
+            self._pool_clients[key] = client
+        return client
+
+    def _pick(
+        self,
+        provider: str,
+        model_override: str | None,
+        feature: str | None,
+        owner: str | None,
+    ) -> ModelSpec:
+        """决定这次用哪个模型：feature 命中池就用池，否则退回老路径。"""
+        if feature:
+            spec = resolve_model(feature, owner)
+            if spec is not None:
+                return spec
+            logger.info("模型池没有可用于 %s 的条目，回落环境变量通道", feature)
+        return _legacy_spec(provider, model_override)
+
     # ---------------- 非流式 ----------------
     async def chat(
         self,
@@ -195,51 +268,50 @@ class LLMClient:
         model_override: str | None = None,
         usage_sink: UsageSink | None = None,
         provider: str = "deepseek",
+        *,
+        feature: str | None = None,
+        owner: str | None = None,
     ) -> ChatResult:
-        route = MODEL_ROUTES[task]
-        model = model_override or route.model
+        spec = self._pick(provider, model_override, feature, owner)
+        route = MODEL_ROUTES.get(task, MODEL_ROUTES["copywriting"])
+        model = spec.model or route.model
+        client = self._client_for(spec)
 
-        if provider == "cloudflare":
-            # CF 通道：独立路由参数、不支持 tools、失败不兜底
-            if self._cloudflare is None:
-                raise RuntimeError(
-                    "未配置 Cloudflare（CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID）"
-                )
-            if tools:
-                logger.warning("Cloudflare 模型不支持工具调用，本次已忽略 tools")
-            cf_model = model_override or settings.CLOUDFLARE_CHAT_MODEL
-            cf = _cf_route(cf_model)
-            started = time.perf_counter()
-            try:
-                result = await self._call(self._cloudflare, cf.model, messages, cf, None)
-            except Exception as exc:  # noqa: BLE001
-                await self._emit(usage_sink, task, cf.model, Usage(), started, failed=True)
-                raise exc
-            await self._emit(usage_sink, task, result.model or cf.model, result.usage, started)
-            return result
+        if tools and not spec.supports_tools:
+            logger.warning("%s 不支持工具调用，本次已忽略 tools", spec.provider_key)
+            tools = None
 
         if settings.ENABLE_PEAK_GUARD and is_peak_hour():
             logger.warning("当前为高峰计费时段，成本翻倍。建议把批量任务移到低谷。")
 
         started = time.perf_counter()
         try:
-            result = await self._call(self._primary, model, messages, route, tools)
+            result = await self._call(client, model, messages, spec, route, tools)
         except Exception as exc:  # noqa: BLE001
-            logger.error("主模型调用失败(%s): %s", model, exc)
-            if self._fallback:
+            logger.error("模型调用失败(%s): %s", model, exc)
+            # 兜底只给 DeepSeek 主通道（CF 与新厂商失败即抛，语义同改造前）
+            if spec.provider_key == "deepseek" and self._fallback:
                 logger.info("切换到兜底模型: %s", settings.FALLBACK_MODEL)
                 try:
                     result = await self._call(
-                        self._fallback, settings.FALLBACK_MODEL, messages, route, tools
+                        self._fallback,
+                        settings.FALLBACK_MODEL,
+                        messages,
+                        _legacy_spec("deepseek", None),
+                        route,
+                        tools,
                     )
                 except Exception as exc2:  # noqa: BLE001
-                    await self._emit(usage_sink, task, model, Usage(), started, failed=True)
+                    await self._emit(usage_sink, task, model, Usage(), started, failed=True, spec=spec)
+                    await mark_failure(spec, str(exc2))
                     raise exc2 from exc
             else:
                 # 失败也要记一笔（耗时 + 0 token），否则「重试了几次」在用量页上看不出来
-                await self._emit(usage_sink, task, model, Usage(), started, failed=True)
+                await self._emit(usage_sink, task, model, Usage(), started, failed=True, spec=spec)
+                await mark_failure(spec, str(exc))
                 raise
-        await self._emit(usage_sink, task, result.model or model, result.usage, started)
+        await self._emit(usage_sink, task, result.model or model, result.usage, started, spec=spec)
+        await mark_success(spec)
         return result
 
     async def _emit(
@@ -251,12 +323,13 @@ class LLMClient:
         started: float,
         *,
         failed: bool = False,
+        spec: ModelSpec | None = None,
     ) -> None:
-        """把一次调用的用量推给埋点回调。
+        """把一次调用的用量推给埋点回调，并累加模型池额度。
 
         这里吞掉所有异常：记账失败绝不能把对话打断。
         """
-        if sink is None:
+        if sink is None and spec is None:
             return
         # 完全失败（没拿到任何 token）的调用不计费，也不该污染「调用次数」
         if failed and usage.total_tokens == 0:
@@ -266,10 +339,14 @@ class LLMClient:
             "task": task,
             "latency_ms": int((time.perf_counter() - started) * 1000),
             "failed": failed,
+            "cred_owner": spec.cred_owner if spec else SYSTEM_OWNER,
             **usage.to_dict(),
         }
         try:
-            await sink(payload)
+            if sink is not None:
+                await sink(payload)
+            if spec is not None and spec.catalog_id:
+                await bump_quota(spec, tokens=usage.total_tokens or 0)
         except Exception as exc:  # noqa: BLE001
             logger.warning("用量埋点写入失败（不影响对话）: %s", exc)
 
@@ -278,14 +355,17 @@ class LLMClient:
         client: AsyncOpenAI,
         model: str,
         messages: list[dict[str, Any]],
+        spec: ModelSpec,
         route: ModelRoute,
         tools: list[dict[str, Any]] | None,
     ) -> ChatResult:
         kwargs: dict[str, Any] = {
             "model": model,
             "messages": messages,
-            "temperature": route.temperature,
-            "max_tokens": route.max_tokens,
+            # 池条目没配参数时沿用 MODEL_ROUTES 里调过的值 —— 新加的模型不该
+            # 退化成 SDK 默认参数（那会和既有模型的表现对不上）
+            "temperature": spec.temperature if spec.temperature is not None else route.temperature,
+            "max_tokens": spec.max_tokens if spec.max_tokens is not None else route.max_tokens,
         }
         if tools:
             kwargs["tools"] = tools
@@ -335,8 +415,16 @@ class LLMClient:
         usage_sink: UsageSink | None = None,
         provider: str = "deepseek",
         model_override: str | None = None,
+        *,
+        feature: str | None = None,
+        owner: str | None = None,
+        preferred: ModelSpec | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """流式调用，逐块产出事件。
+
+        preferred：调用方已经解析好的首选模型（多轮工具循环里必须传 ——
+        每轮都重新解析的话，可能第 1 轮用 A、第 3 轮 A 的额度刚好耗尽换成 B，
+        同一条回答里风格突变）。传了它，候选链就是 [preferred, 其余候选]。
 
         产出的事件（dict）：
             {"type": "reasoning", "content": "..."}  思维链增量（可选展示，不计入正文）
@@ -345,57 +433,93 @@ class LLMClient:
             {"type": "usage", "usage": Usage}
             {"type": "finish", "finish_reason": "..."}
             {"type": "error", "message": "..."}      调用失败（SSE 已 200，只能这样告诉前端）
+            {"type": "quota_warning", ...}           额度预警（80% / 已用尽，非阻塞）
+            {"type": "model_switched", ...}          已自动切换到备用模型
 
-        provider="cloudflare" 时走 Cloudflare Workers AI：无 tools、无
-        stream_options（include_usage）、usage 缺失走估价。详见 chat() 同款注释。
+        ------------------------------------------------------------------
+        关于「自动切换到备用模型」的一条硬语义
+        ------------------------------------------------------------------
+        一旦已经开始吐正文，就**不再换模型** —— 否则用户会看到两段风格迥异的
+        正文拼接在同一条回答里。切换只发生在「开流阶段就失败、一个字都没吐」
+        的时候。这条不写进代码，上线后一定会出现拼接回答，而且极难复现。
         """
         route = MODEL_ROUTES.get(task, MODEL_ROUTES["copywriting"])
 
-        if provider == "cloudflare":
-            if self._cloudflare is None:
-                yield {
-                    "type": "error",
-                    "message": "未配置 Cloudflare（CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID）",
-                }
-                yield {"type": "finish", "finish_reason": "error"}
-                return
-            if tools:
-                logger.warning("Cloudflare 模型不支持工具调用，本次已忽略 tools")
-            cf = _cf_route(model_override or settings.CLOUDFLARE_CHAT_MODEL)
-            kwargs: dict[str, Any] = {
-                "model": cf.model,
-                "messages": messages,
-                "temperature": cf.temperature,
-                "max_tokens": cf.max_tokens,
-                "stream": True,
-                # 注意：不传 stream_options —— CF 的 /ai/v1 兼容端点不认识它，带了 400
-            }
-            if settings.ENABLE_PEAK_GUARD and is_peak_hour():
-                logger.warning("当前为高峰计费时段，成本翻倍。建议把批量任务移到低谷。")
-            async for evt in self._run_stream(
-                self._cloudflare, kwargs, task, cf.model, usage_sink
-            ):
-                yield evt
-            return
-
-        kwargs = {
-            "model": route.model,
-            "messages": messages,
-            "temperature": route.temperature,
-            "max_tokens": route.max_tokens,
-            "stream": True,
-            # 带 stream_options 才能拿到流式下的 token 用量
-            "stream_options": {"include_usage": True},
-        }
-        if tools:
-            kwargs["tools"] = tools
-            kwargs["tool_choice"] = "auto"
+        # 候选链：feature 模式下把池里所有健康候选排好队；老路径只有一个
+        if feature:
+            candidates = resolve_candidates(feature, owner)
+            if not candidates:
+                logger.info("模型池没有可用于 %s 的条目，回落环境变量通道", feature)
+                candidates = [_legacy_spec(provider, model_override)]
+            elif preferred is not None:
+                # 首选固定为调用方解析好的那个，其余候选排后面当退路
+                rest = [c for c in candidates if c.catalog_id != preferred.catalog_id]
+                candidates = [preferred] + rest
+        else:
+            candidates = [preferred or _legacy_spec(provider, model_override)]
 
         if settings.ENABLE_PEAK_GUARD and is_peak_hour():
             logger.warning("当前为高峰计费时段，成本翻倍。建议把批量任务移到低谷。")
 
-        async for evt in self._run_stream(self._primary, kwargs, task, route.model, usage_sink):
-            yield evt
+        for idx, spec in enumerate(candidates):
+            is_last = idx == len(candidates) - 1
+            model = spec.model or route.model
+            try:
+                client = self._client_for(spec)
+            except RuntimeError as exc:
+                yield {"type": "error", "message": str(exc)}
+                yield {"type": "finish", "finish_reason": "error"}
+                return
+
+            if tools and not spec.supports_tools:
+                logger.warning("%s 不支持工具调用，本次已忽略 tools", spec.provider_key)
+                tools = None
+
+            kwargs: dict[str, Any] = {
+                "model": model,
+                "messages": messages,
+                "temperature": spec.temperature if spec.temperature is not None else route.temperature,
+                "max_tokens": spec.max_tokens if spec.max_tokens is not None else route.max_tokens,
+                "stream": True,
+            }
+            # CF 的 /ai/v1 兼容端点不认识 stream_options，带了直接 400
+            if spec.supports_stream_usage:
+                kwargs["stream_options"] = {"include_usage": True}
+            if tools:
+                kwargs["tools"] = tools
+                kwargs["tool_choice"] = "auto"
+
+            # 额度预警：在开流之前推给前端，不打断正文
+            for warn in take_warnings(spec, feature or ""):
+                yield warn
+
+            state: dict[str, bool] = {"failed": False, "produced": False}
+            async for evt in self._run_stream(
+                client, kwargs, task, model, usage_sink,
+                spec=spec, emit_error=is_last, state=state,
+            ):
+                yield evt
+
+            if not state["failed"]:
+                await mark_success(spec)
+                return
+            if state["produced"]:
+                # 已经吐过正文，不能再换模型了 —— 但错误必须告诉用户，
+                # 否则流就这么静悄悄断了（emit_error 当初按「还有候选」给成了 False）
+                logger.error("模型 %s 中途失败，已产出正文，不再切换", model)
+                yield {"type": "error", "message": f"模型 {spec.display or model} 输出中断"}
+                yield {"type": "finish", "finish_reason": "error"}
+                return
+            if is_last:
+                return
+            nxt = candidates[idx + 1]
+            logger.warning("模型 %s 开流即失败，切换到候选 %s", model, nxt.model)
+            yield {
+                "type": "model_switched",
+                "from": model,
+                "to": nxt.model,
+                "message": f"{spec.display or model} 调用失败，已切换到 {nxt.display or nxt.model}",
+            }
 
     async def _run_stream(
         self,
@@ -404,6 +528,9 @@ class LLMClient:
         task: TaskType,
         model: str,
         usage_sink: UsageSink | None,
+        spec: ModelSpec | None = None,
+        emit_error: bool = True,
+        state: dict[str, bool] | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """开流 → 逐 chunk 产出事件 → 收尾。CF 与 DeepSeek 共用。
 
@@ -458,10 +585,14 @@ class LLMClient:
                 # 思维链增量：单独发事件，不和正文混在一起
                 reasoning = getattr(delta, "reasoning_content", None)
                 if reasoning:
+                    if state is not None:
+                        state["produced"] = True
                     yield {"type": "reasoning", "content": reasoning}
 
                 # 正文增量
                 if delta.content:
+                    if state is not None:
+                        state["produced"] = True
                     yield {"type": "delta", "content": delta.content}
 
                 # 工具调用增量
@@ -480,10 +611,17 @@ class LLMClient:
                                 slot["arguments"] += tc.function.arguments
         except Exception as exc:  # noqa: BLE001
             logger.error("流式调用失败(%s): %s", model, exc)
-            await self._emit(usage_sink, task, model, usage, started, failed=True)
+            await self._emit(usage_sink, task, model, usage, started, failed=True, spec=spec)
             emitted = True
-            yield {"type": "error", "message": f"模型调用失败：{exc}"}
-            yield {"type": "finish", "finish_reason": "error"}
+            if state is not None:
+                state["failed"] = True
+            if spec is not None and spec.catalog_id:
+                await mark_failure(spec, str(exc))
+            # 后面还有候选时不发 error —— 发了前端就当这次对话结束了，
+            # 切换过去的模型白跑一趟
+            if emit_error:
+                yield {"type": "error", "message": f"模型调用失败：{exc}"}
+                yield {"type": "finish", "finish_reason": "error"}
             return
         finally:
             # 兜底记账：SSE 客户端断开（切页面/关标签页）时，取消以 CancelledError
@@ -494,7 +632,7 @@ class LLMClient:
             # （CF 流式无 include_usage，完整消费时也是 estimated，语义一致）。
             # 2026-10-19 实测：UI 端到端测试一切换页面就走到了这条路径。
             if not emitted:
-                await self._emit(usage_sink, task, model, usage, started)
+                await self._emit(usage_sink, task, model, usage, started, spec=spec)
                 emitted = True
 
         # 收尾：把累积的分片解析成完整工具调用
@@ -515,11 +653,12 @@ class LLMClient:
         # 埋点在收尾处统一发一次（流式只有最后一个 chunk 带 usage）
         # （正常路径下 finally 的兜底已经发过一次，这里跳过防双记）
         if not emitted:
-            await self._emit(usage_sink, task, model, usage, started)
+            await self._emit(usage_sink, task, model, usage, started, spec=spec)
             emitted = True
 
         yield {"type": "tool_calls", "tool_calls": tool_calls}
-        yield {"type": "usage", "usage": usage}
+        # 带上模型名，前端气泡角标能显示「由 X 生成」—— 用户能自己发现被换过模型
+        yield {"type": "usage", "usage": usage, "model": model}
         yield {"type": "finish", "finish_reason": finish_reason}
 
 

@@ -33,17 +33,24 @@ class _FakeLLM:
 
 
 def _patch_llm(monkeypatch_target: dict, fake: _FakeLLM):
+    """替换 get_llm()。
+
+    2026-10-24：翻译改走模型池的 image_prompt_translate 槽之后，这里用的是
+    `get_llm()` 单例而不是 `LLMClient()` 新实例（以前每次翻译都新建一个
+    client，还不传 usage_sink —— 这笔调用从没进过用量账）。imagegen 里是
+    函数内 import，所以替换模块属性是有效的。
+    """
     import app.services.llm as llm_mod
 
-    monkeypatch_target["orig"] = llm_mod.LLMClient
-    llm_mod.LLMClient = lambda: fake
+    monkeypatch_target["orig"] = llm_mod.get_llm
+    llm_mod.get_llm = lambda: fake
 
 
 def _restore_llm(monkeypatch_target: dict):
     import app.services.llm as llm_mod
 
     if "orig" in monkeypatch_target:
-        llm_mod.LLMClient = monkeypatch_target["orig"]
+        llm_mod.get_llm = monkeypatch_target["orig"]
 
 
 async def _run():

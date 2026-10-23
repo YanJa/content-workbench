@@ -18,13 +18,14 @@ from app.core.cache import close_cache, get_cache
 from app.core.config import settings
 from app.core.logging import logger
 from app.core.tenant import current_owner_id
-from app.db.session import init_db
+from app.db.session import SessionLocal, init_db
 from app.routers import (
     admin,
     auth,
     chat,
     knowledge,
     layout,
+    model_pool,
     queue,
     revenue,
     settings as settings_router,
@@ -88,6 +89,15 @@ async def lifespan(app: FastAPI):
     await load_runtime_secret()
     asyncio.create_task(loop_hot_fetch())
 
+    # 模型池：按 .env 播种服务商与模型、迁移旧的 chat_provider 设置、
+    # 并把配置读进内存快照。放在 init_db 之后 —— 要先有表才能查。
+    # 失败只告警、不影响启动：模型池解析不到会回落环境变量通道。
+    from app.services.model_pool import bootstrap_pool, loop_pool_refresh
+
+    async with SessionLocal() as seed_db:
+        await bootstrap_pool(seed_db)
+    asyncio.create_task(loop_pool_refresh())
+
     # 知识库：把上次进程中断时没跑完的向量化重新排队（只捞 pending，
     # failed 是明确失败，等用户在列表页决定要不要重试）。
     from app.services.knowledge import reembed_failed_on_startup
@@ -137,6 +147,7 @@ app.include_router(revenue.router, prefix=settings.API_PREFIX)
 app.include_router(admin.router, prefix=settings.API_PREFIX)
 app.include_router(zhihu.router, prefix=settings.API_PREFIX)
 app.include_router(knowledge.router, prefix=settings.API_PREFIX)
+app.include_router(model_pool.router, prefix=settings.API_PREFIX)
 app.include_router(skills.router, prefix=settings.API_PREFIX)
 
 

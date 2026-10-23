@@ -41,6 +41,11 @@ class LlmUsage(Base):
     # 调用特征
     model: Mapped[str] = mapped_column(String(64), default="")
     task_type: Mapped[str] = mapped_column(String(32), default="")  # copywriting/reasoning/...
+    # 这次调用烧的是谁的 Key："system" = 平台全局凭证，否则是用户 id。
+    # 用于事后归因（这个月平台 Key 花了多少 / 谁用自己的 Key 花了多少）。
+    # ⚠️ 不用于实时额度判定 —— 额度走 model_quota_usage 计数器，
+    #    因为 CF 等免费通道流式拿不到 usage，token 统计不到（见 models/model_pool.py）。
+    cred_owner: Mapped[str] = mapped_column(String(64), default="system")
 
     # token 明细
     prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)

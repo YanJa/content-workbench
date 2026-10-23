@@ -163,9 +163,11 @@ async def generate_images(
     """调生图通道生成配图，追加到内容里。provider=script(本地脚本)/cloudflare(Cloudflare AI)。"""
     c = await _get_content(db, content_id, owner)
     provider = req.provider or "script"
-    if provider == "cloudflare" and not imagegen.cloudflare_configured():
+    if provider == "cloudflare" and not await imagegen.remote_ready(owner, db):
         raise HTTPException(
-            400, "未配置 Cloudflare（CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID）。"
+            400,
+            "没有可用的生图模型：请在「模型池」里给「文生图」槽配一个模型，"
+            "或在 .env 里配置 Cloudflare（CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID）。",
         )
     if provider == "script" and not imagegen.script_configured():
         raise HTTPException(
@@ -178,7 +180,8 @@ async def generate_images(
     await db.commit()
     try:
         files = await imagegen.generate_image(
-            prompt=req.prompt, size=req.size, n=req.count, out_dir=out_dir, provider=provider
+            prompt=req.prompt, size=req.size, n=req.count, out_dir=out_dir,
+            provider=provider, owner=owner, db=db,
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("生图失败 content=%s", content_id)
@@ -390,15 +393,20 @@ async def generate_cover(
 
 # ---------------------------------------------------------------- 图片静态服务
 @router.get("/image-providers")
-async def image_providers(owner: str = Depends(current_owner_id)) -> dict[str, bool]:
+async def image_providers(
+    owner: str = Depends(current_owner_id),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, bool]:
     """文内配图可用通道能力位（前端据此决定显示哪些生成方式）。
 
-    不读 owner，但挂守卫依赖：能力探测接口同样不该对未登录流量敞开
-    （会泄露部署配置，test_every_api_endpoint_is_guarded 也要求全端点有守卫）。
+    挂守卫依赖：能力探测接口同样不该对未登录流量敞开（会泄露部署配置，
+    test_every_api_endpoint_is_guarded 也要求全端点有守卫）。
     """
     return {
         "script": imagegen.script_configured(),
-        "cloudflare": imagegen.cloudflare_configured(),
+        # 2026-10-24：模型池上线后这里要连池里的「文生图」槽一起算，
+        # 只看 .env 会把「池里配了火山/硅基」的用户判成没得用。
+        "cloudflare": await imagegen.remote_ready(owner, db),
     }
 
 

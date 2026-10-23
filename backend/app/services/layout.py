@@ -129,6 +129,8 @@ async def generate_topic_tags(
         result = await llm.chat(
             messages,
             task="lightweight",
+            feature="layout_tags",
+            owner=owner or "default",
             # 这一笔之前完全没记账：话题标签也是真金白银的 LLM 调用
             usage_sink=make_sink(db, owner=owner or "default", scene="layout"),
         )
@@ -212,7 +214,9 @@ async def _llm_layout(
     )
     tick(30, "AI 正在按主题装配排版…")
     # 用 reasoning（pro 模型）：排版是「理解结构 + 严格照规则装配」，质量优先
-    result = await llm.chat(messages, task="reasoning", usage_sink=sink)
+    result = await llm.chat(
+        messages, task="reasoning", feature="layout", owner=owner or "default", usage_sink=sink
+    )
     html = _clean_html(result.content or "")
     errors, warnings, _ = validate_gzh_html(html)
 
@@ -225,7 +229,9 @@ async def _llm_layout(
             {"role": "assistant", "content": html},
             {"role": "user", "content": LAYOUT_FIX_HINT.format(errors="\n".join(f"- {e}" for e in errors))},
         ]
-        result = await llm.chat(fix_messages, task="reasoning", usage_sink=sink)
+        result = await llm.chat(
+            fix_messages, task="reasoning", feature="layout", owner=owner or "default", usage_sink=sink
+        )
         html = _clean_html(result.content or "")
         errors, warnings, _ = validate_gzh_html(html)
 
@@ -526,6 +532,8 @@ async def _layout_xiaohongshu(db: AsyncSession, content: Content) -> dict[str, A
     result = await llm.chat(
         messages,
         task="lightweight",
+        feature="xhs_format",
+        owner=content.owner or "default",
         usage_sink=make_sink(db, owner=content.owner or "default", scene="layout"),
     )
     text = (result.content or "").strip()

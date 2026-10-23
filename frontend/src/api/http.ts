@@ -112,15 +112,37 @@ http.interceptors.response.use(
         onErrorStatus(status)
         const detail = pickDetail(txt) || txt || '请求失败'
         console.error('[API]', detail, error?.config?.url)
-        return Promise.reject(new Error(detail))
+        return Promise.reject(toApiError(detail, status))
       })
     }
     onErrorStatus(status)
     const detail = pickDetail(raw) || error?.message || '请求失败'
     console.error('[API]', detail, error?.config?.url)
-    return Promise.reject(new Error(detail))
+    return Promise.reject(toApiError(detail, status))
   },
 )
+
+/**
+ * 请求失败统一转成 Error，但**保留原始 detail 对象**。
+ *
+ * 为什么不能直接 `new Error(detail)`：detail 可能是对象（例如模型池换
+ * embedding 模型时的 409 `{code:'EMBED_DIM_MISMATCH', stale_chunks: 12}`），
+ * 塞进 Error 的 message 会变成 "[object Object]"，页面就拿不到
+ * stale_chunks 做二次确认了。这里 message 用人类可读文案，原始对象挂在
+ * `err.detail` 上给需要细粒度处理的调用方。
+ */
+function toApiError(detail: unknown, status?: number): Error {
+  let msg = '请求失败'
+  if (typeof detail === 'string') msg = detail
+  else if (detail && typeof detail === 'object') {
+    const d = detail as Record<string, unknown>
+    msg = typeof d.message === 'string' ? d.message : JSON.stringify(detail)
+  }
+  const err = new Error(msg) as Error & { detail?: unknown; status?: number }
+  if (detail && typeof detail === 'object') err.detail = detail
+  if (status) err.status = status
+  return err
+}
 
 /** 后端探活 */
 export async function checkHealth() {

@@ -59,6 +59,12 @@ const NODES: Record<string, Node[]> = {
     ['polyline', { points: '3 17 9 11 13 15 21 7' }],
     ['polyline', { points: '15 7 21 7 21 13' }],
   ],
+  // 模型池：三层堆叠（一眼「一池资源，可分层取用」），与「用量」的三根柱子区分
+  layers: [
+    ['polygon', { points: '12 2 22 8 12 14 2 8 12 2' }],
+    ['polyline', { points: '2 12 12 18 22 12' }],
+    ['polyline', { points: '2 16 12 22 22 16' }],
+  ],
 }
 
 export default defineComponent({

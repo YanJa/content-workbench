@@ -87,6 +87,10 @@ const NAV: NavItem[] = [
   { key: 'usage', icon: 'usage', label: 'AI 用量', short: '用量', perm: 'menu.usage' },
   { key: 'revenue', icon: 'revenue', label: '收益看板', short: '收益', perm: 'menu.revenue' },
   { key: 'settings', icon: 'activity', label: '系统设置', short: '设置', perm: 'menu.settings' },
+  // 模型池：管理员才能改（凭证与功能策略是系统级资源），但**不设 perm**——
+  // 普通用户也该能进来看到「现在用的是什么模型」，页面内部会把写按钮藏掉。
+  // 因此这里不能用 adminOnly（那会连入口一起藏），菜单项本身对所有人可见。
+  { key: 'model-pool', icon: 'layers', label: '模型池', short: '模型', mobile: false },
   { key: 'admin-users', icon: 'users', label: '用户管理', short: '用户', adminOnly: true },
 ]
 

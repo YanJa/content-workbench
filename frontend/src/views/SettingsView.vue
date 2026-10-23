@@ -900,6 +900,14 @@ const envColumns: DataTableColumns<EnvRow> = [
                 filterable
               />
             </NSpin>
+            <!-- 模型池上线后，细粒度的「哪个功能用哪个模型、额度多少」都挪到
+                 独立页面去了。这里只留一个入口，不重复做一套 UI。 -->
+            <div class="api-base-hint card-ai-hint" style="opacity: 0.75">
+              <RouterLink to="/models" style="color: var(--app-primary-soft)">
+                需要接更多厂商（智谱 / 硅基 / 火山 / 百炼…）、给不同功能配不同模型，
+                或设置免费额度？去「模型池」→
+              </RouterLink>
+            </div>
             <div class="api-base-hint card-ai-hint" style="opacity: 0.75">
               <template v-if="providerReadonly">
                 对话供应商由管理员统一配置，此处只读。当前通道：<b>{{ chatProvider.provider === 'cloudflare' ? 'Cloudflare Workers AI' : 'DeepSeek' }}</b>。

@@ -355,28 +355,32 @@ async def _embed_task(item_id: str) -> None:
         item.updated_at = int(time.time())
         await db.commit()
 
-        if not embedding.configured():
+        if not await embedding.ready(item.owner, db):
             for c in todo:
                 c.status = "failed"
-                c.error = "未配置 Cloudflare 向量化凭证"
+                c.error = "未配置任何可用的向量化模型"
             item.status = "failed"
-            item.error = "未配置 Cloudflare 向量化凭证（检索将退化为关键词匹配）"
+            item.error = "未配置向量化模型（检索将退化为关键词匹配）"
             item.updated_at = int(time.time())
             await db.commit()
             invalidate_cache(item.owner)
             return
 
-        model = embedding.model_name()
         batch = max(1, settings.KB_EMBED_BATCH)
         failed = 0
+        last_err = ""
         for start in range(0, len(todo), batch):
             group = todo[start : start + batch]
             texts = [c.content for c in group]
             vecs: list[list[float]] | None = None
-            last_err = ""
+            used_model = ""
             for attempt in range(_BATCH_RETRIES + 1):
                 try:
-                    vecs = await embedding.embed_texts(texts)
+                    # 用 embed_with_model：模型名必须是**实际算出这批向量的那个**，
+                    # 光看配置不行（池里可能临时切了备用、也可能降级到 .env 通道）
+                    vecs, used_model = await embedding.embed_with_model(
+                        texts, owner=item.owner, db=db
+                    )
                     break
                 except Exception as exc:  # noqa: BLE001 - 后台任务吞所有异常
                     last_err = str(exc)
@@ -395,7 +399,7 @@ async def _embed_task(item_id: str) -> None:
             for c, v in zip(group, vecs):
                 c.vector = v
                 c.norm = embedding.norm_of(v)
-                c.embed_model = model
+                c.embed_model = used_model
                 c.status = "ready"
                 c.error = ""
             await db.commit()
@@ -471,12 +475,15 @@ async def reembed_failed_on_startup() -> int:
 
 # ---------------------------------------------------------------- 检索
 
-# 进程内向量缓存：owner -> (chunk_id, content, vector, norm, item_id, title)
+# 进程内向量缓存：(owner, embed_model) -> 片段列表
 # 3000 片 × 1024 维 ≈ 30MB 内存，够用；写时按 owner 整桶失效。
-_VEC_CACHE: dict[str, list[dict[str, Any]]] = {}
-# 上一轮召回缓存：owner -> {"vec":..., "norm":..., "hits":[...]}
+# **缓存键必须带模型**：同一个 owner 换过 embedding 模型后，库里会同时存在
+# 两个「空间」的向量，混在一份缓存里等于拿 768 维的去比 1024 维的。
+_VEC_CACHE: dict[tuple[str, str], list[dict[str, Any]]] = {}
+# 上一轮召回缓存：(owner, embed_model) -> {"vec":..., "norm":..., "hits":[...]}
 # 连续追问（「再详细点」）与上轮 query 极度相似时直接复用，省一次 embedding。
-_LAST_QUERY: dict[str, dict[str, Any]] = {}
+# 同样按模型隔离——换了模型还复用上轮的 query 向量，相似度毫无意义。
+_LAST_QUERY: dict[tuple[str, str], dict[str, Any]] = {}
 
 
 def invalidate_cache(owner: str | None = None) -> None:
@@ -485,21 +492,34 @@ def invalidate_cache(owner: str | None = None) -> None:
         _VEC_CACHE.clear()
         _LAST_QUERY.clear()
         return
-    _VEC_CACHE.pop(owner, None)
-    _LAST_QUERY.pop(owner, None)
+    for key in [k for k in _VEC_CACHE if k[0] == owner]:
+        _VEC_CACHE.pop(key, None)
+    for key in [k for k in _LAST_QUERY if k[0] == owner]:
+        _LAST_QUERY.pop(key, None)
 
 
-async def _load_vectors(db: AsyncSession, owner: str) -> list[dict[str, Any]]:
-    cached = _VEC_CACHE.get(owner)
+async def _load_vectors(
+    db: AsyncSession, owner: str, embed_model: str = ""
+) -> list[dict[str, Any]]:
+    """加载**当前 embedding 模型产出的**就绪片段。
+
+    这一行 `WHERE embed_model == 当前模型` 是换模型时的保命符：不同模型（哪怕
+    同一模型的不同维度）产出的向量不在同一空间里，混着比余弦相似度，返回值
+    是纯噪声——而且**不报错**，表现为「知识库突然什么都搜不到」，极难排查。
+    宁可漏召回，也不能给出错误召回。
+    """
+    key = (owner, embed_model or "*")
+    cached = _VEC_CACHE.get(key)
     if cached is not None:
         return cached
-    rows = (
-        await db.execute(
-            select(KnowledgeChunk, KnowledgeItem.title)
-            .join(KnowledgeItem, KnowledgeItem.id == KnowledgeChunk.item_id)
-            .where(KnowledgeChunk.owner == owner, KnowledgeChunk.status == "ready")
-        )
-    ).all()
+    q = (
+        select(KnowledgeChunk, KnowledgeItem.title)
+        .join(KnowledgeItem, KnowledgeItem.id == KnowledgeChunk.item_id)
+        .where(KnowledgeChunk.owner == owner, KnowledgeChunk.status == "ready")
+    )
+    if embed_model:
+        q = q.where(KnowledgeChunk.embed_model == embed_model)
+    rows = (await db.execute(q)).all()
     out: list[dict[str, Any]] = []
     for chunk, title in rows:
         v = chunk.vector
@@ -515,8 +535,32 @@ async def _load_vectors(db: AsyncSession, owner: str) -> list[dict[str, Any]]:
                 "norm": chunk.norm or embedding.norm_of(v),
             }
         )
-    _VEC_CACHE[owner] = out
+    _VEC_CACHE[key] = out
     return out
+
+
+async def _load_texts(db: AsyncSession, owner: str) -> list[dict[str, Any]]:
+    """加载全部就绪片段的**文本**（不加载向量，也不按模型过滤）。
+
+    关键词检索走这条路：它比的是字面重合度，跟 embedding 模型无关，所以换
+    模型后仍然可用——这是「重建索引期间知识库不至于全瘫」的兜底。
+    """
+    rows = (
+        await db.execute(
+            select(KnowledgeChunk, KnowledgeItem.title)
+            .join(KnowledgeItem, KnowledgeItem.id == KnowledgeChunk.item_id)
+            .where(KnowledgeChunk.owner == owner, KnowledgeChunk.status == "ready")
+        )
+    ).all()
+    return [
+        {
+            "id": chunk.id,
+            "item_id": chunk.item_id,
+            "title": title or "",
+            "content": chunk.content,
+        }
+        for chunk, title in rows
+    ]
 
 
 def _keyword_hits(query: str, text: str) -> tuple[int, int]:
@@ -568,21 +612,34 @@ async def search(
     query = (query or "").strip()
     if not query:
         return []
+
+    # 关键词检索的素材**不按模型过滤**：换 embedding 模型后旧向量全部作废，
+    # 但文本还在，字面重合度照比不误 —— 重建索引期间知识库不至于全瘫。
     try:
-        rows = await _load_vectors(db, owner)
+        texts_rows = await _load_texts(db, owner)
     except Exception as exc:  # noqa: BLE001
         logger.warning("知识库片段加载失败：%s", exc)
         return []
-    if not rows:
+    if not texts_rows:
         return []
 
-    # 与上轮 query 极相似（余弦 > 0.95）直接复用结果：省一次 embedding 调用，
-    # 也让「再详细点」这类追问拿到稳定一致的素材。
-    last = _LAST_QUERY.get(owner)
+    model = ""
     try:
-        if embedding.configured():
-            qvec = await embedding.embed_one(query)
+        if await embedding.ready(owner, db):
+            model = await embedding.current_model(owner, db)
+            rows = await _load_vectors(db, owner, model)
+            if not rows:
+                # 当前模型下还没有任何向量（刚换模型 / 刚清空）——只能走关键词
+                logger.debug("模型 %s 下暂无可用向量，降级关键词检索", model)
+                return _keyword_search(texts_rows, query, top_k)
+            qvec, qnorm = await embedding.embed_one(query, owner=owner, db=db), 0.0
             qnorm = embedding.norm_of(qvec)
+            cache_key = (owner, model)
+
+            # 与上轮 query 极相似（余弦 > 0.95）直接复用结果：省一次 embedding
+            # 调用，也让「再详细点」这类追问拿到稳定一致的素材。
+            # 缓存按 (owner, model) 隔离，换模型后不会误复用上轮。
+            last = _LAST_QUERY.get(cache_key)
             if last and last.get("vec") and len(last["vec"]) == len(qvec):
                 sim = embedding.cosine(last["vec"], last["norm"], qvec, qnorm)
                 if sim > 0.95 and last.get("hits"):
@@ -598,14 +655,15 @@ async def search(
             scored = [s for s in scored if s["score"] >= settings.KB_MIN_SCORE]
             scored.sort(key=lambda s: -s["score"])
             hits = scored[:top_k]
-            _LAST_QUERY[owner] = {"vec": qvec, "norm": qnorm, "hits": hits}
+            _LAST_QUERY[cache_key] = {"vec": qvec, "norm": qnorm, "hits": hits}
             return hits
     except Exception as exc:  # noqa: BLE001 - 检索是旁路，失败就降级
         logger.warning("知识库向量检索失败，降级为关键词：%s", exc)
-        _LAST_QUERY.pop(owner, None)
+        if model:
+            _LAST_QUERY.pop((owner, model), None)
 
     # 阈值已经在 _keyword_search 里按「命中二字组个数」卡过（见 config 说明）
-    return _keyword_search(rows, query, top_k)
+    return _keyword_search(texts_rows, query, top_k)
 
 
 def _snippet(text: str, limit: int) -> str:
@@ -701,7 +759,11 @@ async def delete_item(db: AsyncSession, owner: str, item_id: str) -> bool:
 
 
 async def item_stats(db: AsyncSession, owner: str) -> dict[str, Any]:
-    """知识库概览：条数、片数、就绪片数、是否可用向量检索。"""
+    """知识库概览：条数、片数、就绪片数、是否可用向量检索。
+
+    `stale_chunks` 是关键信号：**不等于 0 就说明换过 embedding 模型，这批
+    片段的向量已经不在当前检索空间里了**，检索会静默漏掉它们——必须重建。
+    """
     total_items = await _count_items(db, owner)
     total_chunks = await _count_chunks(db, owner)
     r = await db.execute(
@@ -710,6 +772,10 @@ async def item_stats(db: AsyncSession, owner: str) -> dict[str, Any]:
         )
     )
     ready_chunks = int(r.scalar() or 0)
+
+    vector_ready = await embedding.ready(owner, db)
+    model = await embedding.current_model(owner, db) if vector_ready else ""
+    stale = await count_stale(db, owner, model) if model else 0
     return {
         "items": total_items,
         "chunks": total_chunks,
@@ -717,6 +783,71 @@ async def item_stats(db: AsyncSession, owner: str) -> dict[str, Any]:
         "pending_chunks": total_chunks - ready_chunks,
         "items_limit": settings.KB_MAX_ITEMS_PER_USER,
         "chunks_limit": settings.KB_MAX_CHUNKS_PER_USER,
-        "vector_ready": embedding.configured(),
-        "embed_model": embedding.model_name() if embedding.configured() else "",
+        "vector_ready": vector_ready,
+        "embed_model": model,
+        "stale_chunks": stale,
     }
+
+
+async def count_stale(db: AsyncSession, owner: str, model: str) -> int:
+    """「已就绪但向量不属于当前模型」的片段数 —— 换模型后必须重建的那批。"""
+    if not model:
+        return 0
+    r = await db.execute(
+        select(func.count()).select_from(KnowledgeChunk).where(
+            KnowledgeChunk.owner == owner,
+            KnowledgeChunk.status == "ready",
+            KnowledgeChunk.embed_model != model,
+        )
+    )
+    return int(r.scalar() or 0)
+
+
+async def reembed_stale(db: AsyncSession, owner: str) -> dict[str, Any]:
+    """把「模型过期」的片段全部置回 pending 并重新排队。
+
+    换 embedding 模型后必须走这一步，否则旧向量永远躺在库里、检索永远
+    搜不到它们（不报错，只是静默漏召回——最难排查的那种故障）。
+
+    返回 `{queued, items}`，供端点回给用户「已重新向量化 N 条素材」。
+    """
+    model = await embedding.current_model(owner, db)
+    if not await embedding.ready(owner, db):
+        raise KnowledgeError("没有可用的向量化模型，无法重建索引")
+    rows = (
+        await db.execute(
+            select(KnowledgeChunk).where(
+                KnowledgeChunk.owner == owner,
+                KnowledgeChunk.status == "ready",
+                KnowledgeChunk.embed_model != model,
+            )
+        )
+    ).scalars().all()
+    if not rows:
+        return {"queued": 0, "items": 0, "model": model}
+
+    item_ids = {c.item_id for c in rows}
+    for c in rows:
+        c.status = "pending"
+        c.error = ""
+        c.retry_count = 0
+    await db.commit()
+
+    # 父素材状态回退：不然列表页还显示「已就绪」，用户以为没事
+    for iid in item_ids:
+        item = await db.get(KnowledgeItem, iid)
+        if item and item.owner == owner:
+            item.status = "pending"
+            item.error = ""
+            item.updated_at = int(time.time())
+    await db.commit()
+    invalidate_cache(owner)
+
+    for iid in item_ids:
+        task = asyncio.create_task(_embed_task(iid))
+        _active[iid] = task
+        task.add_done_callback(lambda _t, _id=iid: _active.pop(_id, None))
+
+    logger.info("重建过期向量: owner=%s model=%s 片段=%d 素材=%d",
+                owner, model, len(rows), len(item_ids))
+    return {"queued": len(rows), "items": len(item_ids), "model": model}

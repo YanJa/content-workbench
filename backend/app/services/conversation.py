@@ -288,6 +288,8 @@ async def maybe_summarize(db: AsyncSession, conv: Conversation, llm: Any) -> Non
         result = await llm.chat(
             [{"role": "user", "content": SUMMARY_PROMPT.format(content=text)}],
             task="lightweight",
+            feature="summary",
+            owner=conv.owner or "default",
             # 这一笔之前完全没记账：压缩历史也是真金白银的 LLM 调用
             usage_sink=make_sink(
                 db,

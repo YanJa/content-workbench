@@ -81,6 +81,11 @@ _SQLITE_COLUMN_PATCHES: dict[str, dict[str, str]] = {
         # 模型调用错误信息：老库消息行补空串，无错误时不显示红色提示条。
         "error": "TEXT DEFAULT ''",
     },
+    # 用量表：这次调用烧的是谁的 Key（平台凭证 / 某用户的个人凭证）。
+    # 老库行补 'system' —— 改造前的调用全部走 .env，语义正确。
+    "llm_usage": {
+        "cred_owner": "VARCHAR(64) DEFAULT 'system'",
+    },
     # RBAC：用户表加角色与停用标记。老库已有用户行，所以两列都必须带
     # DEFAULT —— 补出来的是 'member' / 1，真正的管理员由启动时自愈
     # ensure_admin_exists() 升级（见 core/rbac.py）。

@@ -92,6 +92,27 @@ export async function uploadKnowledge(
   return { item: data.item, already_exists: Boolean(data.already_exists) }
 }
 
+export interface ReindexResult {
+  ok: boolean
+  /** 重新排队的片段数 */
+  queued: number
+  /** 涉及的素材条数 */
+  items: number
+  model: string
+}
+
+/**
+ * 重建「模型过期」的向量索引。
+ *
+ * 换过 embedding 模型（在模型池里改了「知识库向量化」槽）之后必须跑一次：
+ * 旧向量还在库里、状态还是 ready，但它们和当前模型算出的 query 向量不在
+ * 同一个空间，检索会**静默**漏掉全部旧素材 —— 不报错，只是搜不到。
+ */
+export async function reindexKnowledge(): Promise<ReindexResult> {
+  const { data } = await http.post('/knowledge/reembed-all')
+  return data
+}
+
 /** 召回调试：看一句话能命中哪些素材（与写稿时走同一条检索）。 */
 export async function searchKnowledge(
   query: string,

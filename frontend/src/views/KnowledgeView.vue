@@ -38,6 +38,7 @@ import {
   getKnowledge,
   knowledgeStats,
   listKnowledge,
+  reindexKnowledge,
   renameKnowledge,
   retryKnowledge,
   searchKnowledge,
@@ -102,6 +103,31 @@ async function load() {
     message.error((e as Error).message || '加载知识库失败')
   } finally {
     loading.value = false
+  }
+}
+
+const reindexing = ref(false)
+
+/**
+ * 重建过期向量。
+ *
+ * 后台是异步跑的（每条素材一个任务），这里只负责发起 + 提示；用户点「刷新」
+ * 看进度。不轮询：素材多时可能跑几分钟，弹个进度条反而让人干等着不敢走。
+ */
+async function onReindex() {
+  reindexing.value = true
+  try {
+    const r = await reindexKnowledge()
+    if (!r.queued) {
+      message.info('索引已是最新')
+    } else {
+      message.success(`已重新向量化 ${r.queued} 个片段（${r.items} 条素材），稍后刷新查看进度`)
+      setTimeout(() => void load(), 1500)
+    }
+  } catch (e) {
+    message.error((e as Error).message || '重建失败')
+  } finally {
+    reindexing.value = false
   }
 }
 
@@ -383,10 +409,29 @@ function gotoSource() {
 
     <NAlert v-if="stats && !stats.vector_ready" type="warning" :bordered="false" style="margin-bottom: 14px">
       <div style="font-size: 12.5px; line-height: 1.7">
-        尚未配置向量化通道（Cloudflare 凭证），检索已退化为<b>关键词匹配</b>：
+        尚未配置向量化模型，检索已退化为<b>关键词匹配</b>：
         素材照样能存、能命中，但只认字面对得上的词，同义改写会漏。
-        在系统设置配好 <code>CLOUDFLARE_API_TOKEN</code> / <code>CLOUDFLARE_ACCOUNT_ID</code>
-        后，新素材会自动用语义检索。
+        在「模型池」页给「知识库向量化」槽配一个模型后，新素材会自动用语义检索。
+      </div>
+    </NAlert>
+
+    <!-- 换过 embedding 模型 → 旧向量全部作废。这条必须显眼：
+         它不报错，只是「什么都搜不到」，是能让人查一下午的那类故障。 -->
+    <NAlert
+      v-if="(stats?.stale_chunks ?? 0) > 0"
+      type="error"
+      :bordered="false"
+      style="margin-bottom: 14px"
+    >
+      <div style="font-size: 12.5px; line-height: 1.7">
+        有 <b>{{ stats?.stale_chunks }}</b> 条片段的向量是用旧模型算的
+        （当前模型：{{ stats?.embed_model }}），它们已经不参与语义检索——
+        不是坏了，是不同模型算出的向量不在一个空间里，比不出相似度。
+      </div>
+      <div style="margin-top: 8px">
+        <IconTextBtn name="reset" size="small" :loading="reindexing" @click="onReindex">
+          重建索引
+        </IconTextBtn>
       </div>
     </NAlert>
 

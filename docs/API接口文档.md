@@ -921,3 +921,30 @@ curl -X POST localhost:8000/api/video/render -H 'Content-Type: application/json'
 - 直链端点（配图 / 成片 / 试听 / 二维码 / 幻灯片图）对匿名与越权一律 **404**，与「资源不存在」同响应；
 - 工具内部失败不抛 HTTP 错误，而是 `result.error` 带回，前端按失败标记渲染；
 - AI 未配置 Key 时对话流正常建立，首个 error 事件说明原因，不影响其余接口。
+
+
+## 模型池（/api/model-pool，v1.5.0）
+
+| 方法 | 路径 | 权限 | 说明 |
+|---|---|---|---|
+| GET | `/model-pool/features` | 登录 | 8 个功能槽元信息 + 协议/能力枚举 |
+| GET | `/model-pool/providers` | 登录 | 服务商列表（api_key 脱敏：前4后4） |
+| POST | `/model-pool/providers` | admin | 新增服务商 `{key,name,kind,base_url,api_key,...}` |
+| PATCH | `/model-pool/providers/{key}` | admin | 修改（api_key 传空串=清空） |
+| DELETE | `/model-pool/providers/{key}` | admin | 删除（连带删模型条目并清理绑定） |
+| POST | `/model-pool/providers/{key}/test` | admin | 连通性测试（拉模型清单，不烧额度） |
+| POST | `/model-pool/providers/{key}/sync` | admin | 拉远端模型清单（返回候选，不自动入库） |
+| GET | `/model-pool/catalog` | 登录 | 模型清单（含当前周期用量与熔断状态） |
+| POST | `/model-pool/catalog` | admin | 新增模型条目 |
+| POST | `/model-pool/catalog/bulk` | admin | 批量入库（sync 后勾选的那些，已存在跳过） |
+| PATCH | `/model-pool/catalog/{id}` | admin | 修改（`disabled_until:0` = 解除熔断） |
+| DELETE | `/model-pool/catalog/{id}` | admin | 移除（同时从绑定摘除） |
+| GET | `/model-pool/bindings` | 登录 | 8 个槽的绑定 + 实际解析结果 |
+| PUT | `/model-pool/bindings/{feature}` | admin | 保存绑定。校验：embedding 槽禁备选(400)、备选能力不一致(400)、换 embedding 模型→**409** `{code:"EMBED_DIM_MISMATCH",stale_chunks,from_model,to_model}`，确认后带 `force:true` 重发 |
+| GET | `/model-pool/quota` | 登录 | 额度看板（按 凭证归属×模型 分行） |
+| GET | `/model-pool/my-keys` | 登录 | 我填的个人 Key（脱敏） |
+| PUT | `/model-pool/my-keys/{provider_key}` | 登录 | 填/清自己的 Key（空串=回退平台 Key） |
+| POST | `/model-pool/my-keys/{provider_key}/verify` | 登录 | 验证我的 Key |
+| POST | `/knowledge/reembed-all` | knowledge.create | 重建「模型过期」的向量索引，返回 `{queued,items,model}` |
+
+**SSE 新事件**（`/api/chat/stream`）：`quota_warning`（`level: warn|exhausted`，80%/100% 跨阈值发一次）、`model_switched`（开流阶段失败已切到备选模型）。
