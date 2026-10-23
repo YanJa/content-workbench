@@ -94,13 +94,21 @@ export async function fetchZhihuUsage(): Promise<ZhihuUsage> {
 }
 
 /**
- * 设置 / 清除 Access Secret（传空串 = 清除）。
+ * 设置 Access Secret。**不接受空串**（后端 400）——清除是独立的显式动作，
+ * 见 clearZhihuSecret。2026-10-23 修复：曾经「留空保存 = 清除」，用户手滑
+ * 点一下空输入框旁的保存，一把能用的钥匙就没了，不可逆还无感知。
  *
  * 落库 + 改内存，不用重启后端；保存后立即抓一次热榜验证凭证对错。
  * DB 优先于 .env：在后台保存过之后，.env 里的值就被覆盖了。
  */
 export async function saveZhihuSecret(secret: string): Promise<ZhihuUsage> {
   const { data } = await http.put('/zhihu/secret', { secret })
+  return data
+}
+
+/** 显式清除凭证（前端有二次确认弹窗）。清除后热点灵感停更。 */
+export async function clearZhihuSecret(): Promise<ZhihuUsage> {
+  const { data } = await http.delete('/zhihu/secret')
   return data
 }
 

@@ -29,6 +29,7 @@ import {
   NForm,
   NFormItem,
   NSwitch,
+  useDialog,
   useMessage,
   type DataTableColumns,
 } from 'naive-ui'
@@ -36,7 +37,12 @@ import {
 import { checkHealth } from '@/api/http'
 import { listTools } from '@/api/tools'
 import { getApiBase, isCustomApiBase, setApiBase } from '@/api/config'
-import { fetchZhihuUsage, saveZhihuSecret, type ZhihuUsage } from '@/api/zhihu'
+import {
+  clearZhihuSecret,
+  fetchZhihuUsage,
+  saveZhihuSecret,
+  type ZhihuUsage,
+} from '@/api/zhihu'
 import { useAuthStore } from '@/stores/auth'
 import IconTextBtn from '@/components/IconTextBtn.vue'
 import {
@@ -322,6 +328,13 @@ async function loadZhihu() {
 }
 
 async function saveSecret() {
+  // 空输入 = 手滑点到保存：直接拦在本地，不发请求。
+  // 2026-10-23 前的语义是「留空保存 = 清除凭证」，用户因此误清过一把
+  // 能用的钥匙——清除必须是独立按钮 + 二次确认的显式动作。
+  if (!zhihuSecretInput.value.trim()) {
+    message.warning('输入框是空的：保存需要填一个新密钥；要清除请点右侧「清除凭证」')
+    return
+  }
   zhihuSaving.value = true
   try {
     zhihuUsage.value = await saveZhihuSecret(zhihuSecretInput.value)
@@ -329,12 +342,34 @@ async function saveSecret() {
     const f = zhihuUsage.value.fetch
     if (f?.ok) message.success(`凭证已保存，顺手抓到 ${f.saved ?? 0} 条热点`)
     else if (f && !f.ok) message.error(`凭证已保存，但抓取失败：${f.error || '未知错误'}`)
-    else message.success('凭证已清除，热点灵感将停更')
+    else message.success('凭证已保存')
   } catch (e) {
     message.error(`保存失败：${(e as Error).message}`)
   } finally {
     zhihuSaving.value = false
   }
+}
+
+/** 清除凭证：独立动作 + 二次确认。清掉热点灵感就停更，不能一键误触。 */
+function clearSecret() {
+  dialog.warning({
+    title: '清除知乎凭证',
+    content: '清除后热点灵感将停更，后台定时任务也会跳过抓取。确定要清除当前 Access Secret 吗？',
+    positiveText: '确定清除',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      zhihuSaving.value = true
+      try {
+        zhihuUsage.value = await clearZhihuSecret()
+        zhihuSecretInput.value = ''
+        message.success('凭证已清除，热点灵感将停更')
+      } catch (e) {
+        message.error(`清除失败：${(e as Error).message}`)
+      } finally {
+        zhihuSaving.value = false
+      }
+    },
+  })
 }
 
 const zhihuLastFetch = computed(() => {
@@ -362,6 +397,7 @@ onMounted(() => {
 
 // ---------------------------------------------------------------- 公众号管理
 const message = useMessage()
+const dialog = useDialog()
 const wechatAccounts = ref<WeChatAccount[]>([])
 const wechatLoading = ref(false)
 const checkingId = ref('')
@@ -1034,16 +1070,28 @@ const envColumns: DataTableColumns<EnvRow> = [
               name="save"
               type="primary"
               size="small"
+              :disabled="!zhihuSecretInput.trim()"
               :loading="zhihuSaving"
               @click="saveSecret"
             >
               保存并抓一次
             </IconTextBtn>
+            <IconTextBtn
+              v-if="zhihuUsage?.configured"
+              name="trash"
+              size="small"
+              quaternary
+              :disabled="zhihuSaving"
+              @click="clearSecret"
+            >
+              清除凭证
+            </IconTextBtn>
           </div>
           <div class="tip">
             同账号下所有 Secret 共享同一个每日额度池（在开放平台页面上的测试调用也扣）。
             保存后立即抓一次热榜用于验证凭证，失败会显示在「上次抓取」里。
-            <b>留空保存 = 清除凭证</b>，热点灵感将停更。在后台保存过之后，
+            输入框为空时保存不可点——清除凭证请用右侧「清除凭证」按钮（有二次确认），
+            避免手滑把能用的钥匙清掉。在后台保存过之后，
             这里的值优先于 <code>.env</code> 的 <code>ZHIHU_ACCESS_SECRET</code>。
           </div>
         </NSpin>

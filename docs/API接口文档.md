@@ -614,7 +614,8 @@ ffmpeg -y -i out.mp4 -map 0:s:0 extracted.srt
 | POST | `/api/zhihu/refresh` | 仅管理员 | 手动抓一次（`force`，跳水位保护），**消耗 1 次共享额度** |
 | GET | `/api/zhihu/status` | 仅管理员 | 连通性 + 额度自查（会消耗 1 次额度） |
 | GET | `/api/zhihu/usage` | 仅管理员 | 后台「知乎热点」卡片数据源，**只读本地库不花钱** |
-| PUT | `/api/zhihu/secret` | 仅管理员 | 在线设置 Access Secret，保存即生效（免重启），顺手抓一次验票 |
+| PUT | `/api/zhihu/secret` | 仅管理员 | 在线设置 Access Secret，保存即生效（免重启），顺手抓一次验票。**空串返回 400** |
+| DELETE | `/api/zhihu/secret` | 仅管理员 | 显式清除凭证（前端有二次确认） |
 
 `GET /api/zhihu/hot` 响应（节选）：
 
@@ -666,7 +667,7 @@ ffmpeg -y -i out.mp4 -map 0:s:0 extracted.srt
 }
 ```
 
-`PUT /api/zhihu/secret` 请求体 `{"secret": "……"}`（**留空 = 清除凭证**），响应同 `usage` 结构外加 `fetch` 字段（保存后立即抓取的结果：`{"ok": true, "saved": 30}`）。要点：
+`PUT /api/zhihu/secret` 请求体 `{"secret": "……"}`，响应同 `usage` 结构外加 `fetch` 字段（保存后立即抓取的结果：`{"ok": true, "saved": 30}`）。**传空串返回 400**——清除凭证走 `DELETE /api/zhihu/secret`（2026-10-23 修复：曾经「留空保存 = 清除」，用户手滑点一下空输入框旁的保存就把能用的钥匙清了，不可逆还无感知）。要点：
 
 - **DB 优先**：保存的值落 `app_settings` 表（`owner=system`），启动时加载覆盖 `.env`；后台保存过之后 `.env` 的 `ZHIHU_ACCESS_SECRET` 就不再生效，直到后台清空该行；
 - 明文只进不出：响应只回 `masked`（后 4 位），请求体的 secret 永不明文回传；

@@ -458,9 +458,17 @@ def test_put_secret_applies_and_fetches(env, monkeypatch):
     # 内存即时换钥：下一个 /zhihu/hot 抓取用的就是新 secret
     assert zhihu_mod.settings.ZHIHU_ACCESS_SECRET == "newkey1234567890"
 
-    # 清除：空串 → configured False 且不再抓取（没有钥匙就不去敲门）
+    # 空串保存 → 400（2026-10-23 修复：曾经「留空保存 = 清除」，用户手滑
+    # 误清过一把能用的钥匙。清除必须是 DELETE 的显式动作），且钥匙不动
     r = client.put("/api/zhihu/secret", json={"secret": ""}, headers=h)
+    assert r.status_code == 400, r.text
+    assert zhihu_mod.settings.ZHIHU_ACCESS_SECRET == "newkey1234567890"
+    assert called["n"] == 1  # 没有多余抓取
+
+    # 清除走 DELETE：configured False 且不再抓取（没有钥匙就不去敲门）
+    r = client.delete("/api/zhihu/secret", headers=h)
     assert r.status_code == 200, r.text
     d = r.json()
-    assert d["configured"] is False and d["fetch"] is None
+    assert d["configured"] is False
+    assert d.get("fetch") is None  # DELETE 响应本身不带 fetch 字段
     assert called["n"] == 1

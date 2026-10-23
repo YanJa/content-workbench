@@ -8,7 +8,8 @@
 |---|---|---|
 | `GET /zhihu/hot` | 登录即可 | 灵感是给所有创作者的，不必要也不该收窄给管理员 |
 | `GET /zhihu/usage` | 仅管理员 | 额度余量与凭证状态是运营信息 |
-| `PUT /zhihu/secret` | 仅管理员 | 改凭证 = 改系统行为，且保存即抓一次（花额度） |
+| `PUT /zhihu/secret` | 仅管理员 | 改凭证 = 改系统行为，且保存即抓一次（花额度）。**传空串会 400**——清理由是独立端点，防误触 |
+| `DELETE /zhihu/secret` | 仅管理员 | 显式清除凭证（需要用户主动选清除，且前端有二次确认） |
 | `POST /zhihu/refresh` | 仅管理员 | 手动刷新会**真金白银消耗共享额度池**，不能让人人都能烧 |
 | `GET /zhihu/status` | 仅管理员 | 连通性自查（会消耗 1 次额度） |
 
@@ -17,7 +18,7 @@
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from app.core.rbac import current_user, require_admin
@@ -72,18 +73,24 @@ async def usage(_admin: User = Depends(require_admin)):
 
 
 class SecretBody(BaseModel):
-    """传空串 = 清除凭证。"""
+    """新密钥。传空串会在路由层被 400 挡掉——清除请走 DELETE /secret。"""
 
     secret: str = ""
 
 
 @router.put("/secret")
 async def put_secret(body: SecretBody, _admin: User = Depends(require_admin)):
-    """设置 / 清除 Access Secret（落库 + 改内存，不用重启），并立即抓一次。
+    """设置 Access Secret（落库 + 改内存，不用重启），并立即抓一次。
 
     保存后顺手抓一次是为了**立刻验证凭证对不对**：抓失败的会把原因显示在
     「上次抓取」里，不用等半小时后的定时任务才发现钥匙是坏的。
+
+    传空串返回 400：清理由是 `DELETE /secret` 的显式动作。曾经「留空保存 =
+    清除」，结果用户手滑点一下空输入框旁的保存，一把能用的钥匙就没了——
+    不可逆还无感知。破坏性操作必须有意为之，不能是默认行为的副产品。
     """
+    if not (body.secret or "").strip():
+        raise HTTPException(400, "secret 不能为空；如需清除请用「清除凭证」按钮（DELETE /zhihu/secret）")
     await zhihu.set_runtime_secret(body.secret)
     fetch = await zhihu.fetch_hot_once() if zhihu._configured() else None
     u = await zhihu.usage_today()
@@ -96,6 +103,22 @@ async def put_secret(body: SecretBody, _admin: User = Depends(require_admin)):
         "last_ok": snap["ok"],
         "last_item_count": snap["item_count"],
         "fetch": fetch,
+    }
+
+
+@router.delete("/secret")
+async def delete_secret(_admin: User = Depends(require_admin)):
+    """显式清除凭证（落库 + 改内存）。前端对应「清除凭证」按钮 + 确认弹窗。"""
+    await zhihu.set_runtime_secret("")
+    u = await zhihu.usage_today()
+    snap = await zhihu.last_snapshot_info()
+    return {
+        **zhihu.secret_info(),
+        **u,
+        "interval_minutes": settings.ZHIHU_HOT_INTERVAL_MINUTES,
+        "last_fetch_at": snap["fetched_at"],
+        "last_ok": snap["ok"],
+        "last_item_count": snap["item_count"],
     }
 
 
