@@ -19,6 +19,7 @@ import {
   NBadge,
   NButton,
   NDropdown,
+  NDrawer,
   useDialog,
   type MenuOption,
 } from 'naive-ui'
@@ -59,6 +60,13 @@ interface NavItem {
   /** 菜单级权限点（见 backend/app/core/rbac.py 的 PERMISSIONS） */
   perm?: string
   /**
+   * 移动端底栏用的短标签（默认用 label）。
+   *
+   * 底栏现在有 8 格（含「更多」），375px 下每格约 47px、320px 下只有 40px，
+   * 4 字中文标签（44px）在窄屏会被省略号截断。两字短标签（22px）稳得多。
+   */
+  short?: string
+  /**
    * 是否进移动端底部导航（默认 true）。
    *
    * 知识库设 false：底栏已有 6 项，375px 下每格约 53px，再加一项必然挤压
@@ -69,17 +77,17 @@ interface NavItem {
 }
 
 const NAV: NavItem[] = [
-  { key: 'chat', icon: 'chat', label: '对话创作', perm: 'menu.chat' },
-  { key: 'queue', icon: 'queue', label: '发布队列', perm: 'menu.queue' },
+  { key: 'chat', icon: 'chat', label: '对话创作', short: '对话', perm: 'menu.chat' },
+  { key: 'queue', icon: 'queue', label: '发布队列', short: '队列', perm: 'menu.queue' },
   // 知识库**不进移动端底栏**（见 NavItem.mobile 的说明）
   { key: 'knowledge', icon: 'book', label: '知识库', perm: 'menu.knowledge', mobile: false },
   // 技能包同理：管理动作（上传 SKILL.md / 启停），移动端无此诉求
   { key: 'skills', icon: 'skills', label: '技能', perm: 'menu.skills', mobile: false },
-  { key: 'video', icon: 'video', label: '视频生产', perm: 'menu.video' },
-  { key: 'usage', icon: 'usage', label: 'AI 用量', perm: 'menu.usage' },
-  { key: 'revenue', icon: 'revenue', label: '收益看板', perm: 'menu.revenue' },
-  { key: 'settings', icon: 'activity', label: '系统设置', perm: 'menu.settings' },
-  { key: 'admin-users', icon: 'users', label: '用户管理', adminOnly: true },
+  { key: 'video', icon: 'video', label: '视频生产', short: '视频', perm: 'menu.video' },
+  { key: 'usage', icon: 'usage', label: 'AI 用量', short: '用量', perm: 'menu.usage' },
+  { key: 'revenue', icon: 'revenue', label: '收益看板', short: '收益', perm: 'menu.revenue' },
+  { key: 'settings', icon: 'activity', label: '系统设置', short: '设置', perm: 'menu.settings' },
+  { key: 'admin-users', icon: 'users', label: '用户管理', short: '用户', adminOnly: true },
 ]
 
 /**
@@ -125,12 +133,35 @@ const menuOptions = computed<MenuOption[]>(() =>
 const mobileTabs = computed(() =>
   visibleNav.value
     .filter((n) => n.mobile !== false)
-    .map((n) =>
-      n.key === 'queue' && queue.pendingCount > 0 ? { ...n, dot: true } : { ...n, dot: false },
-    ),
+    .map((n) => ({
+      ...n,
+      label: n.short ?? n.label, // 底栏 8 格放不下 4 字全称，用短标签
+      dot: n.key === 'queue' && queue.pendingCount > 0,
+    })),
 )
 
+/**
+ * 移动端「更多」里藏的入口：mobile:false 的页面（知识库 / 技能）。
+ *
+ * 为什么进底栏会炸：底栏 7 项在 375px 下每格已只剩约 53px，v1.3.9 踩过
+ * 「发布队列●」换行把 60px 底栏撑爆的坑。这两页是配置型入口、不是日常要点的，
+ * 所以收进「更多」抽屉 —— 移动端没有侧栏，不收就等于彻底进不去。
+ */
 const activeKey = computed(() => (route.name as string) ?? 'chat')
+
+const mobileMoreItems = computed(() => visibleNav.value.filter((n) => n.mobile === false))
+const moreOpen = ref(false)
+const moreActive = computed(() => mobileMoreItems.value.some((n) => n.key === activeKey.value))
+
+function openMore() {
+  moreOpen.value = true
+}
+
+function onMoreSelect(key: string) {
+  moreOpen.value = false
+  onMenuSelect(key)
+}
+
 const pageTitle = computed(() => (route.meta?.title as string) ?? '')
 const pageDesc = computed(() => (route.meta?.desc as string) ?? '')
 
@@ -370,7 +401,42 @@ onMounted(async () => {
                 </span>
                 <span class="tab-label">{{ item.label }}</span>
               </div>
+              <!-- 更多：mobile:false 的页面（知识库/技能）收在这里面。
+                   移动端没有侧栏，不收则这些页面完全无法进入 -->
+              <div
+                v-if="mobileMoreItems.length"
+                class="tab"
+                :class="{ active: moreActive }"
+                @click="openMore"
+              >
+                <span class="tab-icon-wrap">
+                  <NavIcon name="more" :size="20" />
+                </span>
+                <span class="tab-label">更多</span>
+              </div>
             </div>
+
+            <!-- 更多抽屉：底部弹出，触控目标做大 -->
+            <NDrawer
+              v-model:show="moreOpen"
+              placement="bottom"
+              height="auto"
+              :auto-focus="false"
+            >
+              <div class="more-sheet">
+                <div class="more-title">更多功能</div>
+                <div
+                  v-for="item in mobileMoreItems"
+                  :key="item.key"
+                  class="more-item"
+                  :class="{ active: activeKey === item.key }"
+                  @click="onMoreSelect(item.key)"
+                >
+                  <NavIcon :name="item.icon" :size="22" />
+                  <span>{{ item.label }}</span>
+                </div>
+              </div>
+            </NDrawer>
           </NLayout>
 
     <!-- 新手引导：首次自动弹一次，之后从侧栏/头部手动重看 -->
@@ -598,8 +664,34 @@ onMounted(async () => {
   flex-shrink: 0;
 }
 
+.more-sheet {
+  padding: 8px 12px 20px;
+}
+.more-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--app-text-3, #8b93a7);
+  padding: 6px 4px 10px;
+}
+.more-item {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 12px;
+  border-radius: 12px;
+  font-size: 15px;
+  cursor: pointer;
+  color: var(--app-text-1, #2c3e50);
+}
+.more-item:active {
+  background: var(--app-surface-2, rgba(128, 128, 128, 0.12));
+}
+.more-item.active {
+  color: var(--app-primary, #18a058);
+  background: var(--app-primary-a08, rgba(24, 160, 88, 0.08));
+}
 .tab-label {
-  /* tab 只有屏宽/7，文字绝不换行——长了就省略号，绝不把底栏撑高 */
+  /* tab 只有屏宽/8，文字绝不换行——长了就省略号，绝不把底栏撑高 */
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

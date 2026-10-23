@@ -183,6 +183,12 @@ const ICONS: Record<string, IconNode[]> = {
     ['path', { d: 'm14 8 1.5 1.5' }],
     ['path', { d: 'm19 13 1.5 1.5' }],
   ],
+  // 更多（三个点）
+  more: [
+    ['circle', { cx: '5', cy: '12', r: '1.7', fill: 'currentColor', stroke: 'none' }],
+    ['circle', { cx: '12', cy: '12', r: '1.7', fill: 'currentColor', stroke: 'none' }],
+    ['circle', { cx: '19', cy: '12', r: '1.7', fill: 'currentColor', stroke: 'none' }],
+  ],
   // 设为封面（图钉）
   pin: [
     ['path', { d: 'M12 17v5' }],
