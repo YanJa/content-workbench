@@ -21,7 +21,7 @@
  * 非管理员能进这一页（读端点登录即可），但所有写按钮都隐藏 —— 他要能看到
  * 「现在用的是什么模型」，改不了就改不了，不该装作能改。
  */
-import { computed, h, onMounted, ref } from 'vue'
+import { computed, h, onMounted, onUnmounted, ref } from 'vue'
 import {
   NAlert,
   NButton,
@@ -127,6 +127,19 @@ async function load() {
 }
 
 onMounted(load)
+
+/* ------------------------------------------------------------------ 窄屏
+ * 这页的表格列多，手机上一定放不下。两个补丁：
+ *   - 表格给 scroll-x，让它自己横向滚（全局 body 是 overflow-x:hidden，
+ *     不设 scroll-x 的话表格会被直接裁掉，连滑都滑不动）；
+ *   - 操作列在窄屏 fixed 到右侧，否则每次要点「编辑/删除」都得先滑到最右。
+ */
+const isMobile = ref(typeof window !== 'undefined' && window.innerWidth < 768)
+function syncViewport() {
+  isMobile.value = window.innerWidth < 768
+}
+onMounted(() => window.addEventListener('resize', syncViewport))
+onUnmounted(() => window.removeEventListener('resize', syncViewport))
 
 /** 失败提示统一走这里：后端不少校验文案是长句，截断会丢关键信息 */
 function errText(e: unknown, fallback: string) {
@@ -268,6 +281,7 @@ const bindingColumns = computed<DataTableColumns<ModelBinding>>(() => [
     title: '操作',
     key: 'actions',
     width: 90,
+    fixed: isMobile.value ? 'right' : undefined,
     render: (r) =>
       isAdmin.value
         ? h(
@@ -436,6 +450,7 @@ const provColumns = computed<DataTableColumns<ModelProviderRow>>(() => [
     title: '操作',
     key: 'actions',
     width: 210,
+    fixed: isMobile.value ? 'right' : undefined,
     render: (r) =>
       isAdmin.value
         ? h(NSpace, { size: 2, wrap: false, align: 'center' }, () => [
@@ -672,6 +687,7 @@ const catColumns = computed<DataTableColumns<ModelCatalogEntry>>(() => [
     title: '操作',
     key: 'actions',
     width: 190,
+    fixed: isMobile.value ? 'right' : undefined,
     render: (r) =>
       isAdmin.value
         ? h(NSpace, { size: 2, wrap: false, align: 'center' }, () => [
@@ -813,6 +829,7 @@ const keyColumns = computed<DataTableColumns<MyProviderKey>>(() => [
     title: '操作',
     key: 'actions',
     width: 160,
+    fixed: isMobile.value ? 'right' : undefined,
     render: (r) =>
       h(NSpace, { size: 6, wrap: false, align: 'center' }, () => [
         h(
@@ -872,6 +889,10 @@ const provFormRef = ref<FormInst | null>(null)
       </NSpace>
     </NSpace>
 
+    <NText v-if="isMobile" depth="3" style="display: block; margin-bottom: 8px; font-size: 12px">
+      表格较宽，可左右滑动查看；操作按钮固定在最右侧。
+    </NText>
+
     <NTabs v-model:value="tab" type="line" animated>
       <!-- 1. 功能绑定 -->
       <NTabPane name="bindings" tab="功能绑定">
@@ -886,6 +907,7 @@ const provFormRef = ref<FormInst | null>(null)
           :loading="loading"
           :bordered="false"
           size="small"
+          :scroll-x="900"
           :row-key="(r: ModelBinding) => r.feature"
         />
       </NTabPane>
@@ -906,6 +928,7 @@ const provFormRef = ref<FormInst | null>(null)
           :loading="loading"
           :bordered="false"
           size="small"
+          :scroll-x="1000"
           :row-key="(r: ModelProviderRow) => r.key"
         />
       </NTabPane>
@@ -926,6 +949,7 @@ const provFormRef = ref<FormInst | null>(null)
           :loading="loading"
           :bordered="false"
           size="small"
+          :scroll-x="960"
           :row-key="(r: ModelCatalogEntry) => r.id"
         />
 
@@ -937,6 +961,7 @@ const provFormRef = ref<FormInst | null>(null)
             :data="quota"
             :bordered="false"
             size="small"
+            :scroll-x="720"
             :row-key="(r: QuotaRow) => `${r.cred_owner}-${r.model}`"
           />
         </NCard>
@@ -954,6 +979,7 @@ const provFormRef = ref<FormInst | null>(null)
           :loading="loading"
           :bordered="false"
           size="small"
+          :scroll-x="820"
           :row-key="(r: MyProviderKey) => r.provider_key"
         />
       </NTabPane>
@@ -964,9 +990,9 @@ const provFormRef = ref<FormInst | null>(null)
       v-model:show="provShow"
       preset="card"
       :title="provEditing ? '编辑服务商' : '新增服务商'"
-      style="width: 640px"
+      style="width: 640px; max-width: 90vw"
     >
-      <NForm ref="provFormRef" label-placement="left" label-width="110">
+      <NForm ref="provFormRef" :label-placement="isMobile ? 'top' : 'left'" label-width="110">
         <NFormItem v-if="!provEditing" label="厂商模板">
           <NSelect
             :options="vendorOptions"
@@ -1047,7 +1073,12 @@ const provFormRef = ref<FormInst | null>(null)
     </NModal>
 
     <!-- 同步模型清单 -->
-    <NModal v-model:show="syncShow" preset="card" title="同步模型清单" style="width: 680px">
+    <NModal
+      v-model:show="syncShow"
+      preset="card"
+      title="同步模型清单"
+      style="width: 680px; max-width: 90vw"
+    >
       <NSpace vertical :size="10">
         <NText depth="3" style="font-size: 13px">
           从 {{ syncKey }} 拉到的模型清单。默认只勾池里还没有的；灰掉的是已存在。
@@ -1099,9 +1130,9 @@ const provFormRef = ref<FormInst | null>(null)
       v-model:show="catShow"
       preset="card"
       :title="catEditing ? '编辑模型' : '手动添加模型'"
-      style="width: 640px"
+      style="width: 640px; max-width: 90vw"
     >
-      <NForm label-placement="left" label-width="110">
+      <NForm :label-placement="isMobile ? 'top' : 'left'" label-width="110">
         <template v-if="!catEditing">
           <NFormItem label="服务商">
             <NSelect v-model:value="(catForm as any).provider_key" :options="providerOptions" />
