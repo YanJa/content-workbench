@@ -224,9 +224,10 @@ class Settings(BaseSettings):
     # 永远不要写进前端、日志、代码或 git（.env 已在 .gitignore 覆盖）。
     ZHIHU_ACCESS_SECRET: str = ""
     # 热榜抓取间隔（分钟）。每天额度 100 次（邀测期免费池，以官方为准）：
-    #   30 分钟 = 48 次/天，留 ~50 次给实时查询与失败重试。
-    #   想更密集先把 _QUOTA_SAFETY 一起调高，别把池子烧穿。
-    ZHIHU_HOT_INTERVAL_MINUTES: int = 30
+    #   1440 分钟 = 1 天 1 次（用户按额度实测要求降频：100 次额度已耗 ~56 次，
+    #   自动抓取压到 1 天 1 次，把剩余额度留给手动刷新/实时查询/失败重试）。
+    #   想更密集先把 ZHIHU_QUOTA_SAFETY 一起调高，别把池子烧穿。
+    ZHIHU_HOT_INTERVAL_MINUTES: int = 1440
     # 单次抓取条数上限（平台硬上限 30）
     ZHIHU_HOT_LIMIT: int = 30
     # 单次请求超时（秒）
