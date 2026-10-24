@@ -22,6 +22,16 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '1.7.4',
+    date: '2026-10-24',
+    title: '朱雀 AI 检测接入 + 官方同款检测报告单',
+    highlights: [
+      '痕迹体检面板新增「朱雀 AI 检测」（腾讯云 @makers/zhuque-text）：按官方同款三分类（人工特征/疑似AI/AI特征）给出占比与每段 AIGC 值；外部检测与本地规则体检并列展示，误判口径均有提示。',
+      '新增「下载报告单」：生成朱雀官方同款版式的 HTML 报告单——三分类环形图、AI 分布色带、片段解析表、片段原文、本地人工痕迹体检合并，浏览器打开后 Ctrl+P 可存 PDF；朱雀未配置时自动降级为纯本地体检报告。',
+      '凭证走 backend/.env 的 ZHUQUE_API_KEY（EdgeOne Makers API Key，每月 50 万免费 token），未配置时面板与报告均给出明确指引，不静默失败。',
+    ],
+  },
+  {
     version: '1.7.3',
     date: '2026-10-24',
     title: '知乎直达：对话里可真实调用知乎直答',

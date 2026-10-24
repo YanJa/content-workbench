@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     APP_NAME: str = "内容运营工作台"
     # 版本号：全系统唯一来源。前端从 /health 读它展示，并据它判断「是否升过级」
     # 来弹「新功能」提醒。改版本请同步 frontend/package.json（仅作人工对照）。
-    APP_VERSION: str = "1.7.3"
+    APP_VERSION: str = "1.7.4"
     APP_ENV: Literal["dev", "prod"] = "dev"
     DEBUG: bool = True
     API_PREFIX: str = "/api"
@@ -243,6 +243,15 @@ class Settings(BaseSettings):
     # 可选：固定出口代理（形如 socks5://127.0.0.1:10800），一般不需要，
     # 只在知乎接口对我们沙箱 IP 限流时才开。
     ZHIHU_PROXY: str = ""
+
+    # ---------- 朱雀 AI 生成检测（腾讯 EdgeOne Makers 内置模型） ----------
+    # 文档: https://cloud.tencent.com/document/product/1552/137539
+    # Key 在 EdgeOne 控制台 Makers → Models → API Key 创建；免费额度 50 万 token/月，
+    # 实际扣减以响应里 makers_models_usage.total_tokens 为准。
+    # ⚠️ 同 ZHIHU_ACCESS_SECRET：只放 .env，绝不进代码/日志/git。
+    ZHUQUE_API_KEY: str = ""
+    # 单次检测文本上限（字符）。一篇自媒体稿远用不到这么多，主要挡误传整本书。
+    ZHUQUE_TEXT_MAX: int = 30_000
 
     # ---------- 封面图（模板化，与上面的 AI 生图是两条独立通道） ----------
     # 封面脚本：HTML 模板 + 无头浏览器截图，出「文字确定、品牌统一」的头图。

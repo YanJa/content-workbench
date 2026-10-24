@@ -33,9 +33,12 @@ import {
   getHumanizeJob,
   applyHumanize,
   getHumanizeLevels,
+  zhuqueDetect,
+  downloadDetectReport,
   type TraceReport,
   type HumanizeResult,
   type LevelOption,
+  type ZhuqueResult,
 } from '@/api/humanize'
 
 const props = defineProps<{
@@ -63,6 +66,10 @@ const rewriteStage = ref('')
 const rewriteProgress = ref(0)
 const result = ref<HumanizeResult | null>(null)
 const applying = ref(false)
+// 朱雀 AI 检测：外部模型、花额度，必须用户点按钮才发起（和本地体检的界线）
+const zhuqueLoading = ref(false)
+const zhuque = ref<ZhuqueResult | null>(null)
+const reportLoading = ref(false)
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
 const levelOptions = computed(() =>
@@ -178,6 +185,51 @@ async function onApply() {
     applying.value = false
   }
 }
+
+/** 朱雀 AIGC 值配色：与官方报告单一致（<0.5 人工 / 0.5–0.9 疑似 / ≥0.9 AI）。 */
+const confColor = (c: number) =>
+  c >= 0.9 ? 'var(--app-error, #d03050)' : c >= 0.5 ? 'var(--app-warning, #f0a020)' : 'var(--app-success, #18a058)'
+const pct = (x: number) => `${(x * 100).toFixed(2)}%`
+
+async function onZhuque() {
+  zhuqueLoading.value = true
+  try {
+    zhuque.value = await zhuqueDetect({
+      content_id: props.contentId,
+      text: props.text || '',
+    })
+    if (!zhuque.value.ok) message.warning(zhuque.value.error || '朱雀检测失败')
+  } catch (e: any) {
+    message.error(e?.response?.data?.detail || '朱雀检测请求失败')
+  } finally {
+    zhuqueLoading.value = false
+  }
+}
+
+/** 下载报告单：新窗口打开（可 Ctrl+P 存 PDF），被拦截则退化为文件下载。 */
+async function onDownloadReport() {
+  reportLoading.value = true
+  try {
+    const blob = await downloadDetectReport({
+      content_id: props.contentId,
+      text: props.text || '',
+      platform: props.platform,
+    })
+    const url = URL.createObjectURL(new Blob([blob], { type: 'text/html' }))
+    const w = window.open(url, '_blank')
+    if (!w) {
+      const a = document.createElement('a')
+      a.href = url
+      a.download = 'AI生成检测报告单.html'
+      a.click()
+    }
+    setTimeout(() => URL.revokeObjectURL(url), 60_000)
+  } catch (e: any) {
+    message.error(e?.response?.data?.detail || '报告单生成失败')
+  } finally {
+    reportLoading.value = false
+  }
+}
 </script>
 
 <template>
@@ -228,6 +280,50 @@ async function onApply() {
                 <li v-for="(t, i) in report.tips" :key="i">{{ t }}</li>
               </ul>
             </template>
+
+            <!-- 朱雀 AI 检测：外部黑箱概率，与本地体检并列。花钱，所以按钮触发。 -->
+            <NDivider title-placement="left">朱雀 AI 检测（腾讯云）</NDivider>
+            <div class="zq-row">
+              <NButton size="small" :loading="zhuqueLoading" @click="onZhuque">
+                {{ zhuque && zhuque.ok ? '重新检测' : '开始检测' }}
+              </NButton>
+              <span class="zq-hint">
+                外部模型，消耗 Makers 免费 token 额度；中文文本有固有误差，结果仅为辅助判断。
+              </span>
+            </div>
+            <div v-if="zhuque && zhuque.ok" class="zq-result">
+              <div class="zq-bar">
+                <span class="zq-seg" :style="{ width: pct(zhuque.human_ratio), background: 'var(--app-success, #18a058)' }" />
+                <span class="zq-seg" :style="{ width: pct(zhuque.suspect_ratio), background: 'var(--app-warning, #f0a020)' }" />
+                <span class="zq-seg" :style="{ width: pct(zhuque.ai_ratio), background: 'var(--app-error, #d03050)' }" />
+              </div>
+              <div class="zq-legend">
+                <span><i class="dot" style="background: var(--app-success, #18a058)" />人工特征 {{ pct(zhuque.human_ratio) }}</span>
+                <span><i class="dot" style="background: var(--app-warning, #f0a020)" />疑似AI {{ pct(zhuque.suspect_ratio) }}</span>
+                <span><i class="dot" style="background: var(--app-error, #d03050)" />AI特征 {{ pct(zhuque.ai_ratio) }}</span>
+              </div>
+              <div class="zq-segs">
+                <div v-for="s in zhuque.segments" :key="s.order" class="zq-seg-row">
+                  <span class="zq-seg-no">片段{{ s.order }}</span>
+                  <span class="zq-seg-text">{{ s.text }}</span>
+                  <span class="zq-seg-conf" :style="{ color: confColor(s.conf) }">{{ s.conf.toFixed(4) }}</span>
+                </div>
+              </div>
+              <div class="zq-meta">
+                整体置信度 {{ zhuque.softmax_confidence.toFixed(4) }} ·
+                本次消耗 {{ zhuque.tokens_used ?? 0 }} tokens ·
+                {{ zhuque.ms ?? 0 }}ms
+              </div>
+            </div>
+            <NAlert v-else-if="zhuque && !zhuque.ok" type="warning" :bordered="false" class="zq-err">
+              {{ zhuque.error }}
+            </NAlert>
+            <div class="zq-report-row">
+              <NButton size="small" :loading="reportLoading" @click="onDownloadReport">
+                下载报告单（HTML）
+              </NButton>
+              <span class="zq-hint">朱雀同款版式 + 本地体检合并；浏览器打开后 Ctrl+P 可存 PDF。</span>
+            </div>
 
             <NDivider title-placement="left">加人工痕迹</NDivider>
             <div class="rewrite-row">
@@ -419,5 +515,98 @@ async function onApply() {
   justify-content: flex-end;
   gap: 8px;
   margin-top: 10px;
+}
+.zq-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.zq-hint {
+  font-size: 12px;
+  opacity: 0.6;
+  line-height: 1.5;
+}
+.zq-result {
+  margin-top: 12px;
+}
+.zq-bar {
+  display: flex;
+  width: 100%;
+  height: 18px;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.zq-seg {
+  height: 100%;
+  min-width: 0;
+  transition: width 0.3s;
+}
+.zq-legend {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+  font-size: 12px;
+  opacity: 0.8;
+}
+.zq-legend .dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  margin-right: 4px;
+}
+.zq-segs {
+  margin-top: 10px;
+  max-height: 220px;
+  overflow: auto;
+  border: 1px solid var(--app-border, #e5e5e5);
+  border-radius: 8px;
+}
+.zq-seg-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.zq-seg-row + .zq-seg-row {
+  border-top: 1px solid var(--app-border, #e5e5e5);
+}
+.zq-seg-no {
+  flex: none;
+  opacity: 0.55;
+  font-variant-numeric: tabular-nums;
+}
+.zq-seg-text {
+  flex: 1;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.zq-seg-conf {
+  flex: none;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.zq-meta {
+  margin-top: 6px;
+  font-size: 12px;
+  opacity: 0.55;
+  font-variant-numeric: tabular-nums;
+}
+.zq-err {
+  margin-top: 10px;
+  font-size: 12px;
+}
+.zq-report-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 12px;
 }
 </style>

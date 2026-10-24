@@ -101,3 +101,47 @@ export async function getHumanizeLevels(): Promise<{
   const { data } = await http.get('/humanize/levels')
   return data
 }
+
+/** 朱雀检测单段：AIGC 值 + 类型（0=人工 1=AI 2=疑似AI）。 */
+export interface ZhuqueSegment {
+  text: string
+  label: number
+  label_name: string
+  conf: number
+  order: number
+  position: number[]
+}
+
+/** 朱雀 AI 生成检测结果（腾讯云 @makers/zhuque-text，消耗 Makers 免费 token 额度）。 */
+export interface ZhuqueResult {
+  ok: boolean
+  configured?: boolean
+  human_ratio: number
+  ai_ratio: number
+  suspect_ratio: number
+  softmax_confidence: number
+  ratio_confidence: number
+  segments: ZhuqueSegment[]
+  tokens_used?: number
+  ms?: number
+  error?: string
+}
+
+/** 朱雀 AI 检测（同步返回，会消耗 Makers 免费 token 额度）。 */
+export async function zhuqueDetect(payload: {
+  content_id?: string
+  text?: string
+}): Promise<ZhuqueResult> {
+  const { data } = await http.post('/humanize/zhuque', payload)
+  return data
+}
+
+/** 下载「AI 生成检测报告单」HTML（朱雀 + 本地体检，浏览器打开后可 Ctrl+P 存 PDF）。 */
+export async function downloadDetectReport(payload: {
+  content_id?: string
+  text?: string
+  platform?: string
+}): Promise<Blob> {
+  const resp = await http.post('/humanize/report', payload, { responseType: 'blob' })
+  return resp.data
+}
