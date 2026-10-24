@@ -426,6 +426,12 @@ async def layout_content(
     if not markdown:
         return {"ok": False, "error": "内容正文为空，无法排版"}
 
+    # 公众号「贴图」子形态：不做 HTML 排版，只做文本规整（标题/分点/emoji/标签归位）。
+    # 贴图是图片消息（小绿书形态），发布端粘贴的是纯文本，富文本 HTML 无处安放。
+    if platform == "gzh" and (content.sub_type or "article") == "tietu":
+        tick(40, "AI 正在规整贴图文案…")
+        return await _layout_gzh_tietu(db, content)
+
     if platform == "xiaohongshu":
         tick(40, "AI 正在规整小红书笔记文本…")
         return await _layout_xiaohongshu(db, content)
@@ -553,6 +559,62 @@ async def _layout_xiaohongshu(db: AsyncSession, content: Content) -> dict[str, A
         "ok": True,
         "theme": "xiaohongshu",
         "theme_name": "小红书文本规整",
+        "html_len": len(text),
+        "errors": [],
+        "warnings": [],
+        "layout_status": "ready",
+        "text": text,
+    }
+
+
+async def _layout_gzh_tietu(db: AsyncSession, content: Content) -> dict[str, Any]:
+    """公众号「贴图」不做 HTML 排版，只做文本规整（首图标题 + 分点 emoji + 标签归位）。
+
+    贴图是图片消息形态：3-9 张图 + 一段纯短文案，发布端粘的是文本而非富文本。
+    规整口径与小红书接近但有公众号差异：微信没有 #话题# 的强聚合文化，
+    标签可有可无（0-1 个），不学小红书那样结尾堆一排。
+    """
+    llm = get_llm()
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "你是公众号贴图文案排版助手。把下面的 Markdown 整理成可直接粘贴到"
+                "公众号「图片」消息里的纯文本：第一行是首图标题，不超过 20 字、"
+                "前 8 个字必须出钩子；正文 100-400 字只讲一个点，分 3-5 个短点、"
+                "每点用 emoji 开头、段间空行，口语第一人称。"
+                "不要输出 Markdown 语法符号（#、*、>），不要堆 #话题# 标签"
+                "（最多 1 个，不放也行），不要输出任何解释说明，只输出整理后的纯文本。"
+            ),
+        },
+        {"role": "user", "content": content.body or ""},
+    ]
+    result = await llm.chat(
+        messages,
+        task="lightweight",
+        feature="gzh_tietu_format",
+        owner=content.owner or "default",
+        usage_sink=make_sink(db, owner=content.owner or "default", scene="layout"),
+    )
+    text = (result.content or "").strip()
+
+    now = int(time.time())
+    layouts = dict(content.layouts or {})
+    layouts["gzh"] = {"text": text, "theme": "tietu", "updated_at": now}
+    content.layouts = layouts
+    content.layout_status = "ready"
+    content.updated_at = now
+    # 排版完成 → 队列项从「待加工」转「待发布」（贴图分支也要转，与图文分支对齐）
+    item = (
+        await db.execute(select(QueueItem).where(QueueItem.content_id == content.id))
+    ).scalars().first()
+    if item and item.status == "draft":
+        item.status = "ready"
+    await db.flush()
+    return {
+        "ok": True,
+        "theme": "tietu",
+        "theme_name": "贴图文本规整",
         "html_len": len(text),
         "errors": [],
         "warnings": [],

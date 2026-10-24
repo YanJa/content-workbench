@@ -33,12 +33,14 @@ class ScanRequest(BaseModel):
     content_id: str = ""
     text: str = ""
     platform: str = "gzh"
+    sub_type: str = ""
 
 
 class RewriteRequest(BaseModel):
     content_id: str
     platform: str = "gzh"
     level: str = ""
+    sub_type: str = ""
 
 
 class ApplyRequest(BaseModel):
@@ -58,9 +60,11 @@ async def scan(
     Markdown），给了 text 就用传入的文本（前端传正在编辑的内容时用这个）。
     """
     from app.models.content import Content
+    from app.prompts.platforms import normalize_sub_type
 
     text = req.text
     platform = req.platform
+    sub_type = req.sub_type
     if not text and req.content_id:
         c = await db.get(Content, req.content_id)
         if c is None:
@@ -69,12 +73,14 @@ async def scan(
             raise HTTPException(status_code=404, detail="内容不存在")
         text = c.body or ""
         platform = platform or (c.platform or "gzh")
+        # 前端没传子形态时从内容兜底（队列里存的是权威值）
+        sub_type = sub_type or normalize_sub_type(platform, c.sub_type)
     if not (text or "").strip():
         raise HTTPException(status_code=400, detail="没有可检查的正文")
     if len(text) > TEXT_MAX:
         raise HTTPException(status_code=413, detail=f"正文超过 {TEXT_MAX} 字上限")
 
-    return humanize_svc.scan(text, platform)
+    return humanize_svc.scan(text, platform, sub_type)
 
 
 @router.post("/rewrite")
@@ -96,7 +102,9 @@ async def rewrite(
         raise HTTPException(status_code=400, detail="源文是空的，没有可改写的内容")
 
     platform = req.platform or (c.platform or "gzh")
-    return await humanize_svc.submit_humanize_job(req.content_id, platform, req.level)
+    return await humanize_svc.submit_humanize_job(
+        req.content_id, platform, req.level, req.sub_type
+    )
 
 
 @router.get("/job/{task_id}")
@@ -109,6 +117,7 @@ async def get_job(task_id: str, owner: str = Depends(current_owner_id)):
         "task_id": job["task_id"],
         "content_id": job["content_id"],
         "platform": job["platform"],
+        "sub_type": job.get("sub_type", ""),
         "level": job["level"],
         "status": job["status"],
         "progress": job["progress"],
@@ -146,6 +155,7 @@ class ReportRequest(BaseModel):
     content_id: str = ""
     text: str = ""
     platform: str = ""
+    sub_type: str = ""
 
 
 @router.post("/zhuque")
@@ -186,21 +196,27 @@ async def detect_report_page(
 
     text = req.text
     platform = req.platform
+    sub_type = req.sub_type
     if not text and req.content_id:
         c = await db.get(Content, req.content_id)
         if c is None or (c.owner or "default") != owner:
             raise HTTPException(status_code=404, detail="内容不存在")
         text = c.body or ""
         platform = platform or (c.platform or "")
+        sub_type = sub_type or (c.sub_type or "")
     if not (text or "").strip():
         raise HTTPException(status_code=400, detail="没有可检测的正文")
 
-    scan = humanize_svc.scan(text, platform or "gzh")
+    scan = humanize_svc.scan(text, platform or "gzh", sub_type)
     zhuque_result = None
     if zhuque_svc.configured():
         zhuque_result = await zhuque_svc.classify(text)
     html_text = detect_report.render_report(
-        text=text, scan=scan, zhuque_result=zhuque_result, platform=platform
+        text=text,
+        scan=scan,
+        zhuque_result=zhuque_result,
+        platform=platform,
+        sub_type=sub_type,
     )
     return HTMLResponse(content=html_text)
 

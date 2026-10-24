@@ -148,6 +148,19 @@ const followCardHint = computed(() => {
  */
 const isZhihu = computed(() => local.value?.platform === 'zhihu')
 
+/**
+ * 公众号「贴图」子形态：图片消息没有富文本、没有草稿箱接口，
+ * 排版产物是 layouts.gzh.text 纯文本（首图标题 + emoji 分点），
+ * 所以主题/话题标签/推送草稿箱/作者占位符这套图文链路全部不适用。
+ */
+const isTietu = computed(
+  () => local.value?.platform === 'gzh' && (local.value?.sub_type ?? 'article') === 'tietu',
+)
+/** 贴图规整后的纯文本（排版后才有；没有则退回空串，界面提示去排版） */
+const tietuText = computed(
+  () => (local.value?.layouts as Record<string, { text?: string }> | null)?.gzh?.text || '',
+)
+
 // 排版任务进度
 const progress = ref(0)
 const stage = ref('')
@@ -409,6 +422,18 @@ function onImagesChanged(images: ContentImage[]) {
 
 /** 复制排版结果（富文本，粘到公众号/知乎编辑器保留格式）。 */
 async function onCopyRich() {
+  // 贴图：产物是纯文本（图片消息的文案），复制的就是这段文本本身
+  if (isTietu.value) {
+    if (!tietuText.value) {
+      message.warning('先点「一键排版」规整贴图文案')
+      return
+    }
+    const ok = await copyText(tietuText.value)
+    message[ok ? 'success' : 'warning'](
+      ok ? '贴图文案已复制，配好图后去公众号后台发「图片」' : '复制失败，请手动选择文本复制',
+    )
+    return
+  }
   if (!html.value) return
   const r = await copyHtml(html.value, html.value.replace(/<[^>]+>/g, ''))
   if (r === 'rich') {
@@ -800,9 +825,10 @@ onBeforeUnmount(() => {
       <!-- 顶部：主题选择 + 排版（只读态改为纯操作栏：只留复制/预览宽度） -->
       <div class="toolbar">
         <template v-if="!isReadonly">
-          <!-- 知乎不选主题：主题是公众号内联样式那套，知乎编辑器会把 style 剥掉 -->
+          <!-- 知乎不选主题：主题是公众号内联样式那套，知乎编辑器会把 style 剥掉。
+               贴图也不选：图片消息没有富文本，主题概念不适用。 -->
           <NSelect
-            v-if="!isZhihu"
+            v-if="!isZhihu && !isTietu"
             v-model:value="theme"
             :options="themeOptions"
             size="small"
@@ -827,7 +853,7 @@ onBeforeUnmount(() => {
           </IconTextBtn>
           <div v-if="layoutGate.reason.value" class="gate-tip">⚠ {{ layoutGate.reason.value }}</div>
           <NCheckbox
-            v-if="coverReady && !isZhihu"
+            v-if="coverReady && !isZhihu && !isTietu"
             v-model:checked="autoCover"
             size="small"
             :disabled="layouting"
@@ -835,7 +861,7 @@ onBeforeUnmount(() => {
             排版时自动生成封面
           </NCheckbox>
           <NCheckbox
-            v-if="!isZhihu"
+            v-if="!isZhihu && !isTietu"
             v-model:checked="autoTags"
             size="small"
             :disabled="layouting"
@@ -847,8 +873,15 @@ onBeforeUnmount(() => {
             痕迹体检
           </IconTextBtn>
         </template>
-        <IconTextBtn name="copy" size="small" :disabled="!hasHtml" @click="onCopyRich">复制富文本</IconTextBtn>
-        <template v-if="!isReadonly && !isZhihu">
+        <IconTextBtn
+          name="copy"
+          size="small"
+          :disabled="isTietu ? !tietuText : !hasHtml"
+          @click="onCopyRich"
+        >
+          {{ isTietu ? '复制文案' : '复制富文本' }}
+        </IconTextBtn>
+        <template v-if="!isReadonly && !isZhihu && !isTietu">
           <NSelect
             v-if="wechatAccounts.length > 1"
             v-model:value="accountId"
@@ -898,8 +931,9 @@ onBeforeUnmount(() => {
         </NTag>
       </div>
 
-      <!-- 作者信息：排版时替换正文里的 {{作者名}} / {{一句话简介}}（只读态隐藏） -->
-      <div v-if="!isReadonly" class="author-row">
+      <!-- 作者信息：排版时替换正文里的 {{作者名}} / {{一句话简介}}（只读态隐藏）。
+           贴图不适用：图片消息是短文案，没有作者卡的位置。 -->
+      <div v-if="!isReadonly && !isTietu" class="author-row">
         <span class="author-label">作者</span>
         <NInput
           v-model:value="authorName"
@@ -965,8 +999,23 @@ onBeforeUnmount(() => {
             <MarkdownView v-else :content="local.body || ''" />
           </div>
         </div>
+        <!-- 右：贴图文案（纯文本预览；图片消息没有富文本，不存在可编辑 HTML） -->
+        <div v-if="isTietu" class="col">
+          <div class="col-title">
+            <span>贴图文案（纯文本）</span>
+            <NTag v-if="tietuText" size="tiny" type="success" :bordered="false">已规整</NTag>
+            <NTag v-else size="tiny" :bordered="false">未规整</NTag>
+          </div>
+          <div class="scroll preview-wrap">
+            <pre v-if="tietuText" class="tietu-text">{{ tietuText }}</pre>
+            <div v-else class="tietu-empty">
+              点「一键排版」规整文案：首图标题 ≤20 字（前 8 个字出钩子）+ 3-5 个 emoji
+              短点，出来即可直接粘进公众号图片消息。配图在下边「配图」区准备 3-9 张。
+            </div>
+          </div>
+        </div>
         <!-- 右：排版预览（所见即所得，可直接编辑；只读态不可编辑） -->
-        <div class="col">
+        <div v-else class="col">
           <div class="col-title">
             <span>排版预览</span>
             <NTag v-if="hasHtml" size="tiny" type="success" :bordered="false">已排版</NTag>
@@ -1116,6 +1165,7 @@ onBeforeUnmount(() => {
     v-model:show="traceShow"
     :content-id="local?.id || ''"
     :platform="local?.platform || 'gzh'"
+    :sub-type="local?.sub_type || ''"
     :text="local?.body || ''"
     @applied="onTraceApplied"
   />
@@ -1278,6 +1328,30 @@ onBeforeUnmount(() => {
   justify-content: center;
   background: var(--app-bg);
   padding: 12px 8px;
+}
+/* 贴图文案预览：白底卡片 + 等宽行高，模拟手机里图片消息文案的观感 */
+.tietu-text {
+  width: 100%;
+  max-width: 420px;
+  margin: 0;
+  padding: 18px 20px;
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.08);
+  font-size: 15px;
+  line-height: 1.9;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit;
+  color: #333;
+}
+.tietu-empty {
+  width: 100%;
+  max-width: 420px;
+  align-self: flex-start;
+  color: var(--app-text-3, #999);
+  font-size: 13px;
+  line-height: 2;
 }
 .preview-frame {
   max-width: 100%;

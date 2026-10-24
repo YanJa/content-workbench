@@ -33,12 +33,23 @@ def _run(coro):
 
 # ------------------------------------------------------- 1. 子形态归一
 
-def test_sub_type_only_for_zhihu():
-    """非知乎平台一律归空 —— 一个错传的 sub_type 不该污染数据。"""
-    assert normalize_sub_type("gzh", "answer") == ""
+def test_sub_type_only_for_zhihu_and_gzh():
+    """子形态只属于知乎与公众号；别的平台一律归空——错传不该污染数据。"""
     assert normalize_sub_type("xiaohongshu", "article") == ""
     assert normalize_sub_type("douyin", "idea") == ""
     assert normalize_sub_type(None, "answer") == ""
+
+
+def test_gzh_sub_types_pass_through():
+    for st in ("article", "tietu"):
+        assert normalize_sub_type("gzh", st) == st
+
+
+def test_gzh_unknown_falls_back_to_article():
+    """公众号传了不认识的值回落 article：存量内容绝大多数是图文文章。"""
+    assert normalize_sub_type("gzh", "answer") == "article"  # 知乎的形态串到公众号
+    assert normalize_sub_type("gzh", "") == "article"
+    assert normalize_sub_type("gzh", None) == "article"
 
 
 def test_zhihu_sub_types_pass_through():
@@ -248,6 +259,7 @@ def test_enqueue_zhihu_answer_carries_sub_type_and_deep_link():
 
 
 def test_enqueue_non_zhihu_ignores_sub_type_and_link():
+    """没有子形态概念的平台（小红书/抖音）传了也归空，不污染数据。"""
     engine, Maker = _mk_db()
     _override_db(engine, Maker)
     asyncio.run(_create_all(engine))
@@ -256,13 +268,44 @@ def test_enqueue_non_zhihu_ignores_sub_type_and_link():
 
     r = client.post(
         "/api/content/items",
-        json={"platform": "gzh", "sub_type": "answer", "title": "标题", "body": "正文"},
+        json={"platform": "douyin", "sub_type": "answer", "title": "标题", "body": "正文"},
         headers=headers,
     )
     assert r.status_code == 200, r.text
     it = client.get("/api/queue/items", headers=headers).json()["items"][0]
     assert it["sub_type"] == ""
     assert it["publish_url"] == ""
+
+    app.dependency_overrides.clear()
+    asyncio.run(engine.dispose())
+
+
+def test_enqueue_gzh_sub_type_normalized():
+    """公众号子形态：tietu 原样入库；串错成知乎的 answer 回落 article。"""
+    engine, Maker = _mk_db()
+    _override_db(engine, Maker)
+    asyncio.run(_create_all(engine))
+    client = TestClient(app)
+    headers = _register(client)
+
+    r = client.post(
+        "/api/content/items",
+        json={"platform": "gzh", "sub_type": "tietu", "title": "贴图", "body": "正文"},
+        headers=headers,
+    )
+    assert r.status_code == 200, r.text
+    r = client.post(
+        "/api/content/items",
+        json={"platform": "gzh", "sub_type": "answer", "title": "串错", "body": "正文"},
+        headers=headers,
+    )
+    assert r.status_code == 200, r.text
+    items = client.get("/api/queue/items", headers=headers).json()["items"]
+    subs = {i["title"]: i["sub_type"] for i in items}
+    assert subs["贴图"] == "tietu"
+    assert subs["串错"] == "article"
+    # 公众号两种形态都没有「去发布」深链（走草稿箱推送/手动发图片）
+    assert all(i["publish_url"] == "" for i in items)
 
     app.dependency_overrides.clear()
     asyncio.run(engine.dispose())

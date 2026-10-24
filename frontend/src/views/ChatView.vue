@@ -141,6 +141,23 @@ const ZHIHU_HINT: Record<string, string> = {
 }
 const zhihuSub = ref<string>('answer')
 
+/**
+ * 公众号子形态。微信里「公众号」其实是两种内容：
+ *   - 图文（article）：订阅文章消息，1200-3500 字长文 + 富文本排版，默认形态；
+ *   - 贴图（tietu）：图片消息（俗称小绿书），3-9 张图 + 100-400 字短文案，
+ *     发布端粘的是纯文本，没有富文本排版环节。
+ * 两者篇幅差一个数量级、发布链路也不同，不显式选就没法给模型明确目标。
+ */
+const GZH_SUB_OPTIONS = [
+  { label: '图文', value: 'article' },
+  { label: '贴图', value: 'tietu' },
+]
+const GZH_HINT: Record<string, string> = {
+  article: '图文文章 1200-3500 字，可排版富文本，走草稿箱',
+  tietu: '贴图 100-400 字短文案 + 3-9 张图，纯文本直接粘',
+}
+const gzhSub = ref<string>('article')
+
 // ---- 会话重命名 / 删除（列表 UI 在 ConvList 里，这里只处理数据动作）----
 async function onRename(id: string, title: string) {
   try {
@@ -298,12 +315,19 @@ const sendBlockTip = computed(() => (canSend.value ? '' : sendGate.reason.value)
  * 带「……」占位符的句子发出去只会得到 AI 的一句反问。
  */
 const quickPrompts = computed(() => {
-  if (scene.value === 'gzh')
+  if (scene.value === 'gzh') {
+    if (gzhSub.value === 'tietu')
+      return [
+        '写一条公众号贴图文案，分享一个内容运营的小观察，100 字左右',
+        '把「选题比产量重要」写成贴图短文案，要有配图的那种画面感',
+        '给「新手做内容」写首图标题，前 8 个字要出钩子',
+      ]
     return [
       '帮我写一篇公众号文章，主题是新手如何开始做内容运营',
       '把「选题比产量重要」这个观点扩写成一篇 2000 字长文',
       '给「内容运营入门指南」这篇文章起 5 个标题',
     ]
+  }
   if (scene.value === 'xiaohongshu')
     return [
       '写一篇小红书笔记，分享我做内容运营的 3 个心得',
@@ -343,7 +367,12 @@ async function onSend() {
   if (!text || chat.streaming || sendGate.blocked.value) return
   input.value = ''
   chat.platform = (scene.value || null) as Platform | null
-  chat.subType = scene.value === 'zhihu' ? zhihuSub.value : ''
+  chat.subType =
+    scene.value === 'zhihu'
+      ? zhihuSub.value
+      : scene.value === 'gzh'
+        ? gzhSub.value
+        : ''
   // 只有「知乎 + 回答」才带归属问题：文章/想法挂在自己专栏/动态下，没有归属问题
   if (!(scene.value === 'zhihu' && zhihuSub.value === 'answer')) {
     chat.zhihuQuestion = ''
@@ -485,8 +514,11 @@ async function onRefreshHot() {
  */
 function topicPrompt(title: string): string {
   const t = `「${title}」`
-  if (scene.value === 'gzh')
+  if (scene.value === 'gzh') {
+    if (gzhSub.value === 'tietu')
+      return `知乎热榜话题${t}很适合贴图，帮我写一条 100 字左右的短文案，再想 3 个首图标题`
     return `围绕知乎热榜话题${t}写一篇公众号文章，先给我 3 个不同的切入角度`
+  }
   if (scene.value === 'xiaohongshu')
     return `知乎热榜话题${t}很适合小红书，帮我写一篇观点笔记，标题要有点击欲`
   if (scene.value === 'douyin')
@@ -545,6 +577,8 @@ const savingMsg = ref<{ id: string; content: string } | null>(null)
 const savePlatform = ref<Platform>('gzh')
 /** 保存弹窗里的知乎子形态（与对话区的 zhihuSub 各自独立：可以换形态存） */
 const saveZhihuSub = ref<string>('answer')
+/** 保存弹窗里的公众号子形态（article 图文 / tietu 贴图，同上各自独立） */
+const saveGzhSub = ref<string>('article')
 /** 知乎回答挂在哪个问题下（传 URL 或纯 ID，后端归一）。留空不影响保存 */
 const saveZhihuQuestion = ref('')
 const saveTitle = ref('')
@@ -596,6 +630,7 @@ function openSaveModal(msg: { id: string; content: string }) {
   savingMsg.value = { id: msg.id, content: msg.content }
   savePlatform.value = (scene.value || 'gzh') as Platform
   saveZhihuSub.value = zhihuSub.value || 'answer'
+  saveGzhSub.value = gzhSub.value || 'article'
   saveZhihuQuestion.value = ''
   saveTitle.value = guessTitle(msg.content)
   saveModalShow.value = true
@@ -623,7 +658,9 @@ async function doSaveToQueue() {
             sub_type: saveZhihuSub.value,
             zhihu_question: saveZhihuQuestion.value.trim(),
           }
-        : {}),
+        : savePlatform.value === 'gzh'
+          ? { sub_type: saveGzhSub.value }
+          : {}),
     })
     if (res.ok) {
       savedMap.value[msg.id] = res.content_id
@@ -796,7 +833,8 @@ async function restoreFromQueue() {
               style="width: 150px"
               :disabled="chat.streaming"
             />
-            <!-- 知乎子形态：三种形态篇幅差一个数量级，只在选了知乎时出现 -->
+            <!-- 子形态：知乎三种（回答/文章/想法）、公众号两种（图文/贴图），
+                 篇幅差一个数量级，只在选了这两个平台时出现 -->
             <NSelect
               v-if="scene === 'zhihu'"
               v-model:value="zhihuSub"
@@ -805,8 +843,22 @@ async function restoreFromQueue() {
               style="width: 96px"
               :disabled="chat.streaming"
             />
+            <NSelect
+              v-else-if="scene === 'gzh'"
+              v-model:value="gzhSub"
+              :options="GZH_SUB_OPTIONS"
+              size="small"
+              style="width: 88px"
+              :disabled="chat.streaming"
+            />
             <span v-if="scene !== 'zhihu' || !chat.zhihuQuestion" class="toolbar-hint">
-              {{ scene === 'zhihu' ? ZHIHU_HINT[zhihuSub] : '平台会决定 AI 的写作规则与格式；留空则为通用对话' }}
+              {{
+                scene === 'zhihu'
+                  ? ZHIHU_HINT[zhihuSub]
+                  : scene === 'gzh'
+                    ? GZH_HINT[gzhSub]
+                    : '平台会决定 AI 的写作规则与格式；留空则为通用对话'
+              }}
             </span>
             <!-- 归属问题：显示出来而不是默默生效 —— 用户得知道这一轮会先去看
                  别人怎么答的（那要花 1 次知乎额度），也能一键取消 -->
@@ -1162,6 +1214,10 @@ async function restoreFromQueue() {
             />
           </NFormItem>
         </template>
+        <!-- 公众号子形态：图文走富文本排版，贴图只做文本规整 -->
+        <NFormItem v-else-if="savePlatform === 'gzh'" label="形态">
+          <NSelect v-model:value="saveGzhSub" :options="GZH_SUB_OPTIONS" />
+        </NFormItem>
         <NFormItem label="标题">
           <NInput v-model:value="saveTitle" placeholder="给这份内容起个标题" />
         </NFormItem>
@@ -1170,7 +1226,9 @@ async function restoreFromQueue() {
         {{
           savePlatform === 'zhihu'
             ? '知乎没有开放发布接口：保存后去队列页排版，再复制富文本到知乎编辑器手动发布（队列页会给出对应入口）。'
-            : '保存后进入发布队列（状态：待加工），去队列页做排版、配图，再推公众号草稿箱。'
+            : savePlatform === 'gzh' && saveGzhSub === 'tietu'
+              ? '贴图保存后进入队列（待加工），去队列页规整文案、配 3-9 张图，再复制纯文本发布图片消息。'
+              : '保存后进入发布队列（状态：待加工），去队列页做排版、配图，再推公众号草稿箱。'
         }}
       </div>
       <template #footer>

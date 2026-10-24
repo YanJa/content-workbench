@@ -62,6 +62,8 @@ export async function scanTrace(payload: {
   content_id?: string
   text?: string
   platform?: string
+  /** 子形态（知乎：answer/article/idea；公众号：article/tietu） */
+  sub_type?: string
 }): Promise<TraceReport> {
   const { data } = await http.post('/humanize/scan', payload)
   return data
@@ -72,6 +74,8 @@ export async function submitHumanize(payload: {
   content_id: string
   platform: string
   level?: string
+  /** 子形态（知乎：answer/article/idea；公众号：article/tietu） */
+  sub_type?: string
 }): Promise<{ ok: boolean; task_id: string; status: string }> {
   const { data } = await http.post('/humanize/rewrite', payload)
   return data
@@ -141,6 +145,8 @@ export async function downloadDetectReport(payload: {
   content_id?: string
   text?: string
   platform?: string
+  /** 子形态（知乎：answer/article/idea；公众号：article/tietu） */
+  sub_type?: string
 }): Promise<Blob> {
   const resp = await http.post('/humanize/report', payload, { responseType: 'blob' })
   return resp.data

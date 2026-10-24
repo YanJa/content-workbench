@@ -23,9 +23,23 @@ from app.services import zhuque as zhuque_svc
 _BAND_COLORS = {"human": "#7bd88f", "suspect": "#f6c15a", "ai": "#f27b8e"}
 _LABEL_COLORS = {"人工特征": "#7bd88f", "疑似AI": "#f6c15a", "AI特征": "#f27b8e"}
 
+# 报告单头部「平台：公众号 · 贴图」用的展示名（与前端 SUB_NAME 同口径）
+_PLATFORM_NAMES = {"gzh": "公众号", "xiaohongshu": "小红书", "douyin": "抖音", "zhihu": "知乎"}
+_SUB_NAMES = {
+    "gzh": {"article": "图文", "tietu": "贴图"},
+    "zhihu": {"answer": "回答", "article": "文章", "idea": "想法"},
+}
+
 
 def _e(s: object) -> str:
     return html.escape(str(s), quote=True)
+
+
+def _platform_label(platform: str, sub_type: str) -> str:
+    """平台 + 子形态展示名：子形态空或平台无子形态概念时只显示平台名。"""
+    name = _PLATFORM_NAMES.get(platform, platform)
+    sub = _SUB_NAMES.get(platform, {}).get(sub_type or "")
+    return f"{name} · {sub}" if sub else name
 
 
 def _fmt_pct(x: float) -> str:
@@ -203,6 +217,7 @@ def render_report(
     scan: dict | None,
     zhuque_result: dict | None,
     platform: str = "",
+    sub_type: str = "",
     generated_at: int | None = None,
 ) -> str:
     """生成完整报告单 HTML。
@@ -260,7 +275,7 @@ def render_report(
     local_html = _local_scan_html(scan)
 
     title = "AI 生成检测报告单"
-    platform_text = f"　平台：{_e(platform)}" if platform else ""
+    platform_text = f"　平台：{_e(_platform_label(platform, sub_type))}" if platform else ""
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>

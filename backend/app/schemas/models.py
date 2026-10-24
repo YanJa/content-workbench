@@ -124,7 +124,7 @@ class ContentOut(BaseModel):
     id: str
     platform: str
     kind: str
-    # 子形态（知乎：answer / article / idea；其余平台空串）
+    # 子形态（知乎：answer / article / idea；公众号：article / tietu；其余平台空串）
     sub_type: str = ""
     title: str
     body: str
@@ -154,8 +154,9 @@ class ContentCreateRequest(BaseModel):
     body: str
     summary: str = ""
     kind: Literal["text", "video"] = "text"
-    # 子形态（知乎三形态）。后端用 normalize_sub_type 收敛：非知乎归空，
-    # 知乎传错回落 answer —— 不让老客户端/漏传直接 400。
+    # 子形态：知乎 answer/article/idea，公众号 article/tietu。后端用
+    # normalize_sub_type 收敛：非知乎/公众号归空，知乎传错回落 answer，
+    # 公众号传错回落 article —— 不让老客户端/漏传直接 400。
     sub_type: str = ""
     conversation_id: str | None = None
     # 前端消息 id，便于回溯是哪条 AI 回复存下来的
@@ -259,7 +260,7 @@ class QueueItemOut(BaseModel):
     # 来源会话与消息（从 Content join 出来）：队列页据此「回到对话」并定位到那条回复
     conversation_id: str | None = None
     msg_id: str | None = None
-    # 子形态（知乎：answer / article / idea）
+    # 子形态（知乎：answer / article / idea；公众号：article / tietu）
     sub_type: str = ""
     # 「去发布」深链。知乎没有开放发布接口（官方 API 只能读），所以系统是
     # 「生成 → 人带走 → 人发布」：这里给出对应形态的网页入口，省得用户自己找。

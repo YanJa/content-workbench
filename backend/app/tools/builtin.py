@@ -301,7 +301,7 @@ async def query_queue(status: str = "all", platform: str = "all", ctx: dict | No
             "sub_type": {
                 "type": "string",
                 "enum": ["answer", "article", "idea"],
-                "description": "知乎子形态（仅 platform=zhihu 时有效）：回答/文章/想法",
+                "description": "子形态：知乎（回答/文章/想法）、公众号（图文/贴图）；其他平台不传",
             },
             "content": {"type": "string", "description": "待检查的文案内容"},
         },
@@ -315,7 +315,12 @@ async def check_compliance(platform: str, content: str, sub_type: str = ""):
     issues: list[dict[str, str]] = []
 
     rules = {
-        "gzh": {"min": 1200, "max": 3500, "tags": (0, 0)},
+        # 公众号两形态篇幅差一个数量级（图文 1200-3500 / 贴图 100-400），
+        # 和知乎三形态同理，必须按子形态分档，混一档必然误报。
+        # 标签按 # 字符计（微信一个 #话题# 是 2 个 #）：贴图 0-2 = 最多 1 个标签，
+        # 微信没有 #话题# 聚合文化，贴图堆一排反而违和。
+        "gzh_article": {"min": 1200, "max": 3500, "tags": (0, 0)},
+        "gzh_tietu": {"min": 100, "max": 400, "tags": (0, 2)},
         "xiaohongshu": {"min": 300, "max": 800, "tags": (5, 10)},
         "douyin": {"min": 100, "max": 400, "tags": (3, 6)},
         # 知乎三形态篇幅差一个数量级，混在一档里必然误报，所以按子形态分档
@@ -323,9 +328,12 @@ async def check_compliance(platform: str, content: str, sub_type: str = ""):
         "zhihu_article": {"min": 1500, "max": 6000, "tags": (0, 0)},
         "zhihu_idea": {"min": 50, "max": 300, "tags": (1, 3)},
     }
-    key = f"zhihu_{sub_type}" if platform == "zhihu" and sub_type in (
-        "answer", "article", "idea"
-    ) else platform
+    key = (
+        f"{platform}_{sub_type}"
+        if platform in ("zhihu", "gzh")
+        and sub_type in ("answer", "article", "idea", "tietu")
+        else platform
+    )
     r = rules.get(key, {"min": 100, "max": 5000, "tags": (0, 99)})
 
     if length < r["min"]:
@@ -359,7 +367,7 @@ async def check_compliance(platform: str, content: str, sub_type: str = ""):
 
     return {
         "platform": platform,
-        "sub_type": sub_type if platform == "zhihu" else "",
+        "sub_type": sub_type if platform in ("zhihu", "gzh") else "",
         "length": length,
         "tag_count": tag_count,
         "passed": not issues,

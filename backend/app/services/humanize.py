@@ -136,7 +136,20 @@ def _plain_text(markdown: str) -> str:
 
 
 # ------------------------------------------------------------------ 体检
-def scan(text: str, platform: str = "gzh") -> dict[str, Any]:
+def _pick(registry: dict, platform: str, sub_type: str = "", default: Any = None) -> Any:
+    """按 (platform, sub_type) 查表：复合 key 优先，回落平台级。
+
+    公众号贴图和小红书同档（heavy、口语、emoji 是形式本身），但它是 gzh 的
+    子形态——发布、统计、微信审核口径都归 gzh，只在「怎么写」上另立一档。
+    """
+    if sub_type:
+        v = registry.get(f"{platform}_{sub_type}")
+        if v is not None:
+            return v
+    return registry.get(platform, default)
+
+
+def scan(text: str, platform: str = "gzh", sub_type: str = "") -> dict[str, Any]:
     """人工痕迹体检。返回 0-100 的人工痕迹指数，**越高越像人写的**。
 
     为什么用正向指标：市面工具全是「AI 率，越低越好」，用户很容易看反；而我们要做的
@@ -378,7 +391,7 @@ def scan(text: str, platform: str = "gzh") -> dict[str, Any]:
         "platform": platform,
         "stats": stat,
         "hits": hits,
-        "tips": _tips(platform),
+        "tips": _tips(platform, sub_type),
         "note": note,
         "short_sample": short_sample,
     }
@@ -396,6 +409,7 @@ LEVEL_DESC = {
 }
 PLATFORM_DEFAULT_LEVEL = {
     "gzh": "medium",
+    "gzh_tietu": "heavy",  # 贴图和小红书同档：短文案要的就是口语和第一人称
     "xiaohongshu": "heavy",
     "zhihu": "light",
     "douyin": "medium",
@@ -431,6 +445,7 @@ _HUMANIZE_SYSTEM = """你是一位中文编辑，专长是把「读起来像机�
 
 _PLATFORM_TONE = {
     "gzh": "公众号：允许故事感与情绪起伏，但不要变成小红书式的碎碎念",
+    "gzh_tietu": "公众号贴图：口语、第一人称、emoji 是这个形式本身，不算 AI 痕迹",
     "xiaohongshu": "小红书：口语、第一人称、可以碎碎念，emoji 保留原文风格",
     "zhihu": "知乎：克制、有判断、有边界。禁止求互动套话，禁止堆 emoji，禁止八股连接词",
     "douyin": "抖音：短句、强节奏，一句话一个信息点",
@@ -438,16 +453,17 @@ _PLATFORM_TONE = {
 
 
 def build_humanize_messages(text: str, platform: str = "gzh", level: str = "medium",
-                            hits: list[dict[str, Any]] | None = None) -> list[dict[str, str]]:
+                            hits: list[dict[str, Any]] | None = None,
+                            sub_type: str = "") -> list[dict[str, str]]:
     """构造改写请求。命中项会作为「重点改这几处」喂进去 —— 体检不是白做的，
     它指出的具体问题比通用指令有效得多。
     """
     if level not in LEVELS:
-        level = PLATFORM_DEFAULT_LEVEL.get(platform, "medium")
+        level = _pick(PLATFORM_DEFAULT_LEVEL, platform, sub_type, "medium")
     system = _HUMANIZE_SYSTEM.format(
         level_name=LEVEL_LABELS[level],
         level_desc=LEVEL_DESC[level],
-        platform_name=_PLATFORM_TONE.get(platform, ""),
+        platform_name=_pick(_PLATFORM_TONE, platform, sub_type, ""),
     )
     focus = ""
     if hits:
@@ -487,25 +503,34 @@ def verify_facts(before: str, after: str) -> list[str]:
     return warnings
 
 
-def _tips(platform: str) -> list[str]:
+def _tips(platform: str, sub_type: str = "") -> list[str]:
     """平台专属的「人味」标准——同一段话，在小红书是人味十足，在知乎就是太水。"""
-    return {
-        "gzh": [
-            "公众号的人味来自「故事与细节」：时间、地点、金额、人名，有一样就不像机器写的",
-            "允许情绪起伏：先讲一件具体的事，再讲你的判断",
-        ],
-        "xiaohongshu": [
-            "小红书要「口语和亲身经历」：「我踩过的坑」比「注意事项」有说服力",
-            "emoji 与碎碎念是平台惯例，不算 AI 痕迹",
-        ],
-        "zhihu": [
-            "知乎的人味来自「有判断、有边界」：敢下结论，也敢说「这部分我没把握」",
-            "求互动套话与 emoji 堆砌在知乎是扣分项，不是人味",
-        ],
-        "douyin": [
-            "抖音要「短句强节奏」：一句话一个信息点，长定语从句直接砍",
-        ],
-    }.get(platform, [])
+    return _pick(
+        {
+            "gzh": [
+                "公众号的人味来自「故事与细节」：时间、地点、金额、人名，有一样就不像机器写的",
+                "允许情绪起伏：先讲一件具体的事，再讲你的判断",
+            ],
+            "gzh_tietu": [
+                "贴图的人味就是「像跟朋友说话」：短句、口语、emoji 是形式本身",
+                "只讲一个点，别把贴图写成缩水文章——那是最典型的机器味",
+            ],
+            "xiaohongshu": [
+                "小红书要「口语和亲身经历」：「我踩过的坑」比「注意事项」有说服力",
+                "emoji 与碎碎念是平台惯例，不算 AI 痕迹",
+            ],
+            "zhihu": [
+                "知乎的人味来自「有判断、有边界」：敢下结论，也敢说「这部分我没把握」",
+                "求互动套话与 emoji 堆砌在知乎是扣分项，不是人味",
+            ],
+            "douyin": [
+                "抖音要「短句强节奏」：一句话一个信息点，长定语从句直接砍",
+            ],
+        },
+        platform,
+        sub_type,
+        [],
+    )
 
 
 # ------------------------------------------------------------------ 异步改写任务
@@ -558,6 +583,7 @@ async def humanize_text(
     level: str = "medium",
     owner: str = "default",
     db: Any = None,
+    sub_type: str = "",
 ) -> dict[str, Any]:
     """改写一段正文，返回 {text, before_score, after_score, warnings, level}。
 
@@ -567,15 +593,15 @@ async def humanize_text(
     from app.services.llm import get_llm
     from app.services.usage import make_sink
 
-    before = scan(text, platform)
+    before = scan(text, platform, sub_type)
     if level not in LEVELS:
-        level = PLATFORM_DEFAULT_LEVEL.get(platform, "medium")
+        level = _pick(PLATFORM_DEFAULT_LEVEL, platform, sub_type, "medium")
 
     # 改写是「理解语义后注入人味」，轻量档做不好，走与排版同档的 reasoning
     sink = make_sink(db, owner=owner or "default", scene="humanize") if db is not None else None
     llm = get_llm()
     result = await llm.chat(
-        build_humanize_messages(text, platform, level, before.get("hits")),
+        build_humanize_messages(text, platform, level, before.get("hits"), sub_type),
         task="reasoning",
         feature="humanize",
         owner=owner or "default",
@@ -590,7 +616,7 @@ async def humanize_text(
         }
 
     warnings = verify_facts(text, new_text)
-    after = scan(new_text, platform)
+    after = scan(new_text, platform, sub_type)
     return {
         "ok": True,
         "text": new_text,
@@ -599,20 +625,25 @@ async def humanize_text(
         "warnings": warnings,
         "level": level,
         "platform": platform,
+        "sub_type": sub_type,
     }
 
 
 async def submit_humanize_job(
-    content_id: str, platform: str = "gzh", level: str = ""
+    content_id: str, platform: str = "gzh", level: str = "", sub_type: str = ""
 ) -> dict[str, Any]:
     """登记改写任务并立即返回 task_id。"""
+    from app.prompts.platforms import normalize_sub_type
+
     _prune_humanize_jobs()
     task_id = uuid.uuid4().hex
+    st = normalize_sub_type(platform, sub_type)
     _HUMANIZE_JOBS[task_id] = {
         "task_id": task_id,
         "content_id": content_id,
         "platform": platform,
-        "level": level or PLATFORM_DEFAULT_LEVEL.get(platform, "medium"),
+        "sub_type": st,
+        "level": level or _pick(PLATFORM_DEFAULT_LEVEL, platform, st, "medium"),
         "status": "queued",
         "progress": 0,
         "stage": "排队中…",
@@ -622,14 +653,16 @@ async def submit_humanize_job(
         "finished_at": None,
     }
     import asyncio
-    asyncio.create_task(_run_humanize_job(task_id, content_id, platform, level))
+    asyncio.create_task(_run_humanize_job(task_id, content_id, platform, level, st))
     return {"ok": True, "task_id": task_id, "status": "queued", "poll": task_id}
 
 
-async def _run_humanize_job(task_id: str, content_id: str, platform: str, level: str) -> None:
+async def _run_humanize_job(task_id: str, content_id: str, platform: str, level: str,
+                            sub_type: str = "") -> None:
     """后台 worker：自建 Session（请求已返回，不能复用请求期的 db）。"""
     from app.db.session import SessionLocal
     from app.models.content import Content
+    from app.prompts.platforms import normalize_sub_type
 
     _set_hjob(task_id, status="running", progress=10, stage="正在读原文…")
     try:
@@ -644,11 +677,13 @@ async def _run_humanize_job(task_id: str, content_id: str, platform: str, level:
                     _set_hjob(task_id, status="error", error="源文是空的，没有可改写的内容",
                               finished_at=time.time())
                     return
+                # 前端没传子形态时，从内容本身兜底（队列里存的就是权威值）
+                st = sub_type or normalize_sub_type(platform, c.sub_type)
                 _set_hjob(task_id, progress=30, stage="AI 正在注入人的痕迹…")
                 _set_hjob(task_id, progress=55, stage="AI 正在重写（保留所有数字与事实）…")
                 res = await humanize_text(
-                    src, platform, level or PLATFORM_DEFAULT_LEVEL.get(platform, "medium"),
-                    owner=c.owner or "default", db=db,
+                    src, platform, level or _pick(PLATFORM_DEFAULT_LEVEL, platform, st, "medium"),
+                    owner=c.owner or "default", db=db, sub_type=st,
                 )
                 _set_hjob(task_id, progress=90, stage="正在校验事实是否被改坏…")
                 if not res.get("ok"):

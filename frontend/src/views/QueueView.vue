@@ -167,11 +167,13 @@ const platformName: Record<string, string> = {
   zhihu: '✍️ 知乎',
 }
 
-/** 知乎子形态展示名（与后端 ZHIHU_SUBTYPE_LABELS 同一套口径） */
-const ZHIHU_SUB_NAME: Record<string, string> = {
-  answer: '回答',
-  article: '文章',
-  idea: '想法',
+/**
+ * 子形态展示名（与后端 ZHIHU_SUBTYPE_LABELS / GZH_SUBTYPE_LABELS 同一套口径）。
+ * 两种平台的子形态都是「同一平台、不同发布链路」：光写平台名用户不知道该往哪儿发。
+ */
+const SUB_NAME: Record<string, Record<string, string>> = {
+  zhihu: { answer: '回答', article: '文章', idea: '想法' },
+  gzh: { article: '图文', tietu: '贴图' },
 }
 
 /** 加工中标记 → 展示文案（'' 表示空闲） */
@@ -182,6 +184,8 @@ const PROCESSING_LABEL: Record<string, string> = {
 
 /** 各平台的发布路径与检查项（与后端 buildPublishChecklist 对应） */
 const CHECKLISTS: Record<string, { channel: string; path: string; items: { key: string; text: string }[] }> = {
+  // 公众号默认形态「图文」走富文本排版 + 草稿箱；
+  // 另一种形态「贴图」见文末 gzh_tietu（图片消息，链路完全不同）。
   gzh: {
     channel: '公众号草稿箱',
     path: '生成排版成品 → 推送到草稿箱 → 到公众号后台核对 → 手动群发',
@@ -252,15 +256,32 @@ const CHECKLISTS: Record<string, { channel: string; path: string; items: { key: 
       { key: 'tags', text: '话题标签 1-3 个已带' },
     ],
   },
+  // 公众号「贴图」是图片消息：没有富文本排版、没有草稿箱接口，
+  // 发布链路是「图片 + 一段纯文本」，检查项跟图文文章完全不同。
+  gzh_tietu: {
+    channel: '公众号图片消息（手动发布）',
+    path: '复制文案 → 导出配图 3-9 张 → 到公众号后台发「图片」→ 回来标记已发',
+    items: [
+      { key: 'title', text: '首图标题 ≤20 字，前 8 个字出钩子' },
+      { key: 'imgs', text: '配图 3-9 张已导出，首图信息量最大' },
+      { key: 'len', text: '正文 100-400 字，只讲一个点' },
+      { key: 'tone', text: '口语第一人称，没有「希望对你有帮助」式收尾' },
+      { key: 'tags', text: '话题标签最多 1 个，没堆一排' },
+      { key: 'paste', text: '文案已粘进图片消息的文本区' },
+    ],
+  },
 }
 
 /**
- * 检查项配置：知乎按子形态取（三种形态路径不同），其余平台按 platform 取。
+ * 检查项配置：知乎 / 公众号按子形态取（各自形态路径不同），其余平台按 platform 取。
  */
 function checklistOf(row: QueueItem | null) {
   if (!row) return null
   if (row.platform === 'zhihu') {
     return CHECKLISTS[`zhihu_${row.sub_type || 'answer'}`] ?? CHECKLISTS.zhihu_answer
+  }
+  if (row.platform === 'gzh' && (row.sub_type || 'article') === 'tietu') {
+    return CHECKLISTS.gzh_tietu
   }
   return CHECKLISTS[row.platform] ?? null
 }
@@ -297,12 +318,13 @@ const columns = computed<DataTableColumns<QueueItem>>(() => [
     title: '平台',
     key: 'platform',
     width: 130,
-    // 知乎带上子形态：回答/文章/想法是三条完全不同的发布路径，
-    // 光写「知乎」用户不知道这条该往哪儿发。
+    // 知乎 / 公众号带上子形态：回答/文章/想法、图文/贴图都是完全不同的发布路径，
+    // 光写平台名用户不知道这条该往哪儿发。
     render: (row) => {
       const base = platformName[row.platform] ?? row.platform
-      if (row.platform !== 'zhihu') return base
-      const sub = ZHIHU_SUB_NAME[row.sub_type ?? ''] ?? '回答'
+      const subTable = SUB_NAME[row.platform]
+      if (!subTable) return base
+      const sub = subTable[row.sub_type ?? ''] ?? Object.values(subTable)[0]
       return h('span', null, [
         base,
         h('span', { style: 'color:var(--app-text-3);font-size:12px' }, `·${sub}`),
@@ -363,7 +385,10 @@ const columns = computed<DataTableColumns<QueueItem>>(() => [
     render: (row) => {
       // 加工中（排版/生图）禁用所有会改状态的操作，避免重复触发/冲突
       const busy = !!row.processing
-      const isGzh = row.platform === 'gzh'
+      // 贴图是公众号的图片消息形态：没有草稿箱接口，复制的是纯文本，
+      // 所以发布链路上的「推送 / 标记已发」门槛与图文文章不同。
+      const isTietu = row.platform === 'gzh' && (row.sub_type ?? 'article') === 'tietu'
+      const isGzh = row.platform === 'gzh' && !isTietu
       const isZhihu = row.platform === 'zhihu'
       const items = [
         // 加工排版 / 查看排版：加工中时禁用，tooltip 显示当前加工阶段
@@ -404,7 +429,9 @@ const columns = computed<DataTableColumns<QueueItem>>(() => [
                   ? `推微信草稿箱${pushGate.left.value === null ? '' : `（剩 ${pushGate.left.value}）`}`
                   : isZhihu
                     ? '复制富文本（粘到知乎编辑器保留标题与列表）'
-                    : '复制文案',
+                    : isTietu
+                      ? '复制贴图文案（纯文本，粘进图片消息）'
+                      : '复制文案',
                 () => onPushDraft(row),
                 {
                   type: isGzh ? 'primary' : 'default',
@@ -420,14 +447,17 @@ const columns = computed<DataTableColumns<QueueItem>>(() => [
               disabled: busy,
             })
           : null,
-        // 标记已发：公众号必须先推到微信草稿箱（wechat_media_id 非空）才能标记，
-        // 否则推完草稿箱前就标记完成，等于绕过合规发布流程
+        // 标记已发：图文必须先推到微信草稿箱（wechat_media_id 非空）才能标记，
+        // 否则推完草稿箱前就标记完成，等于绕过合规发布流程。
+        // 贴图没有草稿箱接口，复制文案即可去发布，不做此门槛。
         row.status !== 'published'
           ? actionBtn(
               'check-circle',
               isGzh && !row.wechat_media_id
                 ? '请先推送到微信草稿箱，再标记完成'
-                : '标记为已发布（先过一遍发布检查）',
+                : isTietu
+                  ? '标记为已发布（复制文案去公众号后台发图片消息）'
+                  : '标记为已发布（先过一遍发布检查）',
               () => openPublishCheck(row),
               { disabled: busy || (isGzh && !row.wechat_media_id) },
             )
@@ -702,6 +732,19 @@ async function onPushDraft(row: QueueItem) {
     content = await getContent(row.content_id)
   } catch {
     content = null
+  }
+
+  // 公众号贴图：图片消息没有草稿箱接口，复制的是规整后的纯文本
+  if (row.platform === 'gzh' && (row.sub_type ?? 'article') === 'tietu') {
+    const tietuText =
+      (content?.layouts as Record<string, { text?: string }> | null)?.gzh?.text ||
+      content?.body ||
+      ''
+    const ok = await copyText(tietuText)
+    message[ok ? 'success' : 'warning'](
+      ok ? '贴图文案已复制，配好 3-9 张图后去公众号后台发「图片」' : '复制失败，请到「加工排版」里手动复制',
+    )
+    return
   }
 
   if (row.platform !== 'gzh') {

@@ -45,6 +45,8 @@ const props = defineProps<{
   show: boolean
   contentId: string
   platform: string
+  /** 子形态（知乎：answer/article/idea；公众号：article/tietu）：决定档位默认值与口径 */
+  subType?: string
   /** 直接传入的正文（面板里正在编辑的源文优先，避免读到库里的旧版本） */
   text?: string
 }>()
@@ -76,11 +78,32 @@ const levelOptions = computed(() =>
   levels.value.map((l) => ({ label: `${l.label} · ${l.desc}`, value: l.id })),
 )
 
-/** 强度档默认按平台走（知乎轻度 / 公众号中度 / 小红书重度），但用户可覆盖。 */
+/**
+ * 档位默认 key：平台级（gzh）优先回落，子形态级（gzh_tietu）优先命中——
+ * 与后端 PLATFORM_DEFAULT_LEVEL 的 key 结构一致（贴图默认 heavy）。
+ */
+const levelKey = computed(() =>
+  props.subType ? `${props.platform}_${props.subType}` : props.platform,
+)
+
+/**
+ * 强度档默认按平台/子形态走（知乎轻度 / 公号图文中度 / 贴图重度）。
+ * 用户手动选过档就不再自动改（levelTouched），否则换形态时回到默认。
+ */
+const levelTouched = ref(false)
 watch(
-  () => props.platform,
-  (p) => {
-    if (!level.value) level.value = platformDefault.value[p] || 'medium'
+  levelKey,
+  (k) => {
+    if (!levelTouched.value) level.value = platformDefault.value[k] || 'medium'
+  },
+)
+
+/** 换了一条内容：档位偏好不串味，重新按这条内容的平台/子形态取默认。 */
+watch(
+  () => props.contentId,
+  () => {
+    levelTouched.value = false
+    level.value = ''
   },
 )
 
@@ -103,13 +126,16 @@ async function load() {
         content_id: props.contentId,
         text: props.text || '',
         platform: props.platform,
+        sub_type: props.subType || '',
       }),
       getHumanizeLevels(),
     ])
     report.value = rep
     levels.value = lv.levels
     platformDefault.value = lv.platform_default
-    if (!level.value) level.value = lv.platform_default[props.platform] || 'medium'
+    if (!levelTouched.value) {
+      level.value = lv.platform_default[levelKey.value] || 'medium'
+    }
   } catch (e: any) {
     message.error(e?.response?.data?.detail || '体检失败')
   } finally {
@@ -142,6 +168,7 @@ async function onRewrite() {
       content_id: props.contentId,
       platform: props.platform,
       level: level.value,
+      sub_type: props.subType || '',
     })
     pollTimer = setInterval(async () => {
       try {
@@ -214,6 +241,7 @@ async function onDownloadReport() {
       content_id: props.contentId,
       text: props.text || '',
       platform: props.platform,
+      sub_type: props.subType || '',
     })
     const url = URL.createObjectURL(new Blob([blob], { type: 'text/html' }))
     const w = window.open(url, '_blank')
@@ -333,6 +361,7 @@ async function onDownloadReport() {
                 size="small"
                 style="flex: 1"
                 placeholder="改写强度"
+                @update:value="levelTouched = true"
               />
               <IconTextBtn name="magic" type="primary" :loading="rewriting" @click="onRewrite">
                 {{ rewriting ? '改写中' : 'AI 加痕迹' }}

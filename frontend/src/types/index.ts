@@ -134,7 +134,7 @@ export interface ContentItem {
   id: string
   platform: Platform
   kind: string
-  /** 子形态（知乎：answer / article / idea；其余平台空串） */
+  /** 子形态（知乎：answer / article / idea；公众号：article / tietu；其余平台空串） */
   sub_type?: string
   title: string
   /** 纯内容正文：结构化 Markdown（对话产出的原始内容） */
@@ -177,7 +177,7 @@ export interface QueueItem {
   title_editable?: boolean
   /** 关联内容的排版状态：none=还没排版 */
   layout_status?: string
-  /** 子形态（知乎：answer / article / idea） */
+  /** 子形态（知乎：answer / article / idea；公众号：article / tietu） */
   sub_type?: string
   /**
    * 「去发布」深链。知乎官方没有发布接口，系统是「生成 → 人带走 → 人发布」，
