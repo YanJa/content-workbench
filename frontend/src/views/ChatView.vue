@@ -916,9 +916,6 @@ async function restoreFromQueue() {
           >
             <div class="msg-role">{{ m.role === 'user' ? '我' : 'AI' }}</div>
             <div class="msg-body">
-              <div class="msg-meta">
-                <span class="msg-time" v-if="fmtTime(m.created_at)">{{ fmtTime(m.created_at) }}</span>
-              </div>
               <!-- 工具调用过程。activate_skill 单独渲染：它平时不出现在
                    用户视野里，但「这轮 AI 读了哪个技能」是用户最该知道的
                    一件事 —— 否则技能不生效时完全无从排查。 -->
@@ -970,12 +967,14 @@ async function restoreFromQueue() {
 
               <!-- 用户提问的操作栏：一键复制（便于把问题贴到别处或二次编辑） -->
               <div v-if="m.role === 'user' && !m.streaming && m.content" class="msg-actions">
+                <span class="msg-time" v-if="fmtTime(m.created_at)">{{ fmtTime(m.created_at) }}</span>
                 <ActionBtn name="copy" tip="复制" @click="copyMessage(m.content)" />
               </div>
 
               <!-- AI 回复的操作栏：复制 / 保存到队列（排版在队列页做） -->
               <!-- 已保存到队列的消息：隐藏「保存到队列」，只留「去队列查看」，避免重复入队 -->
               <div v-if="m.role === 'assistant' && !m.streaming && m.content" class="msg-actions">
+                <span class="msg-time" v-if="fmtTime(m.created_at)">{{ fmtTime(m.created_at) }}</span>
                 <ActionBtn name="copy" tip="复制" @click="copyMessage(m.content)" />
                 <ActionBtn
                   v-if="!savedMap[m.id]"
@@ -1489,18 +1488,8 @@ async function restoreFromQueue() {
   min-width: 0;
 }
 
-.msg-meta {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 2px;
-  /* 与头像(30px)同高：时间垂直居中对齐头像，而不是缩在头像顶部一条缝里 */
-  min-height: 30px;
-}
-
 .msg-time {
-  /* 11px + text-3 太淡，实测用户「看不见时间只看见复制按钮」——
-     时间是需求本体，可见度必须高于普通辅助信息 */
+  flex-shrink: 0;
   font-size: 12px;
   color: var(--app-text-2);
   font-variant-numeric: tabular-nums;
@@ -1521,17 +1510,23 @@ async function restoreFromQueue() {
 
 .msg-actions {
   display: flex;
+  align-items: center;
   gap: 8px;
   margin-top: 8px;
+}
+/* 时间放进操作栏后，让「淡显」只作用于按钮、不作用于时间本身：
+   按钮平时 0.55、hover/用户提问时全亮，时间始终清晰 —— 否则又会回到
+   「时间跟着按钮一起被淡显，看不见」的老问题 */
+.msg-actions > *:not(.msg-time) {
   opacity: 0.55;
   transition: opacity 0.15s;
 }
-.msg:hover .msg-actions {
+.msg:hover .msg-actions > *:not(.msg-time) {
   opacity: 1;
 }
 
 /* 用户提问的复制按钮常亮：hover 才出现会让「一键复制」不好找 */
-.msg-user .msg-actions {
+.msg-user .msg-actions > *:not(.msg-time) {
   opacity: 1;
 }
 
