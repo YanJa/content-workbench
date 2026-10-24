@@ -1494,11 +1494,15 @@ async function restoreFromQueue() {
   align-items: center;
   gap: 8px;
   margin-bottom: 2px;
+  /* 与头像(30px)同高：时间垂直居中对齐头像，而不是缩在头像顶部一条缝里 */
+  min-height: 30px;
 }
 
 .msg-time {
-  font-size: 11px;
-  color: var(--app-text-3);
+  /* 11px + text-3 太淡，实测用户「看不见时间只看见复制按钮」——
+     时间是需求本体，可见度必须高于普通辅助信息 */
+  font-size: 12px;
+  color: var(--app-text-2);
   font-variant-numeric: tabular-nums;
 }
 
