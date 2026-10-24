@@ -133,6 +133,17 @@ const checkItem = ref<QueueItem | null>(null)
 const checks = ref<Record<string, boolean>>({})
 /** 已发布 = 任务完成，发布检查转为只读（只能看、不能改勾选/保存） */
 const checkReadonly = computed(() => checkItem.value?.status === 'published')
+/** 当前平台的检查项配置（平台没配过检查项时为 null，弹窗降级为纯确认） */
+const checkCfg = computed(() =>
+  checkItem.value ? (CHECKLISTS[checkItem.value.platform] ?? null) : null,
+)
+
+/**
+ * 检查弹窗的两种来路：
+ * - view：点「发布检查」进来，只勾进度、保存；
+ * - publish：点「标记为已发布」进来，勾完之后还要走一次「确实已发了吗」的确认。
+ */
+const checkMode = ref<'view' | 'publish'>('view')
 const pushing = ref(false)
 /** 正在删微信草稿的 content_id（行级 loading，防连点重复删） */
 const deletingDraftId = ref('')
@@ -341,8 +352,8 @@ const columns = computed<DataTableColumns<QueueItem>>(() => [
               'check-circle',
               isGzh && !row.wechat_media_id
                 ? '请先推送到微信草稿箱，再标记完成'
-                : '标记为已发布',
-              () => markPublished(row),
+                : '标记为已发布（先过一遍发布检查）',
+              () => openPublishCheck(row),
               { disabled: busy || (isGzh && !row.wechat_media_id) },
             )
           : null,
@@ -437,11 +448,30 @@ function onLayoutDone() {
   void queue.refresh()
 }
 
-async function openCheck(row: QueueItem) {
-  checkItem.value = row
+function openCheck(row: QueueItem) {
+  checkMode.value = 'view'
+  _fillCheck(row)
+}
+
+/**
+ * 点「标记为已发布」的第一步：先过一遍发布检查。
+ *
+ * 已推送草稿箱 ≠ 已发布 —— 中间还有「去微信后台核对并群发」这一步是系统
+ * 管不到的。所以标记完成前把检查项摆出来让人对一遍，勾完再确认一次。
+ * 检查项**不强制全勾**（只是提示，不是闸门），没勾完也能继续。
+ */
+function openPublishCheck(row: QueueItem) {
+  checkMode.value = 'publish'
+  _fillCheck(row)
+}
+
+function _fillCheck(row: QueueItem) {
   const cfg = CHECKLISTS[row.platform]
   const saved = row.checklist ?? {}
-  checks.value = Object.fromEntries(cfg.items.map((i) => [i.key, saved[i.key] ?? false]))
+  checkItem.value = row
+  checks.value = Object.fromEntries(
+    (cfg?.items ?? []).map((i) => [i.key, saved[i.key] ?? false]),
+  )
   checkVisible.value = true
 }
 
@@ -452,9 +482,62 @@ async function saveCheck() {
   message.success('检查进度已保存')
 }
 
-async function markPublished(row: QueueItem) {
-  await queue.setStatus(row.id, 'published')
-  message.success('已标记为发布完成')
+/** 未勾选的检查项条数（提示用，不阻断） */
+function uncheckedCount(row: QueueItem): number {
+  const cfg = CHECKLISTS[row.platform]
+  if (!cfg) return 0
+  return cfg.items.filter((i) => !checks.value[i.key]).length
+}
+
+/**
+ * 发布检查里的「下一步」：存下勾选进度，再弹确认框问一次。
+ *
+ * 两道闸的意义不同：检查是「该做的事都做了吗」（提示，可不全勾），
+ * 确认是「真的已经在渠道上发出去了吗」（结论，点了才落库）。
+ */
+async function onPublishCheckNext() {
+  const row = checkItem.value
+  if (!row) return
+  // 勾选进度先存：即使下面确认框点了取消，勾选也不白勾
+  try {
+    await queue.setChecklist(row.id, checks.value)
+  } catch (e) {
+    message.warning(`检查进度没保存上：${(e as Error).message}`)
+  }
+  checkVisible.value = false
+
+  const left = uncheckedCount(row)
+  dialog.warning({
+    title: '确认已经发布了吗？',
+    // 用 VNode 而不是拼字符串：dialog 的 content 不保证按 \n 换行，
+    // 拼出来的长句挤成一坨就没有「提示」的作用了。
+    content: () =>
+      h('div', { style: 'line-height:1.7' }, [
+        h('p', { style: 'margin:0 0 8px' }, [
+          '「',
+          h('b', null, row.title),
+          '」将被标记为已发布，并从待发布列表移出。',
+        ]),
+        left > 0
+          ? h(
+              'p',
+              { style: 'margin:0 0 8px;color:var(--app-text-2)' },
+              `发布检查还有 ${left} 项没勾 —— 不影响继续，只是提醒。`,
+            )
+          : h('p', { style: 'margin:0 0 8px' }, '发布检查已全部确认。'),
+        h(
+          'p',
+          { style: 'margin:0;color:var(--app-text-2)' },
+          '只有你确实已经在对应渠道点过发布才点确认：标记错了能改回来，但统计会失真。',
+        ),
+      ]),
+    positiveText: '确认已发布',
+    negativeText: '还没有',
+    onPositiveClick: async () => {
+      await queue.setStatus(row.id, 'published')
+      message.success('已标记为发布完成')
+    },
+  })
 }
 
 async function onDelete(row: QueueItem) {
@@ -878,18 +961,31 @@ function onSearchClear() {
     <NModal
       v-model:show="checkVisible"
       preset="card"
-      :title="checkItem ? `发布检查 · ${checkItem.title}${checkReadonly ? '（已完成，只读）' : ''}` : '发布检查'"
-      style="max-width: 560px"
+      :title="
+        checkItem
+          ? `发布检查 · ${checkItem.title}${checkReadonly ? '（已完成，只读）' : ''}`
+          : '发布检查'
+      "
+      style="width: 560px; max-width: 90vw"
     >
       <template v-if="checkItem">
-        <NAlert type="info" :bordered="false" style="margin-bottom: 14px">
+        <NAlert
+          v-if="checkMode === 'publish'"
+          type="warning"
+          :bordered="false"
+          style="margin-bottom: 14px"
+        >
+          标记为已发布之前，先对一遍下面这些项。
+          <b>不强制全勾</b> —— 只是提醒，没勾完也能继续。
+        </NAlert>
+        <NAlert v-if="checkCfg" type="info" :bordered="false" style="margin-bottom: 14px">
           <div style="font-size: 12.5px; line-height: 1.7">
-            <b>发布渠道：</b>{{ CHECKLISTS[checkItem.platform].channel }}<br />
-            <b>操作路径：</b>{{ CHECKLISTS[checkItem.platform].path }}
+            <b>发布渠道：</b>{{ checkCfg.channel }}<br />
+            <b>操作路径：</b>{{ checkCfg.path }}
           </div>
         </NAlert>
 
-        <div v-for="item in CHECKLISTS[checkItem.platform].items" :key="item.key" class="check-row">
+        <div v-for="item in checkCfg?.items ?? []" :key="item.key" class="check-row">
           <NCheckbox v-model:checked="checks[item.key]" :disabled="checkReadonly">
             {{ item.text }}
           </NCheckbox>
@@ -899,8 +995,15 @@ function onSearchClear() {
       <template #footer>
         <NSpace justify="end">
           <NButton @click="checkVisible = false">{{ checkReadonly ? '关闭' : '取消' }}</NButton>
+          <!-- 从「标记为已发布」进来：勾完走「下一步」，由确认框收口 -->
           <IconTextBtn
-            v-if="!checkReadonly"
+            v-if="checkMode === 'publish' && !checkReadonly"
+            name="check-circle"
+            type="primary"
+            @click="onPublishCheckNext"
+          >下一步</IconTextBtn>
+          <IconTextBtn
+            v-else-if="!checkReadonly"
             name="check"
             type="primary"
             :loading="pushing"
