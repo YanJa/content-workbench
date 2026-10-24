@@ -22,6 +22,15 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '1.7.2',
+    date: '2026-10-24',
+    title: '生成端默认「像人写」：从源头去 AI 味',
+    highlights: [
+      'system prompt 新增「写作语气」基调：生成文案时默认长短句交错、去掉机械连接词与宏大词、补具体细节与个人判断，从源头降低 AI 味（而非事后改写）。',
+      'humanize-pack 内置技能保留：用户显式说「去 AI 味 / 加点人味」时仍会激活，做更彻底的句式改写。',
+    ],
+  },
+  {
     version: '1.7.1',
     date: '2026-10-24',
     title: '对话时间戳、提问一键复制、人工痕迹内置技能包',
