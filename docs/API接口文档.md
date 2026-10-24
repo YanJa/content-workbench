@@ -221,7 +221,7 @@ assistant 的 `tool_calls[i].result`）。思维链只给人看，`build_context
 | PATCH | `/api/content/items/{content_id}` | **部分更新内容**，body `{title?, body?, summary?, body_html?}`；只更新显式传入的字段（`null`/缺省 = 不改），加工排版面板保存编辑用 |
 | GET | `/api/queue/items?status=&platform=&page=&page_size=` | 队列列表（**分页**，见下） |
 | GET | `/api/queue/stats` | 统计 `{total, by_status, by_platform}` |
-| PATCH | `/api/queue/items/{id}` | 改状态 `{status: draft\|ready\|published\|archived}`，置 published 时自动记 published_at |
+| PATCH | `/api/queue/items/{id}` | 改状态 `{status?}` 与/或改标题 `{title?}`（v1.5.3 起 `title` 可改），置 published 时自动记 published_at |
 | PUT | `/api/queue/items/{id}/checklist` | 保存检查清单 `{checklist: {key: bool}}` |
 | DELETE | `/api/queue/items/{id}` | 删除队列项 |
 | GET | `/api/queue/export` | 导出 Markdown 发布清单 `{markdown}` |
@@ -241,6 +241,28 @@ assistant 的 `tool_calls[i].result`）。思维链只给人看，`build_context
 
 > ⚠️ 筛选（`status`/`platform`）必须在**后端**做，前端拿到的是**当前页**，
 > 不能再在本地过滤，否则每页条数会对不上。
+
+#### 队列项改标题（v1.5.3）
+
+列表返回的每项带两个判定字段：
+
+- `layout_status`：该内容正文的排版状态（`none` / `processing` / `ready` 等）。
+- `title_editable`：**能否改标题**。由后端按唯一规则判定后下发，前端只认这个字段
+  （不要自己再推一遍规则，否则会出现「按钮在、点了 409」）。
+
+不可改的四种情形：已排版（`layout_status != none`）、已推送草稿箱（有 `wechat_media_id`）、
+加工中（`processing=true`）、状态不在 `draft`/`ready`（已发布/已归档）。
+
+```http
+PATCH /api/queue/items/{id}
+{ "title": "新标题" }
+```
+
+- 只传 `title` 不改状态；只传 `status` 不改标题；两个都传则都改。
+- `title` 空或纯空格 → `400`；超过 64 字 → `400`（不静默截断，前端 `maxlength=64` 同源）；
+  标题与原值一致 → 直接跳过（不落库）；不可改 → `409`
+  （详情：`已排版（或已推送/加工中）的队列项不能改标题`）。
+- 改标题会**同步 `content.title`**，加工面板与后续步骤看到的都是新标题。
 
 队列项（`QueueItemOut`）除内容字段外透传两个跳转用字段：
 `conversation_id` / `msg_id` —— 该队列项**来源对话**的会话 id 与 AI 回复消息 id

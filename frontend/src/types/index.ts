@@ -160,6 +160,10 @@ export interface QueueItem {
   published_at?: number | null
   /** 已被存进知识库时，这里是知识库素材 id（队列行据此显示「已存入 / 查看」） */
   kbStored?: string
+  /** 标题现在还能改吗（未排版、没推过草稿箱、没在加工中）。由后端判定，前端不自己推断 */
+  title_editable?: boolean
+  /** 关联内容的排版状态：none=还没排版 */
+  layout_status?: string
 }
 
 /** 微信公众号账号 */

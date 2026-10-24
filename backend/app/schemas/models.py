@@ -234,6 +234,11 @@ class QueueItemOut(BaseModel):
     status: str
     checklist: dict[str, Any] | None = None
     wechat_media_id: str | None = None
+    # 标题现在还能改吗？规则只有一处（routers/queue.py:_title_editable），
+    # 前端不自己判断 —— 免得两边规则漂移，出现「按钮有、点了报错」。
+    title_editable: bool = False
+    # 关联内容排到哪一步了（none=还没排版）。仅用于展示/排查
+    layout_status: str = ""
     # 关联内容的加工中标记，透传给队列页（队列行显示「排版中/生图中」）
     processing: str = ""
     # 来源会话与消息（从 Content join 出来）：队列页据此「回到对话」并定位到那条回复
@@ -246,7 +251,11 @@ class QueueItemOut(BaseModel):
 
 
 class QueueStatusUpdate(BaseModel):
-    status: Literal["draft", "ready", "published", "archived"]
+    # 两个字段都可选：可以只改状态，也可以只改标题（改标题时不用硬塞一个状态）
+    status: Literal["draft", "ready", "published", "archived"] | None = None
+    # 改标题。只有未排版（且没推过草稿箱、没在加工中）的项才让改 ——
+    # 排版之后标题已经跟正文/草稿箱绑定了，改了会对不上。
+    title: str | None = None
 
 
 class ChecklistUpdate(BaseModel):

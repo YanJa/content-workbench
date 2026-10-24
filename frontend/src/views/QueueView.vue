@@ -24,7 +24,7 @@ import {
 import { useQueueStore } from '@/stores/queue'
 import { confirmTool } from '@/api/tools'
 import { cancelProcessing } from '@/api/layout'
-import { getContent, saveToQueue } from '@/api/queue'
+import { getContent, renameQueueItem, saveToQueue } from '@/api/queue'
 import { createKnowledge, originCheck } from '@/api/knowledge'
 import type { QueueItem, QueueStatus, ContentItem } from '@/types'
 import LayoutPanel from '@/components/LayoutPanel.vue'
@@ -205,6 +205,28 @@ const columns = computed<DataTableColumns<QueueItem>>(() => [
     title: '标题',
     key: 'title',
     ellipsis: { tooltip: true },
+    render: (row) =>
+      h(NSpace, { size: 4, wrap: false, align: 'center' }, () => [
+        h(
+          'span',
+          {
+            title: row.title,
+            style:
+              'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:260px',
+          },
+          row.title,
+        ),
+        // 未排版之前标题还能改 —— 能不能改由后端说了算（title_editable），
+        // 前端不自己推断，免得按钮在、点下去 409。
+        row.title_editable
+          ? h(NButton, {
+              size: 'tiny',
+              quaternary: true,
+              title: '改标题（排版之后就不能改了）',
+              onClick: () => openRename(row),
+            }, { default: () => '改' })
+          : null,
+      ]),
   },
   {
     title: '平台',
@@ -446,6 +468,45 @@ async function onDelete(row: QueueItem) {
       message.success('已删除')
     },
   })
+}
+
+// ------------------------------------------------------------------ 改标题
+const renameShow = ref(false)
+const renameRow = ref<QueueItem | null>(null)
+const renameDraft = ref('')
+const renameSaving = ref(false)
+
+function openRename(row: QueueItem) {
+  renameRow.value = row
+  renameDraft.value = row.title
+  renameShow.value = true
+}
+
+async function onSaveRename() {
+  const row = renameRow.value
+  if (!row) return
+  const title = renameDraft.value.trim()
+  if (!title) {
+    message.warning('标题不能为空')
+    return
+  }
+  if (title === row.title) {
+    renameShow.value = false
+    return
+  }
+  renameSaving.value = true
+  try {
+    await renameQueueItem(row.id, title)
+    message.success('标题已更新')
+    renameShow.value = false
+    await queue.refresh()
+  } catch (e) {
+    // 409 = 这一刻刚好排版完成/推了草稿箱，不是 bug，刷新即可
+    message.error((e as Error)?.message || '改标题失败')
+    await queue.refresh()
+  } finally {
+    renameSaving.value = false
+  }
 }
 
 /**
@@ -845,6 +906,34 @@ function onSearchClear() {
             :loading="pushing"
             @click="saveCheck"
           >保存进度</IconTextBtn>
+        </NSpace>
+      </template>
+    </NModal>
+
+    <!-- 改标题：只在排版之前能改 -->
+    <NModal
+      v-model:show="renameShow"
+      preset="card"
+      title="修改标题"
+      style="width: 560px; max-width: 90vw"
+    >
+      <NAlert type="default" :bordered="false" style="margin-bottom: 14px">
+        标题还没参与排版，现在改不影响任何产物。一旦排版（或推过草稿箱）就不能再改了
+        —— 那时标题已经写进 HTML、封面和微信草稿，改了会对不上。
+      </NAlert>
+      <NInput
+        v-model:value="renameDraft"
+        placeholder="新标题"
+        maxlength="64"
+        show-count
+        @keydown.enter="onSaveRename"
+      />
+      <template #footer>
+        <NSpace justify="end">
+          <NButton size="small" @click="renameShow = false">取消</NButton>
+          <NButton size="small" type="primary" :loading="renameSaving" @click="onSaveRename">
+            保存
+          </NButton>
         </NSpace>
       </template>
     </NModal>

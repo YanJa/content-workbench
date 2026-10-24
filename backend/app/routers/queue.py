@@ -24,6 +24,32 @@ from app.schemas.models import (
 router = APIRouter(prefix="/queue", tags=["发布队列"])
 
 
+# 标题长度上限。前端输入框 maxlength 同步这个值；后端不静默截断 —— 超长直接
+# 报错，不然「前端说 64、后端其实截 300」就是又一处规则漂移。
+_TITLE_MAX = 64
+
+
+def _title_editable(item: QueueItem, layout_status: str, processing: str) -> bool:
+    """标题现在还能改吗？
+
+    「未排版之前可以改」—— 这是唯一一处规则，列表接口和 PATCH 都用它，
+    前端只读这个结果，不自己复刻（复刻迟早漂移，变成「按钮在、点了 409」）。
+
+    不能改的四种情况：
+      - 已经排过版（layout_status != none）：标题已经进了 HTML / 封面
+      - 已经推到公众号草稿箱：改了本地标题跟微信侧对不上
+      - 正在加工（排版/生图中）：并发写会互相覆盖
+      - 已发布 / 已归档：事后再改没有意义
+    """
+    if item.wechat_media_id:
+        return False
+    if processing:
+        return False
+    if (layout_status or "none") != "none":
+        return False
+    return item.status in ("draft", "ready")
+
+
 @router.get("/items")
 async def list_items(
     status: str = Query("all", description="状态筛选，逗号分隔可多选；all=全部"),
@@ -85,6 +111,7 @@ async def list_items(
                     Content.processing,
                     Content.conversation_id,
                     Content.meta,
+                    Content.layout_status,
                 ).where(Content.id.in_(cids))
             )
         ).all()
@@ -95,6 +122,9 @@ async def list_items(
             d.processing = (r[1] or "") if r else ""
             d.conversation_id = r[2] if r else None
             d.msg_id = ((r[3] or {}).get("msg_id") if r else None) or None
+            layout_status = (r[4] or "none") if r else "none"
+            d.layout_status = layout_status
+            d.title_editable = _title_editable(it, layout_status, d.processing)
             out.append(d)
     return {"items": out, "total": total, "page": page, "page_size": page_size}
 
@@ -152,9 +182,31 @@ async def update_status(
     item = await db.get(QueueItem, item_id)
     if not item or (item.owner or "default") != owner:
         raise HTTPException(404, "队列项不存在")
-    item.status = req.status
-    if req.status == "published":
-        item.published_at = int(time.time())
+
+    # 改标题：只在未排版之前允许（规则见 _title_editable）
+    if req.title is not None:
+        if not req.title.strip():
+            raise HTTPException(400, "标题不能为空")
+        if len(req.title.strip()) > _TITLE_MAX:
+            raise HTTPException(400, f"标题最长 {_TITLE_MAX} 字")
+        if req.title.strip() == (item.title or ""):
+            req.title = None  # 没变，省一次校验
+    if req.title is not None:
+        content = await db.get(Content, item.content_id)
+        layout_status = (content.layout_status if content else None) or "none"
+        processing = (content.processing if content else None) or ""
+        if not _title_editable(item, layout_status, processing):
+            raise HTTPException(409, "已排版（或已推送/加工中）的队列项不能改标题")
+        item.title = req.title.strip()
+        # 同步 Content.title：加工面板显示的是它，不同步的话用户改完队列标题，
+        # 点开「加工排版」看到的还是旧标题，会以为没生效。
+        if content is not None:
+            content.title = item.title
+
+    if req.status:
+        item.status = req.status
+        if req.status == "published":
+            item.published_at = int(time.time())
     await db.flush()
     return item
 

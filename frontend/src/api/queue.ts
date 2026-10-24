@@ -39,6 +39,16 @@ export async function updateQueueStatus(id: string, status: QueueStatus): Promis
   return data
 }
 
+/**
+ * 改队列项标题。**只有未排版的项能改** —— 排版之后标题已经跟正文/封面/草稿箱
+ * 绑定了，改了会对不上。能不能改以后端返回的 `title_editable` 为准，撞上 409
+ * 说明状态刚变（比如这一刻刚好排版完成），提示用户刷新即可。
+ */
+export async function renameQueueItem(id: string, title: string): Promise<QueueItem> {
+  const { data } = await http.patch(`/queue/items/${id}`, { title })
+  return data
+}
+
 export async function updateChecklist(
   id: string,
   checklist: Record<string, boolean>,
