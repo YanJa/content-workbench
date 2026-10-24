@@ -36,6 +36,7 @@ import {
 
 import { checkHealth } from '@/api/http'
 import { listTools } from '@/api/tools'
+import { getHealthDetail, type HealthDetail } from '@/api/system'
 import { getApiBase, isCustomApiBase, setApiBase } from '@/api/config'
 import {
   clearZhihuSecret,
@@ -82,6 +83,8 @@ interface Health {
 }
 
 const health = ref<Health | null>(null)
+/** 服务健康「详细版」：运行时 / 外部通道 / 模型池 / 最近异常（v1.5.5）。 */
+const detail = ref<HealthDetail | null>(null)
 const tools = ref<ToolInfo[]>([])
 const loading = ref(true)
 const err = ref('')
@@ -281,11 +284,14 @@ async function refresh() {
   err.value = ''
   try {
     // 注意：变量名不要叫 h —— 上面从 vue 导入了渲染函数 h，会被遮蔽
-    const [healthData, toolList] = await Promise.all([
+    const [healthData, toolList, detailData] = await Promise.all([
       checkHealth(),
       listTools().catch(() => [] as ToolInfo[]),
+      // detail 挂了不拖垮卡片：下面的新增行按 null 降级显示
+      getHealthDetail().catch(() => null),
     ])
     health.value = healthData as Health
+    detail.value = detailData
     tools.value = toolList
     void loadWeChat()
     void loadZhihu()
@@ -297,9 +303,31 @@ async function refresh() {
   }
 }
 
+// ------------------------------------------------- 服务健康 · 详细信息（v1.5.5）
+const dbSizeLabel = computed(() => {
+  const n = detail.value?.runtime.db_size_bytes
+  if (n == null) return ''
+  return n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.round(n / 1024)} KB`
+})
+
+/** 知乎今日热榜调用（channels.zhihu 带了 used/quota） */
+
+const poolSummary = computed(() => {
+  const p = detail.value?.pool
+  if (!p) return ''
+  return `${p.providers.length} 家服务商 · ${p.model_count} 个模型`
+})
+
+/** 最近 3 条异常（卡片空间有限，全部异常以健康页数据为准——目前只有这一处入口） */
+const recentErrs = computed(() => (detail.value?.recent_errors ?? []).slice(0, 3))
+
+function errTime(ts: number) {
+  const d = new Date(ts * 1000)
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
 /** 当前对话通道（「AI 对话」卡片所选的 provider + CF 模型）。
- *  失败不阻塞服务健康卡片 —— 回落默认 deepseek，最坏是显示 .env 口径。 */
-async function loadChatProvider() {
+ *  失败不阻塞服务健康卡片 —— 回落默认 deepseek，最坏是显示 .env 口径。 */async function loadChatProvider() {
   try {
     chatProvider.value = await getChatProvider()
     chatModel.value = chatProvider.value.model || ''
@@ -801,6 +829,77 @@ const envColumns: DataTableColumns<EnvRow> = [
                   {{ health?.tools_enabled ? '已开启' : '已关闭' }}
                 </NTag>
               </NDescriptionsItem>
+              <NDescriptionsItem label="模型池">
+                <template v-if="detail">
+                  <div class="pool-cell">
+                    <span class="pool-summary">{{ poolSummary }}</span>
+                    <div class="pool-features">
+                      <div
+                        v-for="b in detail.pool.bindings"
+                        :key="b.feature"
+                        class="pool-feature"
+                      >
+                        <span class="pool-feature-label">{{ b.label }}</span>
+                        <span class="pool-feature-model" :class="{ 'pool-miss': !b.primary }">
+                          {{ b.primary ?? '未绑定' }}
+                        </span>
+                        <span v-if="b.quota" class="pool-quota">
+                          {{ Math.round(b.quota.ratio * 100) }}%
+                        </span>
+                      </div>
+                    </div>
+                    <NAlert
+                      v-for="a in detail.pool.alerts"
+                      :key="a.model + a.level"
+                      :type="a.level === 'danger' ? 'error' : 'warning'"
+                      :bordered="false"
+                      style="margin-top: 8px; padding: 6px 10px"
+                    >
+                      {{ a.message }}
+                    </NAlert>
+                  </div>
+                </template>
+                <span v-else class="health-skip">—</span>
+              </NDescriptionsItem>
+              <NDescriptionsItem label="外部通道">
+                <template v-if="detail">
+                  <div class="chan-cell">
+                    <div v-for="(v, k) in detail.channels" :key="k" class="chan-row">
+                      <NBadge :type="v.ok ? 'success' : 'warning'" dot style="margin-right: 6px" />
+                      <span class="chan-name">{{
+                        { wechat: '公众号', zhihu: '知乎热榜', cloudflare: 'Cloudflare' }[k] ?? k
+                      }}</span>
+                      <span class="chan-detail">{{ v.detail }}</span>
+                    </div>
+                  </div>
+                </template>
+                <span v-else class="health-skip">—</span>
+              </NDescriptionsItem>
+              <NDescriptionsItem label="运行时">
+                <template v-if="detail">
+                  <div class="runtime-cell">
+                    v{{ detail.runtime.version }} · 已运行 {{ detail.runtime.uptime }}
+                    <template v-if="dbSizeLabel"> · 数据库 {{ dbSizeLabel }}</template>
+                  </div>
+                </template>
+                <span v-else class="health-skip">—</span>
+              </NDescriptionsItem>
+              <NDescriptionsItem label="最近异常">
+                <template v-if="detail">
+                  <div v-if="recentErrs.length" class="err-cell">
+                    <div v-for="(e, i) in recentErrs" :key="i" class="err-row">
+                      <span class="err-time">{{ errTime(e.ts) }}</span>
+                      <NTag size="tiny" :bordered="false">{{ e.source }}</NTag>
+                      <span class="err-msg" :title="e.detail || e.message">{{ e.message }}</span>
+                    </div>
+                    <div class="err-note">仅记录本进程内的异常，重启后清空</div>
+                  </div>
+                  <div v-else class="err-empty">
+                    <NBadge type="success" dot style="margin-right: 6px" />暂无异常记录
+                  </div>
+                </template>
+                <span v-else class="health-skip">—</span>
+              </NDescriptionsItem>
             </NDescriptions>
 
             <IconTextBtn name="reset" style="margin-top: 12px" @click="refresh">重新检测</IconTextBtn>
@@ -1243,6 +1342,130 @@ const envColumns: DataTableColumns<EnvRow> = [
 .zhihu-secret-row .n-input {
   flex: 1;
   min-width: 0;
+}
+
+/* ---------------- 服务健康 · 详细信息（v1.5.5） ---------------- */
+/* 模型池：8 个功能槽一行一个（label 定宽对齐，模型名吃剩余宽度）。
+   空间有限所以是「文字 + 百分比」而不是进度条 —— 8 条轨道太挤，
+   超过 80% 的会以警示条形式浮出（pool alerts），比常驻进度条更省眼力。 */
+.pool-cell {
+  min-width: 0;
+}
+.pool-summary {
+  font-size: 12px;
+  color: var(--app-text-3);
+}
+.pool-features {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.pool-feature {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  min-width: 0;
+}
+.pool-feature-label {
+  flex: 0 0 auto;
+  width: 7.5em;
+  color: var(--app-text-3);
+}
+.pool-feature-model {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--app-text);
+}
+.pool-feature-model.pool-miss {
+  color: var(--app-text-3);
+  font-style: italic;
+}
+.pool-quota {
+  flex: 0 0 auto;
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--app-text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 外部通道：三行状态灯 */
+.chan-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.chan-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  min-width: 0;
+}
+.chan-name {
+  flex: 0 0 auto;
+  color: var(--app-text);
+}
+.chan-detail {
+  min-width: 0;
+  color: var(--app-text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 运行时：一行小字 */
+.runtime-cell {
+  font-size: 12.5px;
+  color: var(--app-text-2);
+}
+
+/* 最近异常 */
+.err-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.err-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  min-width: 0;
+}
+.err-time {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  color: var(--app-text-3);
+}
+.err-msg {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--app-text-2);
+}
+.err-note {
+  margin-top: 3px;
+  font-size: 11.5px;
+  color: var(--app-text-3);
+}
+.err-empty {
+  display: flex;
+  align-items: center;
+  font-size: 12.5px;
+  color: var(--app-text-3);
+}
+.health-skip {
+  color: var(--app-text-3);
 }
 
 .grid {

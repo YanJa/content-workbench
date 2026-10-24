@@ -90,6 +90,43 @@ Base URL：`/api`（前端 axios baseURL 同此）。交互式文档：后端启
 
 模型字段是**系统级 .env 配置**（探活不查库，保持轻量）：`model_flash` 管文案/轻任务/视觉，`model_pro` 管复杂推理，`fallback_model` 空 = 主模型失败不兜底。**用户当前实际在用的通道与模型**（在个人资料页改的，DB 优先）另见 `GET /api/settings/chat-provider`——「服务健康」卡片的「AI 模型」行是两者拼出来的。
 
+### GET `/api/system/health-detail` — 服务健康详细数据（v1.5.5，需登录）
+
+设置页「服务健康」卡片的四块新增信息都来自这一个接口。**只读、不拨号**：
+外部通道只查凭证就位与本地计数，不真实调用微信/知乎（健康页刷新一次就发
+外部请求既慢又烧配额）；真实连通性测试留在各卡片的「检测」按钮上。
+
+```json
+{
+  "runtime": { "version": "1.5.5", "env": "dev", "started_at": 0, "uptime_secs": 0,
+               "uptime": "3小时", "db_size_bytes": 12406384, "pid": 123 },
+  "channels": {
+    "wechat":     { "ok": true, "detail": "1 个公众号已配置" },
+    "zhihu":      { "ok": true, "detail": "今日热榜调用 36/100 次", "used": 36, "quota": 100 },
+    "cloudflare": { "ok": true, "detail": "凭证就位（生图 / 对话 / 向量通道可用）" }
+  },
+  "pool": {
+    "providers": [ { "key": "deepseek", "name": "DeepSeek 官方", "kind": "openai" } ],
+    "model_count": 5,
+    "bindings": [ { "feature": "chat", "label": "AI 对话", "primary": "DeepSeek Flash",
+                    "fallbacks": 1, "quota": null } ],
+    "alerts": [ { "level": "warning", "model": "…", "ratio": 0.83, "message": "…额度已用 83%（80% 预警线）" } ]
+  },
+  "recent_errors": [ { "ts": 0, "source": "llm", "message": "模型调用失败(…): …", "detail": "" } ]
+}
+```
+
+字段口径：
+
+- `pool.bindings` 固定 8 个功能槽（`FEATURES`），没绑定的槽 `primary: null`；
+  `quota` 只有设了额度上限的模型才有（`metric` ∈ `day_calls` / `day_tokens` /
+  `month_tokens`），按**平台 Key 口径**（`cred_owner=system`）统计。
+- `pool.alerts`：水位 ≥80% 弹 `warning`、≥100% 弹 `danger`（已自动切备选）。
+- `recent_errors`：进程内环形缓冲（`core/errorlog.py`，上限 50 条，新的在前）。
+  两个入口：`llm`（模型调用失败，`services/llm.py` 两处 except 显式上报）与
+  `http`（FastAPI 全局兜底 handler 记未处理异常，4xx 不记）。**重启即清空**。
+- `db_size_bytes`：SQLite 主库 + WAL/-shm 的磁盘占用；非 SQLite 或内存库为 `null`。
+
 ---
 
 ## 对话

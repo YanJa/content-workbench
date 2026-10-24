@@ -19,6 +19,7 @@ from typing import Any, Literal
 from openai import AsyncOpenAI
 
 from app.core.config import settings
+from app.core.errorlog import record as record_error
 from app.core.logging import logger
 from app.services.model_pool import (
     ModelSpec,
@@ -289,6 +290,7 @@ class LLMClient:
             result = await self._call(client, model, messages, spec, route, tools)
         except Exception as exc:  # noqa: BLE001
             logger.error("模型调用失败(%s): %s", model, exc)
+            record_error("llm", f"模型调用失败({model}): {exc}")
             # 兜底只给 DeepSeek 主通道（CF 与新厂商失败即抛，语义同改造前）
             if spec.provider_key == "deepseek" and self._fallback:
                 logger.info("切换到兜底模型: %s", settings.FALLBACK_MODEL)
@@ -613,6 +615,7 @@ class LLMClient:
                                 slot["arguments"] += tc.function.arguments
         except Exception as exc:  # noqa: BLE001
             logger.error("流式调用失败(%s): %s", model, exc)
+            record_error("llm", f"流式调用失败({model}): {exc}")
             await self._emit(usage_sink, task, model, usage, started, failed=True, spec=spec)
             emitted = True
             if state is not None:

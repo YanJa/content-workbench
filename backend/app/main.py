@@ -30,6 +30,7 @@ from app.routers import (
     revenue,
     settings as settings_router,
     skills,
+    system,
     tools,
     usage,
     voice_clone,
@@ -160,6 +161,24 @@ app.include_router(zhihu.router, prefix=settings.API_PREFIX)
 app.include_router(knowledge.router, prefix=settings.API_PREFIX)
 app.include_router(model_pool.router, prefix=settings.API_PREFIX)
 app.include_router(skills.router, prefix=settings.API_PREFIX)
+app.include_router(system.router, prefix=settings.API_PREFIX)
+
+
+@app.exception_handler(Exception)
+async def _unhandled_error(request: Request, exc: Exception):
+    """全局兜底：任何未处理异常都进「最近异常」环形缓冲。
+
+    没有这个钩子，500 只能翻服务器日志才知道；健康卡片要显示「最近出了什么
+    岔子」，就得在进程内留一份。只记不拦 —— 返回值 None 交给 Starlette 的
+    默认 500 流程，行为不变，多了一份记录。
+    """
+    from app.core.errorlog import record_http
+
+    record_http(request.url.path, request.method, exc)
+    # 与 FastAPI 默认 500 行为一致（handler 必须返回 Response，不能返回 None）
+    from fastapi.responses import JSONResponse
+
+    return JSONResponse({"detail": "Internal Server Error"}, status_code=500)
 
 
 @app.get("/", tags=["系统"])
