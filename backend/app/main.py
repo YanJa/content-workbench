@@ -23,6 +23,7 @@ from app.routers import (
     admin,
     auth,
     chat,
+    humanize,
     knowledge,
     layout,
     model_pool,
@@ -161,6 +162,7 @@ app.include_router(zhihu.router, prefix=settings.API_PREFIX)
 app.include_router(knowledge.router, prefix=settings.API_PREFIX)
 app.include_router(model_pool.router, prefix=settings.API_PREFIX)
 app.include_router(skills.router, prefix=settings.API_PREFIX)
+app.include_router(humanize.router, prefix=settings.API_PREFIX)
 app.include_router(system.router, prefix=settings.API_PREFIX)
 
 

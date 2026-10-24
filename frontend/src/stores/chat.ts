@@ -87,6 +87,7 @@ export const useChatStore = defineStore('chat', () => {
           id: m.id,
           role: m.role as ChatMessage['role'],
           content: m.content,
+          created_at: m.created_at,
           reasoning: m.reasoning || undefined,
           // 模型调用失败的错误信息：后端随该轮回复落库，历史回显继续显示红条
           error: m.error || undefined,
@@ -142,7 +143,7 @@ export const useChatStore = defineStore('chat', () => {
   async function send(text: string, scene?: Platform | null) {
     if (!text.trim() || streaming.value) return
 
-    messages.value.push({ id: uid(), role: 'user', content: text })
+    messages.value.push({ id: uid(), role: 'user', content: text, created_at: Math.floor(Date.now() / 1000) })
     // 上一轮的额度/切换提示不跨轮保留：那是当时的状态，不是本轮的事实
     modelNotice.value = null
 
@@ -152,6 +153,7 @@ export const useChatStore = defineStore('chat', () => {
       content: '',
       streaming: true,
       toolCalls: [],
+      created_at: Math.floor(Date.now() / 1000),
     }
     messages.value.push(assistant)
     streaming.value = true

@@ -71,6 +71,8 @@ const SCENE_LABEL: Record<string, string> = {
   chat: '通用对话',
   summary: '历史压缩',
   layout: '排版装配',
+  humanize: '痕迹改写',
+  imagegen: '配图',
 }
 
 // ------------------------------------------------------------------ 格式化

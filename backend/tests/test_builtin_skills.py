@@ -36,6 +36,11 @@ def test_builtin_zhihu_pack_exists():
     assert "zhihu-content-pack" in skill_svc.builtin_names()
 
 
+def test_builtin_humanize_pack_exists():
+    """v1.7.0 新增：去 AI 味的内置技能包。"""
+    assert "humanize-pack" in skill_svc.builtin_names()
+
+
 def test_builtin_pack_is_valid_skill():
     """内置技能同样要过 frontmatter 校验 —— 它是靠 parse_skill 读进来的。"""
     s = next(x for x in skill_svc._builtin_skills() if x.name == "zhihu-content-pack")
@@ -44,6 +49,17 @@ def test_builtin_pack_is_valid_skill():
     assert "回答" in s.body and "想法" in s.body and "文章" in s.body
     # 官方规范：description 要同时说清「做什么」和「什么时候用」
     assert "知乎" in s.description
+
+
+def test_builtin_humanize_pack_is_valid():
+    s = next(x for x in skill_svc._builtin_skills() if x.name == "humanize-pack")
+    assert s.status == "ready"
+    assert 0 < len(s.description) <= 1024
+    # description 同时说清「做什么 + 什么时候用」
+    assert "AI" in s.description and ("使用" in s.description or "时用" in s.description)
+    # 正文必须带硬纪律：不承诺包过检测、不虚构、事实零改动
+    assert "不承诺" in s.body or "包过" in s.body
+    assert "事实" in s.body
 
 
 def test_builtin_states_no_publish_api():
@@ -66,6 +82,7 @@ def test_list_active_includes_builtin_for_empty_owner():
 
     rows = _run(go())
     assert any(r.name == "zhihu-content-pack" for r in rows)
+    assert any(r.name == "humanize-pack" for r in rows)
     asyncio.run(engine.dispose())
 
 

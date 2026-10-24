@@ -668,6 +668,20 @@ async function copyMessage(content: string) {
   message[ok ? 'success' : 'warning'](ok ? '已复制' : '复制失败，请手动选择复制')
 }
 
+/** 秒级时间戳 → 今天显示 HH:mm，更早显示 MM-DD HH:mm */
+function fmtTime(ts?: number): string {
+  if (!ts) return ''
+  const d = new Date(ts * 1000)
+  const now = new Date()
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}`
+  const sameDay =
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate()
+  return sameDay ? hm : `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${hm}`
+}
+
 async function scrollToBottom() {
   await nextTick()
   scrollRef.value?.scrollTo({ top: 999999, behavior: 'smooth' })
@@ -902,6 +916,9 @@ async function restoreFromQueue() {
           >
             <div class="msg-role">{{ m.role === 'user' ? '我' : 'AI' }}</div>
             <div class="msg-body">
+              <div class="msg-meta">
+                <span class="msg-time" v-if="fmtTime(m.created_at)">{{ fmtTime(m.created_at) }}</span>
+              </div>
               <!-- 工具调用过程。activate_skill 单独渲染：它平时不出现在
                    用户视野里，但「这轮 AI 读了哪个技能」是用户最该知道的
                    一件事 —— 否则技能不生效时完全无从排查。 -->
@@ -949,6 +966,11 @@ async function restoreFromQueue() {
                 <MarkdownView v-if="m.role === 'assistant' && !m.streaming" :content="m.content" />
                 <template v-else>{{ m.content }}</template>
                 <span v-if="m.streaming" class="cursor">▍</span>
+              </div>
+
+              <!-- 用户提问的操作栏：一键复制（便于把问题贴到别处或二次编辑） -->
+              <div v-if="m.role === 'user' && !m.streaming && m.content" class="msg-actions">
+                <ActionBtn name="copy" tip="复制" @click="copyMessage(m.content)" />
               </div>
 
               <!-- AI 回复的操作栏：复制 / 保存到队列（排版在队列页做） -->
@@ -1467,6 +1489,19 @@ async function restoreFromQueue() {
   min-width: 0;
 }
 
+.msg-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+
+.msg-time {
+  font-size: 11px;
+  color: var(--app-text-3);
+  font-variant-numeric: tabular-nums;
+}
+
 .msg-content {
   font-size: 13.5px;
   line-height: 1.85;
@@ -1488,6 +1523,11 @@ async function restoreFromQueue() {
   transition: opacity 0.15s;
 }
 .msg:hover .msg-actions {
+  opacity: 1;
+}
+
+/* 用户提问的复制按钮常亮：hover 才出现会让「一键复制」不好找 */
+.msg-user .msg-actions {
   opacity: 1;
 }
 

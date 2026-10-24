@@ -32,6 +32,7 @@ import {
 import type { UploadFileInfo } from 'naive-ui'
 import MarkdownEditor from './MarkdownEditor.vue'
 import IconTextBtn from './IconTextBtn.vue'
+import HumanTracePanel from './HumanTracePanel.vue'
 import MarkdownView from './MarkdownView.vue'
 import ImageManager from './ImageManager.vue'
 import {
@@ -166,6 +167,9 @@ const themeOptions = computed(() =>
 )
 
 const currentThemeInfo = computed(() => themes.value.find((t) => t.id === theme.value))
+
+// 人工痕迹体检抽屉（零 LLM 的体检 + 走模型的「加痕迹」改写）
+const traceShow = ref(false)
 
 /**
  * 当前生效的 HTML：优先右栏编辑结果 editedHtml，其次库里 body_html。
@@ -673,6 +677,23 @@ function resetPreview() {
 }
 
 /** 保存：把左栏 Markdown + 右栏 HTML 落库。 */
+/**
+ * 痕迹改写写回源文后：刷新本地内容 + 清掉编辑态。
+ * 排版产物已在后端被清空，所以必须把 editedHtml 一起清了——
+ * 否则右栏还挂着旧版 HTML，用户以为看到的还是当前内容。
+ */
+async function onTraceApplied(text: string) {
+  if (!local.value) return
+  try {
+    local.value = await refreshContent(local.value.id)
+  } catch {
+    local.value = { ...local.value, body: text, body_html: '' }
+  }
+  editedHtml.value = ''
+  dirty.value = false
+  emit('done')
+}
+
 async function onSave() {
   if (!local.value) return
   saving.value = true
@@ -821,6 +842,10 @@ onBeforeUnmount(() => {
           >
             文末自动补话题标签
           </NCheckbox>
+          <!-- 痕迹体检：针对**源文**，零 LLM 零成本，所以任何平台都给 -->
+          <IconTextBtn name="search" size="small" :disabled="!local?.body" @click="traceShow = true">
+            痕迹体检
+          </IconTextBtn>
         </template>
         <IconTextBtn name="copy" size="small" :disabled="!hasHtml" @click="onCopyRich">复制富文本</IconTextBtn>
         <template v-if="!isReadonly && !isZhihu">
@@ -1085,6 +1110,15 @@ onBeforeUnmount(() => {
       </div>
     </div>
   </NModal>
+
+  <!-- 人工痕迹体检：独立抽屉，挂在面板外，关掉面板也不受影响 -->
+  <HumanTracePanel
+    v-model:show="traceShow"
+    :content-id="local?.id || ''"
+    :platform="local?.platform || 'gzh'"
+    :text="local?.body || ''"
+    @applied="onTraceApplied"
+  />
 </template>
 
 <style scoped>

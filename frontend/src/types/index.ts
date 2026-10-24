@@ -325,6 +325,8 @@ export interface ChatMessage {
   id: string
   role: 'user' | 'assistant' | 'tool'
   content: string
+  /** 秒级时间戳；新推的消息由前端用 Date.now()/1000 填，历史回显用后端值 */
+  created_at?: number
   streaming?: boolean
   /** 推理模型的思维链，流式累积；只用于展示，不参与正文 */
   reasoning?: string
