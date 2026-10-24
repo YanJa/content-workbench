@@ -30,6 +30,7 @@ import type { QueueItem, QueueStatus, ContentItem } from '@/types'
 import LayoutPanel from '@/components/LayoutPanel.vue'
 import { useAuthStore } from '@/stores/auth'
 import { usePermGate } from '@/composables/usePermGate'
+import { copyHtml, copyText } from '@/utils/clipboard'
 
 const queue = useQueueStore()
 const message = useMessage()
@@ -134,9 +135,7 @@ const checks = ref<Record<string, boolean>>({})
 /** 已发布 = 任务完成，发布检查转为只读（只能看、不能改勾选/保存） */
 const checkReadonly = computed(() => checkItem.value?.status === 'published')
 /** 当前平台的检查项配置（平台没配过检查项时为 null，弹窗降级为纯确认） */
-const checkCfg = computed(() =>
-  checkItem.value ? (CHECKLISTS[checkItem.value.platform] ?? null) : null,
-)
+const checkCfg = computed(() => checklistOf(checkItem.value))
 
 /**
  * 检查弹窗的两种来路：
@@ -165,6 +164,14 @@ const platformName: Record<string, string> = {
   gzh: '📰 公众号',
   xiaohongshu: '📕 小红书',
   douyin: '🎵 抖音',
+  zhihu: '✍️ 知乎',
+}
+
+/** 知乎子形态展示名（与后端 ZHIHU_SUBTYPE_LABELS 同一套口径） */
+const ZHIHU_SUB_NAME: Record<string, string> = {
+  answer: '回答',
+  article: '文章',
+  idea: '想法',
 }
 
 /** 加工中标记 → 展示文案（'' 表示空闲） */
@@ -209,6 +216,53 @@ const CHECKLISTS: Record<string, { channel: string; path: string; items: { key: 
       { key: 'music', text: '背景音乐版权已确认（用平台曲库）' },
     ],
   },
+  // 知乎三种形态是三条不同的发布路径，检查项也完全不同：
+  // 回答看「增量」，文章看「结构」，想法看「话题标签」。
+  zhihu_answer: {
+    channel: '知乎问题页（手动发布）',
+    path: '复制富文本 → 到问题页点「写回答」→ 粘贴 → 发布 → 回来标记已发',
+    items: [
+      { key: 'question', text: '归属问题已确认（回答挂对了地方）' },
+      { key: 'lead', text: '开头两屏内有明确结论' },
+      { key: 'increment', text: '写清楚了「比现有高赞回答多了什么」' },
+      { key: 'support', text: '每个分点都有数据 / 案例 / 操作步骤其中之一' },
+      { key: 'tone', text: '没有求赞收藏的套话、没有八股连接词' },
+      { key: 'paste', text: '粘贴后小标题与列表格式没乱' },
+    ],
+  },
+  zhihu_article: {
+    channel: '知乎专栏（手动发布）',
+    path: '复制富文本 → 到专栏写作页 → 粘贴 → 加话题 → 发布 → 回来标记已发',
+    items: [
+      { key: 'title', text: '标题 15-30 字，不是标题党' },
+      { key: 'digest', text: '摘要已填（100 字内）' },
+      { key: 'structure', text: '分 4-6 节，节与节之间是推进关系' },
+      { key: 'actionable', text: '至少有一处可复现的清单 / 对比 / 步骤' },
+      { key: 'topic', text: '已添加话题（影响分发）' },
+      { key: 'paste', text: '粘贴后小标题与列表格式没乱' },
+    ],
+  },
+  zhihu_idea: {
+    channel: '知乎想法（手动发布）',
+    path: '复制文案 → 到创作中心发想法 → 粘贴 → 加话题 → 发布 → 回来标记已发',
+    items: [
+      { key: 'one', text: '只讲了一个观点，没有展开成文章' },
+      { key: 'lead', text: '第一行就有信息量' },
+      { key: 'len', text: '50-300 字，没写成长文' },
+      { key: 'tags', text: '话题标签 1-3 个已带' },
+    ],
+  },
+}
+
+/**
+ * 检查项配置：知乎按子形态取（三种形态路径不同），其余平台按 platform 取。
+ */
+function checklistOf(row: QueueItem | null) {
+  if (!row) return null
+  if (row.platform === 'zhihu') {
+    return CHECKLISTS[`zhihu_${row.sub_type || 'answer'}`] ?? CHECKLISTS.zhihu_answer
+  }
+  return CHECKLISTS[row.platform] ?? null
 }
 
 const columns = computed<DataTableColumns<QueueItem>>(() => [
@@ -242,8 +296,18 @@ const columns = computed<DataTableColumns<QueueItem>>(() => [
   {
     title: '平台',
     key: 'platform',
-    width: 110,
-    render: (row) => platformName[row.platform] ?? row.platform,
+    width: 130,
+    // 知乎带上子形态：回答/文章/想法是三条完全不同的发布路径，
+    // 光写「知乎」用户不知道这条该往哪儿发。
+    render: (row) => {
+      const base = platformName[row.platform] ?? row.platform
+      if (row.platform !== 'zhihu') return base
+      const sub = ZHIHU_SUB_NAME[row.sub_type ?? ''] ?? '回答'
+      return h('span', null, [
+        base,
+        h('span', { style: 'color:var(--app-text-3);font-size:12px' }, `·${sub}`),
+      ])
+    },
   },
   {
     title: '状态',
@@ -300,6 +364,7 @@ const columns = computed<DataTableColumns<QueueItem>>(() => [
       // 加工中（排版/生图）禁用所有会改状态的操作，避免重复触发/冲突
       const busy = !!row.processing
       const isGzh = row.platform === 'gzh'
+      const isZhihu = row.platform === 'zhihu'
       const items = [
         // 加工排版 / 查看排版：加工中时禁用，tooltip 显示当前加工阶段
         actionBtn(
@@ -337,7 +402,9 @@ const columns = computed<DataTableColumns<QueueItem>>(() => [
                 isGzh ? 'send' : 'copy',
                 isGzh
                   ? `推微信草稿箱${pushGate.left.value === null ? '' : `（剩 ${pushGate.left.value}）`}`
-                  : '复制文案',
+                  : isZhihu
+                    ? '复制富文本（粘到知乎编辑器保留标题与列表）'
+                    : '复制文案',
                 () => onPushDraft(row),
                 {
                   type: isGzh ? 'primary' : 'default',
@@ -345,6 +412,14 @@ const columns = computed<DataTableColumns<QueueItem>>(() => [
                   disabled: busy || pushing.value || (isGzh && pushGate.blocked.value),
                 },
               ),
+        // 知乎：官方没有发布接口，系统给的是「人带着内容去发」的入口。
+        // 这个按钮省掉的是「我该去哪个页面发」这一步 —— 三种形态入口各不相同。
+        isZhihu && row.publish_url
+          ? actionBtn('link', '去知乎发布（打开对应形态的发布页）', () => gotoPublish(row), {
+              type: 'primary',
+              disabled: busy,
+            })
+          : null,
         // 标记已发：公众号必须先推到微信草稿箱（wechat_media_id 非空）才能标记，
         // 否则推完草稿箱前就标记完成，等于绕过合规发布流程
         row.status !== 'published'
@@ -466,7 +541,7 @@ function openPublishCheck(row: QueueItem) {
 }
 
 function _fillCheck(row: QueueItem) {
-  const cfg = CHECKLISTS[row.platform]
+  const cfg = checklistOf(row)
   const saved = row.checklist ?? {}
   checkItem.value = row
   checks.value = Object.fromEntries(
@@ -484,7 +559,7 @@ async function saveCheck() {
 
 /** 未勾选的检查项条数（提示用，不阻断） */
 function uncheckedCount(row: QueueItem): number {
-  const cfg = CHECKLISTS[row.platform]
+  const cfg = checklistOf(row)
   if (!cfg) return 0
   return cfg.items.filter((i) => !checks.value[i.key]).length
 }
@@ -608,6 +683,17 @@ async function onCancelProcessing(row: QueueItem) {
   }
 }
 
+/**
+ * 「去知乎发布」：新窗口打开对应形态的发布页。
+ *
+ * 知乎官方没有发布接口（详见 docs/知乎内容生产调研.md），所以系统能做的
+ * 是让人少走一步——不用自己去找「写文章/写回答/发想法」在哪。
+ */
+function gotoPublish(row: QueueItem) {
+  if (!row.publish_url) return
+  window.open(row.publish_url, '_blank', 'noopener,noreferrer')
+}
+
 /** 公众号推草稿箱 / 其他平台复制文案 */
 async function onPushDraft(row: QueueItem) {
   // 正文不在队列项里，得回到内容表取一次
@@ -619,12 +705,27 @@ async function onPushDraft(row: QueueItem) {
   }
 
   if (row.platform !== 'gzh') {
-    // 非公众号：复制纯文本，用户在 App 里粘贴
+    // 知乎：编辑器是富文本，粘 Markdown 源码会原样显示 # 和 *，
+    // 所以有排版产物时复制成 HTML（保留标题/加粗/列表），没有才退化为纯文本。
+    if (row.platform === 'zhihu') {
+      const html = (content?.layouts as Record<string, { html?: string }> | null)?.zhihu?.html
+        || content?.body_html
+        || ''
+      if (html) {
+        const r = await copyHtml(html, `${row.title}\n\n${content?.body ?? ''}`)
+        message[r === 'fail' ? 'error' : 'success'](
+          r === 'rich'
+            ? '富文本已复制，去知乎编辑器里直接粘贴（标题与列表格式保留）'
+            : r === 'plain'
+              ? '已复制为纯文本（当前浏览器不支持复制富文本）'
+              : '复制失败，请到「加工排版」里手动复制',
+        )
+        return
+      }
+    }
+    // 其它平台 / 知乎还没排版：复制纯文本，用户在 App 里粘贴
     const body = content?.body ?? ''
-    const ok = await navigator.clipboard
-      .writeText(`${row.title}\n\n${body}`)
-      .then(() => true)
-      .catch(() => false)
+    const ok = await copyText(`${row.title}\n\n${body}`)
     message[ok ? 'success' : 'warning'](
       ok ? '标题 + 正文已复制，去对应 App 粘贴发布' : '复制失败，请手动到内容详情复制',
     )

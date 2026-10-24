@@ -62,7 +62,7 @@ export async function getThemeOptions(contentId: string): Promise<{
 export async function layoutContent(
   contentId: string,
   theme: string,
-  platform: 'gzh' | 'xiaohongshu' = 'gzh',
+  platform: 'gzh' | 'xiaohongshu' | 'zhihu' = 'gzh',
   autoCover = true,
   authorName = '',
   authorIntro = '',

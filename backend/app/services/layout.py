@@ -430,6 +430,10 @@ async def layout_content(
         tick(40, "AI 正在规整小红书笔记文本…")
         return await _layout_xiaohongshu(db, content)
 
+    if platform == "zhihu":
+        tick(40, "正在生成知乎可粘贴富文本…")
+        return await _layout_zhihu(db, content)
+
     images = content.images or []
     manifest = _image_manifest(images)
 
@@ -554,6 +558,57 @@ async def _layout_xiaohongshu(db: AsyncSession, content: Content) -> dict[str, A
         "warnings": [],
         "layout_status": "ready",
         "text": text,
+    }
+
+
+async def _layout_zhihu(db: AsyncSession, content: Content) -> dict[str, Any]:
+    """知乎排版：Markdown → 干净语义 HTML（粘进编辑器直接保格式）。
+
+    与公众号的分野：公众号要内联样式，知乎要裸语义标签 —— 它的编辑器是
+    ProseMirror，按标签转成自己的内容块，内联 style 会被剥掉或变成脏 span。
+
+    与小红书的分野：小红书是纯文本平台，让模型重写一遍；知乎要保留结构
+    （标题/列表/引用），所以这里只做机械转换，一个字都不改。
+
+    不调 LLM：这步没有创作成分，用模型既慢又费钱，还可能顺手改内容。
+    """
+    from app.services.zhihu_render import plain_text, render_zhihu
+
+    md = (content.body or "").strip()
+    html = render_zhihu(md)
+    if not html:
+        return {"ok": False, "error": "内容正文为空，无法排版"}
+
+    now = int(time.time())
+    layouts = dict(content.layouts or {})
+    layouts["zhihu"] = {
+        "html": html,
+        "text": plain_text(md),
+        "updated_at": now,
+    }
+    content.layouts = layouts
+    # 同时写 body_html：加工面板的预览/编辑/复制 HTML 三处都读这个字段，
+    # 不写的话知乎排版完面板还是空的（用户会以为没排上）。
+    # 语义上 body_html 就是「这条内容排版后的 HTML」，知乎版同样成立。
+    content.body_html = html
+    content.layout_status = "ready"
+    content.updated_at = now
+    await db.flush()
+    return {
+        "ok": True,
+        "theme": "zhihu",
+        "theme_name": "知乎富文本",
+        "html_len": len(html),
+        "errors": [],
+        # 提示不是报错：图片必须手动上传（本地链接知乎抓不到），
+        # 这是客观限制，早说比用户粘贴后发现裂图好。
+        "warnings": (
+            ["配图需在知乎编辑器里手动上传：本地图片链接知乎抓不到"]
+            if content.images
+            else []
+        ),
+        "layout_status": "ready",
+        "html": html,
     }
 
 
@@ -775,7 +830,12 @@ async def _run_layout_job(
                 try:
                     # 封面先于装配：这样 LLM 能在清单里看到「1. 封面」并据此决定
                     # 是否在文首留 <!--IMG:1--> 占位
-                    if auto_cover:
+                    #
+                    # 知乎例外：只有专栏文章有封面位，回答和想法没有 ——
+                    # 给它们生成一张封面纯属浪费（用户也用不上）。
+                    if auto_cover and not (
+                        platform == "zhihu" and (c.sub_type or "answer") != "article"
+                    ):
                         _set_job(task_id, progress=8, stage="生成封面…")
                         await _ensure_cover(db, c, theme_id)
                     result = await layout_content(

@@ -23,6 +23,9 @@ import {
   NForm,
   NFormItem,
   NTooltip,
+  NTabs,
+  NTabPane,
+  NEmpty,
   useMessage,
 } from 'naive-ui'
 
@@ -35,7 +38,13 @@ import HotInspiration from '@/components/HotInspiration.vue'
 import { usePermGate } from '@/composables/usePermGate'
 import { estimateUsage } from '@/api/usage'
 import { saveToQueue, fetchSavedMap } from '@/api/queue'
-import { fetchHotList, refreshHot, type HotTopicItem } from '@/api/zhihu'
+import {
+  fetchHotList,
+  refreshHot,
+  fetchQuestionRecommendations,
+  type HotTopicItem,
+  type ZhihuQuestion,
+} from '@/api/zhihu'
 import type { UsageBreakdown } from '@/api/usage'
 import type { Platform } from '@/types'
 import MarkdownView from '@/components/MarkdownView.vue'
@@ -108,9 +117,29 @@ const platformOptions = [
   { label: '📰 公众号', value: 'gzh' },
   { label: '📕 小红书', value: 'xiaohongshu' },
   { label: '🎵 抖音', value: 'douyin' },
+  { label: '✍️ 知乎', value: 'zhihu' },
 ]
 
 const scene = ref<string>('')
+
+/**
+ * 知乎子形态。三种形态篇幅差一个数量级（回答 600-2000 / 文章 1500-6000 /
+ * 想法 50-300），不显式选就没法给模型一个明确的字数目标。
+ * 只在 scene=zhihu 时出现，别的平台不留这个控件——多一个永远空着的
+ * 下拉，只会让人怀疑自己漏填了什么。
+ */
+const ZHIHU_SUB_OPTIONS = [
+  { label: '回答', value: 'answer' },
+  { label: '文章', value: 'article' },
+  { label: '想法', value: 'idea' },
+]
+/** 一句话说明这个形态是干嘛的 —— 光看「回答/文章/想法」看不出该选哪个 */
+const ZHIHU_HINT: Record<string, string> = {
+  answer: '回答 600-2000 字，结论先行，要写出比高赞回答多的那部分',
+  article: '专栏长文 1500-6000 字，结构化写透一个话题',
+  idea: '想法 50-300 字，只讲一个观点 + 话题标签',
+}
+const zhihuSub = ref<string>('answer')
 
 // ---- 会话重命名 / 删除（列表 UI 在 ConvList 里，这里只处理数据动作）----
 async function onRename(id: string, title: string) {
@@ -287,6 +316,25 @@ const quickPrompts = computed(() => {
       '把「如何开始做内容运营」拆成 3 个分镜',
       '给「内容运营」主题写前 3 秒的钩子，要抓人',
     ]
+  if (scene.value === 'zhihu') {
+    if (zhihuSub.value === 'article')
+      return [
+        '写一篇知乎专栏文章，讲清楚内容运营的整套工作流',
+        '把「选题比产量重要」写成一篇 3000 字的知乎长文',
+        '以「新人怎么做内容运营」为题写一篇知乎文章，要有可复现的步骤',
+      ]
+    if (zhihuSub.value === 'idea')
+      return [
+        '写一条知乎想法，分享一个今天刚发现的内容运营小技巧',
+        '就「做得久比做得快重要」写一条 100 字左右的想法',
+        '围绕「选题枯竭」写一条带个人观察的知乎想法',
+      ]
+    return [
+      '回答「新人怎么开始做内容运营」，要写出跟高赞回答不一样的东西',
+      '写一个关于「内容运营每天该干什么」的知乎回答，结论放在开头',
+      '回答「做内容运营需要什么能力」，给出可复现的操作步骤',
+    ]
+  }
   return ['帮我写一篇公众号文章', '队列里现在有什么？', '这个月的内容选题有什么建议？']
 })
 
@@ -295,6 +343,11 @@ async function onSend() {
   if (!text || chat.streaming || sendGate.blocked.value) return
   input.value = ''
   chat.platform = (scene.value || null) as Platform | null
+  chat.subType = scene.value === 'zhihu' ? zhihuSub.value : ''
+  // 只有「知乎 + 回答」才带归属问题：文章/想法挂在自己专栏/动态下，没有归属问题
+  if (!(scene.value === 'zhihu' && zhihuSub.value === 'answer')) {
+    chat.zhihuQuestion = ''
+  }
   // 乐观置灰：配额是「提交时预扣」，请求发出去就已经记上了。
   // 万一后端其实拒了（429），http 拦截器会刷新 /auth/me 把数字纠正回来。
   auth.markUsed('chat')
@@ -330,6 +383,62 @@ const hotConfigured = ref<boolean | undefined>(undefined)
 const inspireShow = ref(false)
 /** 抽屉展示全量（桌面 8 条），空白会话只露 Top 5，避免欢迎区被榜单淹没 */
 const hotTop5 = computed(() => hotItems.value.slice(0, 5))
+
+// ---- 知乎「待答问题」（选题闭环的另一半）----
+// 热榜是「全站在看什么」，这个是「适合我答什么」。差别不只是角度：
+// 推荐接口**每次调用都真金白银花额度**，所以只能用户主动切过来才拉。
+const inspireTab = ref<'hot' | 'questions'>('hot')
+const recItems = ref<ZhihuQuestion[]>([])
+const recLoading = ref(false)
+const recError = ref('')
+const recLoaded = ref(false)
+
+async function loadRecommendations(force = false) {
+  if (recLoaded.value && !force) return
+  recLoading.value = true
+  recError.value = ''
+  try {
+    const r = await fetchQuestionRecommendations(10)
+    recItems.value = r.items ?? []
+    recLoaded.value = true
+    if (!r.ok) recError.value = r.error || '推荐问题加载失败'
+  } catch (e) {
+    recError.value = (e as Error).message
+  } finally {
+    recLoading.value = false
+  }
+}
+
+/**
+ * 选一条待答问题：把它设为本次回答的**归属问题**。
+ *
+ * 设了之后后端生成时会自动拉一次同问题的头部回答作为「已有答案边界」，
+ * 「必须写出比高赞多的东西」这句要求才有着落 —— 不然模型只能靠猜。
+ */
+/** 归属问题的短标签：只露问题 id，完整链接太长会挤掉工具栏 */
+const qidLabel = computed(() => {
+  const m = (chat.zhihuQuestion || '').match(/question\/(\d+)/)
+  return m ? `#${m[1].slice(-6)}` : '已选问题'
+})
+
+/** 切到「待答问题」时才拉 —— 这个接口真的花额度，不能打开抽屉就烧一次 */
+function onInspireTab(v: string) {
+  if (v === 'questions') void loadRecommendations()
+}
+
+function useRecommendedQuestion(q: ZhihuQuestion) {
+  if (scene.value !== 'zhihu') {
+    // 顺手切过去：从「待答问题」进来的人显然是要写知乎
+    scene.value = 'zhihu'
+    zhihuSub.value = 'answer'
+  }
+  chat.zhihuQuestion = q.url
+  input.value = `回答知乎问题「${q.title}」：结论放在开头，并写出比现有高赞回答多的那部分`
+  inspireShow.value = false
+  void nextTick(() => {
+    document.querySelector<HTMLTextAreaElement>('.composer textarea')?.focus()
+  })
+}
 
 async function loadHot() {
   hotLoading.value = true
@@ -382,6 +491,13 @@ function topicPrompt(title: string): string {
     return `知乎热榜话题${t}很适合小红书，帮我写一篇观点笔记，标题要有点击欲`
   if (scene.value === 'douyin')
     return `把知乎热榜话题${t}拆成一条 60 秒口播脚本，前 3 秒要有钩子`
+  if (scene.value === 'zhihu') {
+    if (zhihuSub.value === 'article')
+      return `就知乎热榜话题${t}写一篇专栏文章，要有自己的判断和可复现的方法`
+    if (zhihuSub.value === 'idea')
+      return `就知乎热榜话题${t}写一条想法，只讲一个观察，100 字左右`
+    return `以知乎热榜话题${t}为背景，写一个回答：结论放在开头，并写出比现有高赞回答多的那部分`
+  }
   return `我想写知乎热榜话题${t}，帮我分析有哪些切入角度，各自适合什么平台`
 }
 
@@ -427,6 +543,10 @@ function onReject(idx: number) {
 const saveModalShow = ref(false)
 const savingMsg = ref<{ id: string; content: string } | null>(null)
 const savePlatform = ref<Platform>('gzh')
+/** 保存弹窗里的知乎子形态（与对话区的 zhihuSub 各自独立：可以换形态存） */
+const saveZhihuSub = ref<string>('answer')
+/** 知乎回答挂在哪个问题下（传 URL 或纯 ID，后端归一）。留空不影响保存 */
+const saveZhihuQuestion = ref('')
 const saveTitle = ref('')
 const saveSubmitting = ref(false)
 /** msg.id → content_id：记录哪些消息已保存到队列，操作栏据此显示「去队列」 */
@@ -475,6 +595,8 @@ function guessSummary(md: string): string {
 function openSaveModal(msg: { id: string; content: string }) {
   savingMsg.value = { id: msg.id, content: msg.content }
   savePlatform.value = (scene.value || 'gzh') as Platform
+  saveZhihuSub.value = zhihuSub.value || 'answer'
+  saveZhihuQuestion.value = ''
   saveTitle.value = guessTitle(msg.content)
   saveModalShow.value = true
 }
@@ -496,6 +618,12 @@ async function doSaveToQueue() {
       kind: 'text',
       conversation_id: chat.currentId,
       msg_id: msg.id,
+      ...(savePlatform.value === 'zhihu'
+        ? {
+            sub_type: saveZhihuSub.value,
+            zhihu_question: saveZhihuQuestion.value.trim(),
+          }
+        : {}),
     })
     if (res.ok) {
       savedMap.value[msg.id] = res.content_id
@@ -654,9 +782,30 @@ async function restoreFromQueue() {
               style="width: 150px"
               :disabled="chat.streaming"
             />
-            <span class="toolbar-hint">
-              平台会决定 AI 的写作规则与格式；留空则为通用对话
+            <!-- 知乎子形态：三种形态篇幅差一个数量级，只在选了知乎时出现 -->
+            <NSelect
+              v-if="scene === 'zhihu'"
+              v-model:value="zhihuSub"
+              :options="ZHIHU_SUB_OPTIONS"
+              size="small"
+              style="width: 96px"
+              :disabled="chat.streaming"
+            />
+            <span v-if="scene !== 'zhihu' || !chat.zhihuQuestion" class="toolbar-hint">
+              {{ scene === 'zhihu' ? ZHIHU_HINT[zhihuSub] : '平台会决定 AI 的写作规则与格式；留空则为通用对话' }}
             </span>
+            <!-- 归属问题：显示出来而不是默默生效 —— 用户得知道这一轮会先去看
+                 别人怎么答的（那要花 1 次知乎额度），也能一键取消 -->
+            <NTag
+              v-else
+              size="small"
+              :bordered="false"
+              type="info"
+              closable
+              @close="chat.zhihuQuestion = ''"
+            >
+              参考问题：{{ qidLabel }}
+            </NTag>
             <!-- 热榜灵感呼出入口：空白会话会自动展示，这里是「对话中途
                  不知道写什么了」的常驻入口 -->
             <IconTextBtn
@@ -976,15 +1125,32 @@ async function restoreFromQueue() {
               { label: '📰 公众号', value: 'gzh' },
               { label: '📕 小红书', value: 'xiaohongshu' },
               { label: '🎵 抖音', value: 'douyin' },
+              { label: '✍️ 知乎', value: 'zhihu' },
             ]"
           />
         </NFormItem>
+        <!-- 知乎专属：形态 + 归属问题（回答要挂在具体问题下，填了队列页直接给深链） -->
+        <template v-if="savePlatform === 'zhihu'">
+          <NFormItem label="形态">
+            <NSelect v-model:value="saveZhihuSub" :options="ZHIHU_SUB_OPTIONS" />
+          </NFormItem>
+          <NFormItem v-if="saveZhihuSub === 'answer'" label="问题链接">
+            <NInput
+              v-model:value="saveZhihuQuestion"
+              placeholder="选填：知乎问题链接或问题 ID"
+            />
+          </NFormItem>
+        </template>
         <NFormItem label="标题">
           <NInput v-model:value="saveTitle" placeholder="给这份内容起个标题" />
         </NFormItem>
       </NForm>
       <div class="hint" style="margin-top: -4px">
-        保存后进入发布队列（状态：待加工），去队列页做排版、配图，再推公众号草稿箱。
+        {{
+          savePlatform === 'zhihu'
+            ? '知乎没有开放发布接口：保存后去队列页排版，再复制富文本到知乎编辑器手动发布（队列页会给出对应入口）。'
+            : '保存后进入发布队列（状态：待加工），去队列页做排版、配图，再推公众号草稿箱。'
+        }}
       </div>
       <template #footer>
         <NSpace justify="end">
@@ -1022,15 +1188,47 @@ async function restoreFromQueue() {
          （标题 + 更新时间 + 管理员刷新），再套一层标题会重复。 -->
     <NDrawer v-model:show="inspireShow" :width="isMobile ? '100%' : 420" placement="right">
       <NDrawerContent closable>
-        <HotInspiration
-          :items="hotItems"
-          :loading="hotLoading"
-          :error="hotError"
-          :fetched-at="hotFetchedAt"
-          :configured="hotConfigured"
-          @use="useHotTopic"
-          @refresh="onRefreshHot"
-        />
+        <NTabs v-model:value="inspireTab" type="line" size="small" @update:value="onInspireTab">
+          <NTabPane name="hot" tab="🔥 热榜">
+            <HotInspiration
+              :items="hotItems"
+              :loading="hotLoading"
+              :error="hotError"
+              :fetched-at="hotFetchedAt"
+              :configured="hotConfigured"
+              @use="useHotTopic"
+              @refresh="onRefreshHot"
+            />
+          </NTabPane>
+          <NTabPane name="questions" tab="✍️ 待答问题">
+            <div class="rec-panel">
+              <div class="rec-hint">
+                按你的账号画像推荐的问题。选一条后，生成时会自动参考该问题下已有的回答
+                —— 这样才知道该往哪写增量。
+              </div>
+              <NAlert v-if="recError" type="warning" :bordered="false" size="small">
+                {{ recError }}
+              </NAlert>
+              <div v-if="recLoading" class="rec-empty">正在拉取…</div>
+              <NEmpty v-else-if="!recItems.length" description="暂无推荐（可能未配置知乎凭证）" />
+              <div v-for="q in recItems" :key="q.url" class="rec-item">
+                <div class="rec-title">{{ q.title }}</div>
+                <NSpace :size="6">
+                  <NButton size="tiny" type="primary" quaternary @click="useRecommendedQuestion(q)">
+                    以此选题
+                  </NButton>
+                  <NButton size="tiny" quaternary tag="a" :href="q.url" target="_blank">
+                    看原题
+                  </NButton>
+                </NSpace>
+              </div>
+              <div v-if="recLoaded && !recLoading" class="rec-foot">
+                <NButton size="tiny" quaternary @click="loadRecommendations(true)">换一批</NButton>
+                <span class="rec-note">每次调用消耗 1 次知乎额度</span>
+              </div>
+            </div>
+          </NTabPane>
+        </NTabs>
       </NDrawerContent>
     </NDrawer>
   </div>
@@ -1553,5 +1751,50 @@ async function restoreFromQueue() {
   .send-btn {
     width: 100%;
   }
+}
+
+/* ---- 待答问题面板（灵感抽屉第二个 tab）---- */
+.rec-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 4px;
+}
+
+.rec-hint {
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--app-text-2);
+}
+
+.rec-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+}
+
+.rec-title {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--app-text-1);
+}
+
+.rec-empty {
+  font-size: 12px;
+  color: var(--app-text-3);
+}
+
+.rec-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.rec-note {
+  font-size: 11px;
+  color: var(--app-text-3);
 }
 </style>

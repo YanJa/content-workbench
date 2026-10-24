@@ -27,8 +27,11 @@ class Content(Base):
     __tablename__ = "contents"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    platform: Mapped[str] = mapped_column(String(32), index=True)  # gzh/xiaohongshu/douyin
+    platform: Mapped[str] = mapped_column(String(32), index=True)  # gzh/xiaohongshu/douyin/zhihu
     kind: Mapped[str] = mapped_column(String(16), default="text")  # text / video
+    # 平台内的子形态。目前只有知乎用：answer（回答）/ article（文章专栏）/ idea（想法）。
+    # 其余平台恒为空串 —— 一个知乎在统计上是一条平台，形态差异不该炸成三个平台。
+    sub_type: Mapped[str] = mapped_column(String(16), default="")
     title: Mapped[str] = mapped_column(String(300), default="")
     # 纯内容正文：结构化 Markdown（# 标题 / > 导语 / ## 小标题 / 正文）
     body: Mapped[str] = mapped_column(Text, default="")
@@ -68,6 +71,9 @@ class QueueItem(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     content_id: Mapped[str] = mapped_column(String(36), index=True)
     platform: Mapped[str] = mapped_column(String(32), index=True)
+    # 子形态：决定这条发出去是「回答」还是「文章」，队列页据此给发布深链。
+    # 与 Content.sub_type 同源，入队时复制一份（队列页不该为了显示去 join 内容表）。
+    sub_type: Mapped[str] = mapped_column(String(16), default="")
     title: Mapped[str] = mapped_column(String(300), default="")
     # draft(待加工) / ready(待发布) / published(已发布) / archived(已归档)
     # 新建即 draft —— 内容先进队列，用户加工排版后才「待发布」（2026-10-16 起）

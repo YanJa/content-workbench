@@ -39,6 +39,17 @@ export async function skillsMeta(): Promise<SkillsMeta> {
   return data
 }
 
+/** 内置技能（随代码发布，只读：没有 id、不能删、不能停用） */
+export interface BuiltinSkill {
+  name: string
+  description: string
+}
+
+export async function listBuiltinSkills(): Promise<BuiltinSkill[]> {
+  const { data } = await http.get('/skills/builtins')
+  return data?.items ?? []
+}
+
 /** 粘贴 / 手填录入（正文里必须带 frontmatter）。同名覆盖。 */
 export async function createSkill(text: string): Promise<Skill> {
   const { data } = await http.post('/skills', { text })

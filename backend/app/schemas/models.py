@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 # ---------------------------------------------------------------- 会话
 class ConversationCreate(BaseModel):
     title: str = Field(default="新对话", max_length=200)
-    scene: Literal["chat", "gzh", "xiaohongshu", "douyin"] = "chat"
+    scene: Literal["chat", "gzh", "xiaohongshu", "douyin", "zhihu"] = "chat"
 
 
 class ConversationOut(BaseModel):
@@ -57,7 +57,14 @@ class ConversationDetail(ConversationOut):
 class ChatRequest(BaseModel):
     conversation_id: str | None = None
     message: str
-    platform: Literal["gzh", "xiaohongshu", "douyin"] | None = None
+    platform: Literal["gzh", "xiaohongshu", "douyin", "zhihu"] | None = None
+    # 平台内子形态（目前只有知乎用：answer / article / idea）。
+    # 传了非知乎平台会被后端归一成空串，不报错 —— 前端多带一个字段不该炸。
+    sub_type: str = ""
+    # 知乎回答归属的问题（URL 或纯 ID）。非空时后端拉一次同问题头部回答，
+    # 作为「已有答案边界」注入 —— 这是「必须写出增量」能落地的前提。
+    # 仅在 platform=zhihu + sub_type=answer 时生效。
+    zhihu_question: str = ""
     topic: str = ""
     audience: str = ""
     # 是否允许模型调用工具
@@ -117,6 +124,8 @@ class ContentOut(BaseModel):
     id: str
     platform: str
     kind: str
+    # 子形态（知乎：answer / article / idea；其余平台空串）
+    sub_type: str = ""
     title: str
     body: str
     summary: str = ""
@@ -140,14 +149,20 @@ class ContentOut(BaseModel):
 class ContentCreateRequest(BaseModel):
     """用户点「保存到队列」时提交（对话产出的显式入库动作）。"""
 
-    platform: Literal["gzh", "xiaohongshu", "douyin"]
+    platform: Literal["gzh", "xiaohongshu", "douyin", "zhihu"]
     title: str
     body: str
     summary: str = ""
     kind: Literal["text", "video"] = "text"
+    # 子形态（知乎三形态）。后端用 normalize_sub_type 收敛：非知乎归空，
+    # 知乎传错回落 answer —— 不让老客户端/漏传直接 400。
+    sub_type: str = ""
     conversation_id: str | None = None
     # 前端消息 id，便于回溯是哪条 AI 回复存下来的
     msg_id: str | None = None
+    # 知乎回答要挂在哪个问题下（传问题 URL 或纯 ID 都行，后端统一归一）。
+    # 只有 zhihu + answer 有意义；其余情况存了也不展示。
+    zhihu_question: str = ""
 
 
 class ContentUpdateRequest(BaseModel):
@@ -165,7 +180,7 @@ class ContentUpdateRequest(BaseModel):
 
 class LayoutRequest(BaseModel):
     theme: str = "moyu-green"
-    platform: Literal["gzh", "xiaohongshu"] = "gzh"
+    platform: Literal["gzh", "xiaohongshu", "zhihu"] = "gzh"
     # 排版前是否自动按正文生成一张封面（默认开）。cover 通道不可用时静默跳过。
     auto_cover: bool = True
     # 公众号排版完成后是否自动在文末补 2-3 个精准 #话题#（默认开）。
@@ -244,6 +259,12 @@ class QueueItemOut(BaseModel):
     # 来源会话与消息（从 Content join 出来）：队列页据此「回到对话」并定位到那条回复
     conversation_id: str | None = None
     msg_id: str | None = None
+    # 子形态（知乎：answer / article / idea）
+    sub_type: str = ""
+    # 「去发布」深链。知乎没有开放发布接口（官方 API 只能读），所以系统是
+    # 「生成 → 人带走 → 人发布」：这里给出对应形态的网页入口，省得用户自己找。
+    # 公众号走草稿箱推送，不需要这个字段（空串）。
+    publish_url: str = ""
     created_at: int
     published_at: int | None = None
 

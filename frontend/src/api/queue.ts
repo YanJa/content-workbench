@@ -94,6 +94,10 @@ export interface SaveToQueuePayload {
   kind?: 'text' | 'video'
   conversation_id?: string | null
   msg_id?: string | null
+  /** 知乎子形态：answer / article / idea（其余平台不传） */
+  sub_type?: string
+  /** 知乎回答要挂在哪个问题下（传问题 URL 或纯 ID，后端归一） */
+  zhihu_question?: string
 }
 
 /**

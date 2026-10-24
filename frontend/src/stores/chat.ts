@@ -20,6 +20,20 @@ export const useChatStore = defineStore('chat', () => {
   const streaming = ref(false)
   const platform = ref<Platform | null>(null)
   /**
+   * 本轮的子形态（目前只有知乎用：answer / article / idea）。
+   *
+   * 为什么不塞进 platform 变成三个平台值：知乎在统计上就是一个平台，
+   * 而三种形态的篇幅差一个数量级——分开存，统计归统计、写法归写法。
+   */
+  const subType = ref<string>('')
+  /**
+   * 本轮知乎回答归属的问题（URL 或 ID）。
+   *
+   * 非空时后端会拉一次同问题的头部回答作为「已有答案边界」注入 —— 这是
+   * 「必须写出增量」能落地的前提。只影响本轮请求，不进历史。
+   */
+  const zhihuQuestion = ref<string>('')
+  /**
    * 本轮是否带上知识库素材（默认开）。
    *
    * 关掉的意义：素材是「相关就参考」，偶尔会带偏——比如要 AI 完全自由发挥、
@@ -104,6 +118,8 @@ export const useChatStore = defineStore('chat', () => {
     currentId.value = null
     messages.value = []
     platform.value = null
+    subType.value = ''
+    zhihuQuestion.value = ''
     modelNotice.value = null
   }
 
@@ -147,6 +163,8 @@ export const useChatStore = defineStore('chat', () => {
         conversation_id: currentId.value,
         message: text,
         platform: scene ?? platform.value,
+        sub_type: subType.value,
+        zhihu_question: zhihuQuestion.value,
         enable_tools: true,
         // 让这条回复的 id 落库时当主键：保存到队列上报的 msg_id 才能与
         // 历史消息 id 对上，队列页「回到对话」才定位得到这条回复
@@ -288,6 +306,8 @@ export const useChatStore = defineStore('chat', () => {
     messages,
     streaming,
     platform,
+    subType,
+    zhihuQuestion,
     useKnowledge,
     useSkills,
     modelNotice,

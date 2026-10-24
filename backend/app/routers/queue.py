@@ -12,6 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.tenant import current_owner_id
 from app.db.session import get_db
 from app.models.content import Content, QueueItem
+from app.prompts.platforms import normalize_sub_type
+from app.services.zhihu import publish_url as zhihu_publish_url
 from app.schemas.models import (
     ChecklistUpdate,
     ContentCreateRequest,
@@ -48,6 +50,17 @@ def _title_editable(item: QueueItem, layout_status: str, processing: str) -> boo
     if (layout_status or "none") != "none":
         return False
     return item.status in ("draft", "ready")
+
+
+def _publish_url(platform: str, sub_type: str, meta: dict | None) -> str:
+    """这条内容该去哪儿发布。
+
+    只有知乎需要：官方没有发布接口，系统给的是「人带着内容去发」的网页入口。
+    公众号走草稿箱推送、小红书/抖音本来就是复制带走，都不填这个字段。
+    """
+    if platform != "zhihu":
+        return ""
+    return zhihu_publish_url(sub_type, (meta or {}).get("zhihu_question", ""))
 
 
 @router.get("/items")
@@ -125,6 +138,7 @@ async def list_items(
             layout_status = (r[4] or "none") if r else "none"
             d.layout_status = layout_status
             d.title_editable = _title_editable(it, layout_status, d.processing)
+            d.publish_url = _publish_url(it.platform, d.sub_type, r[3] if r else None)
             out.append(d)
     return {"items": out, "total": total, "page": page, "page_size": page_size}
 
@@ -182,6 +196,7 @@ async def update_status(
     item = await db.get(QueueItem, item_id)
     if not item or (item.owner or "default") != owner:
         raise HTTPException(404, "队列项不存在")
+    content = await db.get(Content, item.content_id)
 
     # 改标题：只在未排版之前允许（规则见 _title_editable）
     if req.title is not None:
@@ -192,7 +207,6 @@ async def update_status(
         if req.title.strip() == (item.title or ""):
             req.title = None  # 没变，省一次校验
     if req.title is not None:
-        content = await db.get(Content, item.content_id)
         layout_status = (content.layout_status if content else None) or "none"
         processing = (content.processing if content else None) or ""
         if not _title_editable(item, layout_status, processing):
@@ -208,7 +222,10 @@ async def update_status(
         if req.status == "published":
             item.published_at = int(time.time())
     await db.flush()
-    return item
+    out = QueueItemOut.model_validate(item)
+    # 补发布深链：PATCH 之后前端拿这一行覆盖本地数据，不补就变成空链接了
+    out.publish_url = _publish_url(item.platform, item.sub_type, content.meta if content else None)
+    return out
 
 
 @router.put("/items/{item_id}/checklist", response_model=QueueItemOut)
@@ -223,7 +240,10 @@ async def update_checklist(
         raise HTTPException(404, "队列项不存在")
     item.checklist = req.checklist
     await db.flush()
-    return item
+    content = await db.get(Content, item.content_id)
+    out = QueueItemOut.model_validate(item)
+    out.publish_url = _publish_url(item.platform, item.sub_type, content.meta if content else None)
+    return out
 
 
 @router.delete("/items/{item_id}")
@@ -310,11 +330,16 @@ async def create_content(
     meta: dict[str, Any] = {"source": "chat"}
     if req.msg_id:
         meta["msg_id"] = req.msg_id
+    sub_type = normalize_sub_type(req.platform, req.sub_type)
+    if sub_type == "answer" and req.zhihu_question.strip():
+        # 归属问题：回答要挂在具体问题下，队列页据此给直达深链
+        meta["zhihu_question"] = req.zhihu_question.strip()
     db.add(
         Content(
             id=cid,
             platform=req.platform,
             kind=req.kind,
+            sub_type=sub_type,
             title=req.title[:300],
             body=req.body,
             summary=req.summary,
@@ -329,6 +354,7 @@ async def create_content(
             id=item_id,
             content_id=cid,
             platform=req.platform,
+            sub_type=sub_type,
             title=req.title[:300],
             # draft = 待加工：用户到队列页做排版/配图后才变 ready
             status="draft",

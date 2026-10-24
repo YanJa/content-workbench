@@ -50,6 +50,7 @@ import { confirmTool } from '@/api/tools'
 import { getAuthorInfo, listWeChatAccounts, updateAuthorInfo } from '@/api/settings'
 import { useAuthStore } from '@/stores/auth'
 import { usePermGate } from '@/composables/usePermGate'
+import { copyHtml, copyText } from '@/utils/clipboard'
 import type { ContentItem, ContentImage, WeChatAccount } from '@/types'
 
 const auth = useAuthStore()
@@ -139,6 +140,12 @@ const followCardHint = computed(() => {
   const qr = a.qrcode_set ? '已配二维码' : '未配二维码'
   return `关注卡：${a.gzh_name || a.name || a.appid}（${qr}）`
 })
+
+/**
+ * 知乎内容：排版走「Markdown → 干净语义 HTML」那条路，不需要选主题
+ * （主题是公众号内联样式那套的概念，知乎编辑器会把 style 剥掉）。
+ */
+const isZhihu = computed(() => local.value?.platform === 'zhihu')
 
 // 排版任务进度
 const progress = ref(0)
@@ -327,7 +334,7 @@ async function onLayout() {
     task = await layoutContent(
       local.value.id,
       theme.value,
-      'gzh',
+      isZhihu.value ? 'zhihu' : 'gzh',
       autoCover.value,
       authorName.value.trim(),
       authorIntro.value.trim(),
@@ -396,21 +403,23 @@ function onImagesChanged(images: ContentImage[]) {
   emit('done')
 }
 
-/** 复制排版结果（富文本，粘到公众号编辑器保留样式）。 */
+/** 复制排版结果（富文本，粘到公众号/知乎编辑器保留格式）。 */
 async function onCopyRich() {
   if (!html.value) return
-  try {
-    const blob = new Blob([html.value], { type: 'text/html' })
-    const text = new Blob([html.value.replace(/<[^>]+>/g, '')], { type: 'text/plain' })
-    await navigator.clipboard.write([
-      new ClipboardItem({ 'text/html': blob, 'text/plain': text }),
-    ])
-    message.success('已复制富文本，去公众号编辑器粘贴')
-  } catch {
-    // 降级：复制源码
-    const ok = await navigator.clipboard.writeText(html.value).then(() => true).catch(() => false)
-    message[ok ? 'success' : 'warning'](ok ? '已复制 HTML 源码' : '复制失败')
+  const r = await copyHtml(html.value, html.value.replace(/<[^>]+>/g, ''))
+  if (r === 'rich') {
+    message.success(
+      isZhihu.value ? '已复制富文本，去知乎编辑器里粘贴（标题与列表保留）' : '已复制富文本，去公众号编辑器粘贴',
+    )
+    return
   }
+  if (r === 'plain') {
+    message.success('已复制为纯文本（当前浏览器不支持复制富文本）')
+    return
+  }
+  // 再降级：复制 HTML 源码，用户自己找地方粘
+  const ok = await copyText(html.value)
+  message[ok ? 'success' : 'warning'](ok ? '已复制 HTML 源码' : '复制失败')
 }
 
 /** 推公众号草稿箱（用排版后的 body_html）。 */
@@ -770,7 +779,9 @@ onBeforeUnmount(() => {
       <!-- 顶部：主题选择 + 排版（只读态改为纯操作栏：只留复制/预览宽度） -->
       <div class="toolbar">
         <template v-if="!isReadonly">
+          <!-- 知乎不选主题：主题是公众号内联样式那套，知乎编辑器会把 style 剥掉 -->
           <NSelect
+            v-if="!isZhihu"
             v-model:value="theme"
             :options="themeOptions"
             size="small"
@@ -795,7 +806,7 @@ onBeforeUnmount(() => {
           </IconTextBtn>
           <div v-if="layoutGate.reason.value" class="gate-tip">⚠ {{ layoutGate.reason.value }}</div>
           <NCheckbox
-            v-if="coverReady"
+            v-if="coverReady && !isZhihu"
             v-model:checked="autoCover"
             size="small"
             :disabled="layouting"
@@ -803,6 +814,7 @@ onBeforeUnmount(() => {
             排版时自动生成封面
           </NCheckbox>
           <NCheckbox
+            v-if="!isZhihu"
             v-model:checked="autoTags"
             size="small"
             :disabled="layouting"
@@ -811,7 +823,7 @@ onBeforeUnmount(() => {
           </NCheckbox>
         </template>
         <IconTextBtn name="copy" size="small" :disabled="!hasHtml" @click="onCopyRich">复制富文本</IconTextBtn>
-        <template v-if="!isReadonly">
+        <template v-if="!isReadonly && !isZhihu">
           <NSelect
             v-if="wechatAccounts.length > 1"
             v-model:value="accountId"
@@ -840,6 +852,9 @@ onBeforeUnmount(() => {
             }}
           </IconTextBtn>
           <div v-if="pushGate.reason.value" class="gate-tip">⚠ {{ pushGate.reason.value }}</div>
+        </template>
+        <!-- 保存对任何平台都要有：知乎用户改完 Markdown 也得能存 -->
+        <template v-if="!isReadonly">
           <IconTextBtn
             name="save"
             :type="dirty ? 'warning' : 'default'"
@@ -849,7 +864,7 @@ onBeforeUnmount(() => {
           >
             {{ dirty ? '保存修改' : '保存' }}
           </IconTextBtn>
-          <NTag v-if="currentThemeInfo" size="small" :bordered="false">
+          <NTag v-if="currentThemeInfo && !isZhihu" size="small" :bordered="false">
             {{ currentThemeInfo.desc }}
           </NTag>
         </template>

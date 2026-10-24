@@ -84,6 +84,22 @@ async def list_skills(
     return [_out(s) for s in await skill_svc.list_skills(db, owner)]
 
 
+@router.get("/builtins")
+async def list_builtins(_owner: str = Depends(current_owner_id)):
+    """随代码发布的内置技能（只读清单，不含正文）。
+
+    单独一个端点而不是并进列表：内置技能**没有库行**，没有 id、不能删、不能
+    停用 —— 混进列表里前端会给出一堆点了就失败的操作按钮。这里只给名字和
+    description，让用户知道「本来就有这些能力」，想改就传一个同名版本覆盖。
+    """
+    return {
+        "items": [
+            {"name": s.name, "description": s.description}
+            for s in skill_svc._builtin_skills()
+        ]
+    }
+
+
 @router.post("", response_model=SkillOut)
 async def create_skill(
     req: SkillCreate,

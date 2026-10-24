@@ -25,7 +25,7 @@ class Conversation(Base):
     title: Mapped[str] = mapped_column(String(200), default="新对话")
     # 会话归属（一期的简单用户标识，二期可换成真实账号）
     owner: Mapped[str] = mapped_column(String(64), default="default", index=True)
-    # 业务场景：chat / gzh / xiaohongshu / douyin
+    # 业务场景：chat / gzh / xiaohongshu / douyin / zhihu
     scene: Mapped[str] = mapped_column(String(32), default="chat", index=True)
     # 更早消息的摘要（用于长会话上下文压缩）
     summary: Mapped[str] = mapped_column(Text, default="")

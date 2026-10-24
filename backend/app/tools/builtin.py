@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import re
 import uuid
 import time
 from typing import Any
@@ -18,6 +19,17 @@ from sqlalchemy import select
 
 from app.core.logging import logger
 from app.tools.registry import dynamic_tool, tool
+
+# emoji 检测：知乎正文堆 emoji 显得不专业，合规自检要数一数。
+# 只覆盖常见区段，够用就行 —— 精确判定 emoji 需要引入第三方库，不值当。
+_EMOJI_RE = re.compile(
+    "[\U0001f300-\U0001faff\u2600-\u27bf\u2b00-\u2bff\ufe0f\u2190-\u21ff]"
+)
+
+
+def _zhihu_form(sub_type: str) -> str:
+    """子形态的中文名，只用于提示文案。"""
+    return {"answer": "回答", "article": "文章", "idea": "想法"}.get(sub_type, "正文")
 
 
 async def _resolve_wechat_client(db, account_id: str = "", owner: str = "default"):
@@ -187,7 +199,7 @@ async def activate_skill(name: str, ctx: dict | None = None):
             },
             "platform": {
                 "type": "string",
-                "enum": ["gzh", "xiaohongshu", "douyin", "all"],
+                "enum": ["gzh", "xiaohongshu", "douyin", "zhihu", "all"],
                 "description": "按平台筛选，默认 all",
             },
         },
@@ -236,15 +248,20 @@ async def query_queue(status: str = "all", platform: str = "all", ctx: dict | No
         "properties": {
             "platform": {
                 "type": "string",
-                "enum": ["gzh", "xiaohongshu", "douyin"],
+                "enum": ["gzh", "xiaohongshu", "douyin", "zhihu"],
                 "description": "目标平台",
+            },
+            "sub_type": {
+                "type": "string",
+                "enum": ["answer", "article", "idea"],
+                "description": "知乎子形态（仅 platform=zhihu 时有效）：回答/文章/想法",
             },
             "content": {"type": "string", "description": "待检查的文案内容"},
         },
         "required": ["platform", "content"],
     },
 )
-async def check_compliance(platform: str, content: str):
+async def check_compliance(platform: str, content: str, sub_type: str = ""):
     """平台合规自检。"""
     text = content.replace("\n", "")
     length = len(text)
@@ -254,8 +271,15 @@ async def check_compliance(platform: str, content: str):
         "gzh": {"min": 1200, "max": 3500, "tags": (0, 0)},
         "xiaohongshu": {"min": 300, "max": 800, "tags": (5, 10)},
         "douyin": {"min": 100, "max": 400, "tags": (3, 6)},
+        # 知乎三形态篇幅差一个数量级，混在一档里必然误报，所以按子形态分档
+        "zhihu_answer": {"min": 600, "max": 2000, "tags": (0, 0)},
+        "zhihu_article": {"min": 1500, "max": 6000, "tags": (0, 0)},
+        "zhihu_idea": {"min": 50, "max": 300, "tags": (1, 3)},
     }
-    r = rules.get(platform, {"min": 100, "max": 5000, "tags": (0, 99)})
+    key = f"zhihu_{sub_type}" if platform == "zhihu" and sub_type in (
+        "answer", "article", "idea"
+    ) else platform
+    r = rules.get(key, {"min": 100, "max": 5000, "tags": (0, 99)})
 
     if length < r["min"]:
         issues.append({"level": "warn", "msg": f"正文 {length} 字，低于建议下限 {r['min']} 字"})
@@ -270,8 +294,25 @@ async def check_compliance(platform: str, content: str):
     if platform == "gzh" and any(c in content for c in [",", ".", "!", "?", ":"]):
         issues.append({"level": "warn", "msg": "检测到半角标点，公众号正文建议用全角"})
 
+    if platform == "zhihu":
+        # 这两样一出现在知乎，评论区会替你回答
+        for bad in ("希望对你有帮助", "点赞收藏", "三连", "觉得有用就"):
+            if bad in text:
+                issues.append({"level": "warn", "msg": f"出现求互动套话「{bad}」，知乎读者反感"})
+                break
+        emoji_n = len(_EMOJI_RE.findall(content))
+        # 想法允许少量 emoji 做节奏，回答/文章里堆 emoji 显得不专业
+        cap = 2 if sub_type == "idea" else 0
+        if emoji_n > cap:
+            issues.append({"level": "warn", "msg": f"正文有 {emoji_n} 个 emoji，知乎{_zhihu_form(sub_type)}建议不超过 {cap} 个"})
+        if "首先" in text and "其次" in text:
+            issues.append({"level": "warn", "msg": "出现「首先/其次」八股连接词，改用小标题切分"})
+        if "作为AI" in text or "作为人工智能" in text:
+            issues.append({"level": "warn", "msg": "出现「作为AI」开场，删掉直接给内容"})
+
     return {
         "platform": platform,
+        "sub_type": sub_type if platform == "zhihu" else "",
         "length": length,
         "tag_count": tag_count,
         "passed": not issues,
@@ -291,7 +332,7 @@ async def check_compliance(platform: str, content: str):
         "properties": {
             "platform": {
                 "type": "string",
-                "enum": ["gzh", "xiaohongshu", "douyin"],
+                "enum": ["gzh", "xiaohongshu", "douyin", "zhihu"],
                 "description": "目标平台",
             },
             "title": {"type": "string", "description": "标题"},
@@ -301,6 +342,11 @@ async def check_compliance(platform: str, content: str):
                 "enum": ["text", "video"],
                 "description": "内容类型，默认 text",
             },
+            "sub_type": {
+                "type": "string",
+                "enum": ["answer", "article", "idea"],
+                "description": "知乎子形态（仅 platform=zhihu 时有效）",
+            },
         },
         "required": ["platform", "title", "body"],
     },
@@ -309,7 +355,7 @@ async def check_compliance(platform: str, content: str):
     requires_confirm=True,
 )
 async def save_content(
-    platform: str, title: str, body: str, kind: str = "text",
+    platform: str, title: str, body: str, kind: str = "text", sub_type: str = "",
     conversation_id: str | None = None, ctx: dict | None = None,
 ):
     """保存内容为草稿（不入队）。
@@ -324,6 +370,7 @@ async def save_content(
         return {"ok": False, "error": "数据库未就绪"}
 
     from app.models.content import Content
+    from app.prompts.platforms import normalize_sub_type
 
     content_id = str(uuid.uuid4())
     db.add(
@@ -331,6 +378,7 @@ async def save_content(
             id=content_id,
             platform=platform,
             kind=kind,
+            sub_type=normalize_sub_type(platform, sub_type),
             title=title[:300],
             body=body,
             owner=owner,

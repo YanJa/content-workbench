@@ -109,6 +109,47 @@ def parse_question_id(url: str) -> str:
     return (url or "").split("?")[0] or uuid.uuid4().hex
 
 
+def extract_question_id(value: str) -> str:
+    """取出**纯数字**的 question id，用于拼发布深链。
+
+    和 parse_question_id 不是一个东西：那个返回 `question_<id>` 复合串，是给
+    「话题去重」当主键用的；这个只要数字，因为 `zhihu.com/question/<id>`
+    只认数字。传进来的可能是完整 URL、带 utm 的 URL、也可能用户直接粘了 id。
+    """
+    s = (value or "").strip()
+    if not s:
+        return ""
+    if s.isdigit():
+        return s
+    m = _QID_RE.search(s)
+    return m.group(2) if m and m.group(1) == "question" else ""
+
+
+# 知乎三种形态的「去发布」入口。官方开放平台没有发布接口（详见
+# docs/知乎内容生产调研.md），所以这里只能给网页入口，由人去点发布。
+ZHIHU_PUBLISH_ENTRY = {
+    # 回答挂在具体问题下：已知问题时直达该问题页，让用户点「写回答」
+    "answer": "https://www.zhihu.com/creator/manage/creation/answer",
+    "article": "https://zhuanlan.zhihu.com/write",
+    # 想法以 App 为主，网页端从创作中心进
+    "idea": "https://www.zhihu.com/creator",
+}
+
+
+def publish_url(sub_type: str, question: str = "") -> str:
+    """算出这条内容该去哪儿发布。
+
+    answer 且带了归属问题时，直接跳问题页（省一次搜索）；否则回退到
+    创作中心的「回答」管理页。
+    """
+    st = sub_type if sub_type in ZHIHU_PUBLISH_ENTRY else "answer"
+    if st == "answer":
+        qid = extract_question_id(question)
+        if qid:
+            return f"https://www.zhihu.com/question/{qid}"
+    return ZHIHU_PUBLISH_ENTRY[st]
+
+
 def clean_url(url: str) -> str:
     """去掉 utm_* 追踪参数，留给用户看的干净链接。"""
     return (url or "").split("?")[0]
@@ -526,6 +567,112 @@ async def loop_hot_fetch() -> None:
         except Exception as exc:  # noqa: BLE001
             logger.warning("[zhihu] 定时抓取异常：%s", exc)
         await asyncio.sleep(interval)
+
+
+# ------------------------------------------------------- 选题闭环（P2）
+# 两个端点都是 2026-10-24 实测确认的形态（官方文档没写清楚，别照抄文档）：
+#   推荐问题  GET /api/v1/user/question_recommendations?Count=N   ← 是 /user/ 不是 /content/
+#   问题回答  GET /api/v1/content/question_answers?QuestionUrl=<完整URL>&Limit=N
+# 注意第二个只认完整问题 URL，传纯 id 会报
+# 「QuestionUrl must be a valid Zhihu question URL」。
+async def _get_json(path: str, params: dict) -> dict:
+    """带一次重试的 GET，返回 {ok, data?, error?}。失败不抛。"""
+    if not _configured():
+        return {"ok": False, "error": "未配置 ZHIHU_ACCESS_SECRET"}
+    last_err = ""
+    for attempt in range(2):
+        try:
+            async with httpx.AsyncClient(**_client_kwargs()) as client:
+                resp = await client.get(f"{API}{path}", headers=_headers(), params=params)
+            data = resp.json() if resp.content else {}
+            code = data.get("Code", resp.status_code)
+            if code == 0:
+                return {"ok": True, "data": data.get("Data") or {}}
+            last_err = _ERR_HINT.get(code) or f"知乎返回 Code={code}：{data.get('Message', '')}"
+            if resp.status_code == 401 or code in (40001, 40003):
+                break
+            if code == 30001:
+                await asyncio.sleep(3 * (attempt + 1))
+                continue
+        except Exception as exc:  # noqa: BLE001
+            last_err = f"请求失败：{exc}"
+        await asyncio.sleep(1.0)
+    return {"ok": False, "error": last_err or "未知错误"}
+
+
+async def _bump(n: int = 1) -> None:
+    """记一次额度消耗（无论成败都记：平台侧的口径我们说了不算）。"""
+    try:
+        async with SessionLocal() as session:
+            await _bump_usage(session, n)
+            await session.commit()
+    except Exception as exc:  # noqa: BLE001 - 记账失败不能挡住主流程
+        logger.warning("[zhihu] 额度记账失败：%s", exc)
+
+
+async def question_recommendations(limit: int = 10) -> dict:
+    """按账号画像推荐的「你可以答的问题」。
+
+    这是「今天答什么」的答案来源 —— 比热榜更贴个人（热榜是全站的），
+    但正因为是按画像推荐的，冷号拿到的可能很偏，所以 UI 上要说明来源。
+    """
+    n = max(1, min(int(limit or 10), 20))
+    res = await _get_json("/api/v1/user/question_recommendations", {"Count": n})
+    await _bump(1)
+    if not res["ok"]:
+        return {"ok": False, "items": [], "error": res["error"]}
+    items = []
+    for it in (res["data"].get("Items") or []):
+        url = clean_url(it.get("Url") or "")
+        title = (it.get("Title") or "").strip()
+        if not title or not url:
+            continue
+        if is_blocked(title, ""):
+            continue
+        items.append({"title": title, "url": url, "question_id": extract_question_id(url)})
+    return {"ok": True, "items": items}
+
+
+async def question_answers(question: str, limit: int = 5) -> dict:
+    """同问题下的头部回答摘要（动笔前看一眼别人写到哪了）。
+
+    用途是**找增量**：知乎回答最忌讳复述高赞已经说透的东西。把这些摘要
+    作为「已有答案边界」喂给模型，它才知道该往哪写。
+    """
+    qid = extract_question_id(question)
+    if not qid:
+        return {"ok": False, "items": [], "error": "不是有效的知乎问题链接"}
+    url = f"https://www.zhihu.com/question/{qid}"
+    n = max(1, min(int(limit or 5), 10))
+    res = await _get_json("/api/v1/content/question_answers", {"QuestionUrl": url, "Limit": n})
+    await _bump(1)
+    if not res["ok"]:
+        return {"ok": False, "items": [], "error": res["error"]}
+    items = []
+    for it in (res["data"].get("Items") or []):
+        summary = (it.get("Summary") or "").strip()
+        if not summary:
+            continue
+        # 摘要可能很长（实测单条 500+ 字），截断到 200 字：
+        # 这是给模型当「边界提示」用的，不是给它当素材抄的。
+        if len(summary) > 200:
+            summary = summary[:200] + "…"
+        items.append({"summary": summary, "url": clean_url(it.get("Url") or "")})
+    return {"ok": True, "question_url": url, "items": items}
+
+
+def answers_as_prompt(items: list[dict]) -> str:
+    """把头部回答摘要拼成可注入 system prompt 的「已有答案边界」段。"""
+    if not items:
+        return ""
+    lines = "\n".join(f"- {it['summary']}" for it in items)
+    return (
+        "下面列出这个问题下已有的回答摘要（平台返回，可能不完整）。\n"
+        "它们的作用是**划边界**：你已经知道这些角度被写到什么程度了。\n"
+        "你要写的是它们**没覆盖到的部分**——更具体的操作步骤、更新的数据、\n"
+        "反面案例，或者被普遍忽略的前提。严禁复述下面已有的观点当成自己的结论。\n\n"
+        f"{lines}\n"
+    )
 
 
 # ---------------------------------------------------------------- 自检

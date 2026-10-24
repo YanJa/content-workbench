@@ -3,7 +3,14 @@
  * 与后端 app/schemas/models.py 一一对应，改后端字段时记得同步这里。
  */
 
-export type Platform = 'gzh' | 'xiaohongshu' | 'douyin'
+export type Platform = 'gzh' | 'xiaohongshu' | 'douyin' | 'zhihu'
+
+/**
+ * 知乎子形态。一个知乎平台上有三种完全不同的东西，篇幅差一个数量级
+ * （回答 600-2000 / 文章 1500-6000 / 想法 50-300），所以必须显式选。
+ * 其余平台恒为空串。
+ */
+export type ZhihuSubType = 'answer' | 'article' | 'idea'
 
 export type QueueStatus = 'draft' | 'ready' | 'published' | 'archived'
 
@@ -45,6 +52,10 @@ export interface ChatRequest {
   conversation_id?: string | null
   message: string
   platform?: Platform | null
+  /** 知乎子形态（仅 platform=zhihu 时有效；后端对非法值回落 answer） */
+  sub_type?: string
+  /** 知乎回答归属的问题（URL 或 ID），后端据此注入「已有答案边界」 */
+  zhihu_question?: string
   topic?: string
   audience?: string
   enable_tools?: boolean
@@ -123,6 +134,8 @@ export interface ContentItem {
   id: string
   platform: Platform
   kind: string
+  /** 子形态（知乎：answer / article / idea；其余平台空串） */
+  sub_type?: string
   title: string
   /** 纯内容正文：结构化 Markdown（对话产出的原始内容） */
   body: string
@@ -164,6 +177,13 @@ export interface QueueItem {
   title_editable?: boolean
   /** 关联内容的排版状态：none=还没排版 */
   layout_status?: string
+  /** 子形态（知乎：answer / article / idea） */
+  sub_type?: string
+  /**
+   * 「去发布」深链。知乎官方没有发布接口，系统是「生成 → 人带走 → 人发布」，
+   * 这里给出对应形态的网页入口。公众号走草稿箱推送，因此为空。
+   */
+  publish_url?: string
 }
 
 /** 微信公众号账号 */

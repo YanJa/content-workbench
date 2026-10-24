@@ -16,6 +16,21 @@ from app.services import skill as skill_svc
 from app.tools import builtin  # noqa: F401 - 完成工具注册（activate_skill 在里面）
 from app.tools.registry import registry
 
+
+@pytest.fixture(autouse=True)
+def _without_builtin_skills():
+    """本文件的用例只关心「用户上传的技能」，把内置技能摘掉。
+
+    内置技能（zhihu-content-pack 等）是全局常驻的 —— 见 test_builtin_skills.py。
+    它们在的话，「空库 == 没有任何技能」这类断言永远不成立，而这些用例要验的
+    恰恰是用户维度（上传 / 停用 / 改名 / 越权），跟内置无关。
+    直接改缓存：_builtin_skills() 命中缓存就不会去读目录。
+    """
+    saved = skill_svc._BUILTIN_CACHE
+    skill_svc._BUILTIN_CACHE = []
+    yield
+    skill_svc._BUILTIN_CACHE = saved
+
 GOOD_MD = """---
 name: wechat-hot-title
 description: 写公众号爆款标题。当用户要起标题、改标题、要更吸引人时使用。

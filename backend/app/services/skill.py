@@ -35,6 +35,7 @@ import posixpath
 import re
 import time
 import zipfile
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
@@ -56,6 +57,10 @@ _FRONTMATTER_RE = re.compile(
 _NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _NAME_MAX = 64
 _DESC_MAX = 1024
+
+# 内置技能的内存实例用的 owner 标记。真实用户不会叫这个名字（owner 是用户 id），
+# 所以用它来区分「内置」与「用户上传」，前端也能据此打标。
+_BUILTIN_OWNER = "__builtin__"
 
 
 class SkillParseError(ValueError):
@@ -298,8 +303,8 @@ async def list_skills(db: AsyncSession, owner: str) -> list[Skill]:
 
 
 async def list_active(db: AsyncSession, owner: str) -> list[Skill]:
-    """可被模型激活的 skill：启用 且 解析合法。"""
-    return list(
+    """可被模型激活的 skill：启用 且 解析合法 —— 含内置技能。"""
+    rows = list(
         (
             await db.execute(
                 select(Skill)
@@ -315,6 +320,54 @@ async def list_active(db: AsyncSession, owner: str) -> list[Skill]:
         .scalars()
         .all()
     )
+    # 内置技能补在后面：用户自己传了同名版本时以用户的为准
+    # （同名覆盖是上传的既定语义，内置不该抢）。
+    have = {s.name for s in rows}
+    builtin = [s for s in _builtin_skills() if s.name not in have]
+    return (rows + builtin)[: settings.SKILL_CATALOG_MAX]
+
+
+# ---------------------------------------------------------------- 内置技能
+#
+# 内置技能**不落库**：它们随代码发布，不是用户数据。落库会带来两个麻烦——
+#   1. 用户改了内容、升级版本时会被覆盖回去（或反过来，永远升不了级）；
+#   2. 技能页会多出一堆删不掉的行，用户想停用也没处下手。
+# 所以这里只读文件、按需注入，且**同名时让用户版本优先**。
+_BUILTIN_DIR = Path(__file__).parent / "builtin_skills"
+_BUILTIN_CACHE: list[Skill] | None = None
+
+
+def _builtin_skills() -> list[Skill]:
+    """读内置技能目录（解析一次就缓存）。任何异常都降级为「没有内置」。"""
+    global _BUILTIN_CACHE
+    if _BUILTIN_CACHE is not None:
+        return _BUILTIN_CACHE
+    out: list[Skill] = []
+    try:
+        for p in sorted(_BUILTIN_DIR.glob("*.md")):
+            try:
+                parsed = parse_skill(p.read_text(encoding="utf-8"), p.name)
+            except Exception as exc:  # noqa: BLE001 - 一个坏文件不该拖垮全部
+                logger.warning("内置技能 %s 解析失败：%s", p.name, exc)
+                continue
+            out.append(
+                Skill(
+                    owner=_BUILTIN_OWNER,
+                    name=parsed["name"],
+                    description=parsed["description"],
+                    body=parsed["body"],
+                    status="ready",
+                    enabled=True,
+                )
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("读取内置技能目录失败：%s", exc)
+    _BUILTIN_CACHE = out
+    return out
+
+
+def builtin_names() -> list[str]:
+    return [s.name for s in _builtin_skills()]
 
 
 async def upsert_skill(
@@ -521,6 +574,10 @@ async def activate(
     """
     name = (name or "").strip()
     skill = await get_by_name(db, owner, name)
+    builtin = skill is None
+    if skill is None:
+        # 内置技能不在库里，按需在内存里找一份
+        skill = next((s for s in _builtin_skills() if s.name == name), None)
     if skill is None:
         available = [s.name for s in await list_active(db, owner)]
         return {
@@ -533,9 +590,13 @@ async def activate(
     if skill.status != "ready":
         return {"ok": False, "error": f"技能 `{name}` 配置有误，暂不可用：{skill.error}"}
 
-    skill.use_count = (skill.use_count or 0) + 1
-    await db.flush()
-    logger.info("激活 skill `%s`（owner=%s, 第 %d 次）", name, owner, skill.use_count)
+    if builtin:
+        # 内置技能没有库行（见 _builtin_skills 的说明），不落库也不计次
+        logger.info("激活内置 skill `%s`（owner=%s）", name, owner)
+    else:
+        skill.use_count = (skill.use_count or 0) + 1
+        await db.flush()
+        logger.info("激活 skill `%s`（owner=%s, 第 %d 次）", name, owner, skill.use_count)
     return {
         "ok": True,
         "name": skill.name,

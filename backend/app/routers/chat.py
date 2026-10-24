@@ -18,7 +18,11 @@ from app.core.tenant import current_owner_id, current_user
 from app.db.session import SessionLocal, get_db
 from app.models.settings import AppSetting
 from app.models.user import User
-from app.prompts.platforms import build_system_prompt, strip_tool_discipline
+from app.prompts.platforms import (
+    build_system_prompt,
+    normalize_sub_type,
+    strip_tool_discipline,
+)
 from app.schemas.models import (
     ChatRequest,
     ConversationCreate,
@@ -106,11 +110,36 @@ async def chat_stream(
         # 构造上下文
         provider, cf_model = await _load_chat_provider(db, owner)
         system_prompt = build_system_prompt(
-            req.platform, topic=req.topic, audience=req.audience
+            req.platform, topic=req.topic, audience=req.audience, sub_type=req.sub_type
         )
         if provider == "cloudflare":
             # CF 模型没有工具可用：system 里的「工具使用纪律」段只会干扰它
             system_prompt = strip_tool_discipline(system_prompt)
+
+        # 知乎回答：动笔前先拉一次同问题下的头部回答，把「别人已经写到哪了」
+        # 作为边界喂进去。
+        #
+        # 这不只是锦上添花 —— 提示词要求「必须写出比头部回答多的东西」，
+        # 但模型并不知道头部回答写了什么，不喂就只能编。喂了才算闭环。
+        #
+        # 三个条件同时满足才拉：知乎 + 回答形态 + 用户给了归属问题。
+        # 全程 try：这是旁路，接口挂了/额度没了就本轮不带，不能让对话 500。
+        if (
+            req.platform == "zhihu"
+            and normalize_sub_type("zhihu", req.sub_type) == "answer"
+            and (req.zhihu_question or "").strip()
+            and provider != "cloudflare"
+        ):
+            try:
+                from app.services import zhihu as zhihu_svc
+
+                if (await zhihu_svc.usage_today())["safe_to_fetch"]:
+                    res = await zhihu_svc.question_answers(req.zhihu_question.strip(), limit=5)
+                    if res["ok"] and res["items"]:
+                        system_prompt += "\n\n" + zhihu_svc.answers_as_prompt(res["items"])
+                        logger.info("知乎回答边界注入 %d 条", len(res["items"]))
+            except Exception as exc:  # noqa: BLE001 - 旁路降级
+                logger.warning("知乎回答摘要获取失败（本轮不注入）：%s", exc)
 
         # 知识库召回：放在知道 provider 之后，好按通道挑 token 预算
         # （CF 的 8b 模型上下文小得多，给一样的预算会挤爆）。

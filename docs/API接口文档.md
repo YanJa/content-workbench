@@ -318,13 +318,28 @@ PATCH /api/queue/items/{id}
   "summary": "可选，一句话摘要（推草稿箱时当 digest）",
   "kind": "text",
   "conversation_id": "可选，回填以便队列项跳回原对话",
-  "msg_id": "可选，来源消息 ID"
+  "msg_id": "可选，来源消息 ID",
+  "sub_type": "仅知乎：answer / article / idea（缺省回落 answer；非知乎平台传了也归一为空串）",
+  "zhihu_question": "仅知乎回答：归属问题的 URL 或纯 ID，队列页据此给发布深链"
 }
 ```
 
 响应：`{ "ok": true, "content_id": "uuid", "queue_item_id": "uuid" }`。
 
 队列项以 `status="draft"` 建出（= 待加工），到队列页做过排版/配图后才变 `ready`。
+
+**知乎三形态（v1.6.0）**：`platform="zhihu"` 时靠 `sub_type` 区分回答 / 文章 / 想法
+（三者篇幅差一个数量级，塞进一套提示词只会导致三样都写不好）。队列列表与
+PATCH 响应都带 `sub_type` 和 `publish_url`：
+
+| sub_type | 篇幅 | publish_url |
+|---|---|---|
+| `answer` | 600-2000 字 | 有归属问题时 `https://www.zhihu.com/question/{id}`，否则创作中心回答管理页 |
+| `article` | 1500-6000 字 | `https://zhuanlan.zhihu.com/write` |
+| `idea` | 50-300 字 | `https://www.zhihu.com/creator` |
+
+`publish_url` 的存在前提是**知乎没有开放发布接口**（开放平台全是读能力），
+所以系统给的是「人带着内容去发」的入口，不是自动推送。公众号走草稿箱推送，该字段为空。
 
 ### 对话 ⇄ 队列双向跳转（URL 契约）
 
@@ -345,7 +360,7 @@ PATCH /api/queue/items/{id}
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/content/items/{content_id}/theme-options` | 可选主题 + 能力位 `{themes[], default, gen_ready, cover_ready, cover_styles, cover_sizes, cover_default_style, cover_default_tag}` |
-| POST | `/api/content/items/{content_id}/layout` | **提交排版任务**（秒回），body `{theme, platform, auto_cover?, author_name?, author_intro?, account_id?}` → `{ok, task_id, status, poll}`；已在排版中返回 `{ok:false, message}` |
+| POST | `/api/content/items/{content_id}/layout` | **提交排版任务**（秒回），body `{theme, platform, auto_cover?, author_name?, author_intro?, account_id?}` → `{ok, task_id, status, poll}`；已在排版中返回 `{ok:false, message}`。`platform` ∈ `gzh` / `xiaohongshu` / `zhihu` |
 | GET | `/api/content/items/{content_id}/layout/{task_id}` | **轮询排版进度** `{status, progress, stage, result?, error?}`；404=任务中断 |
 | POST | `/api/content/items/{content_id}/cancel-processing` | **取消加工中状态**（解卡），→ `{ok, cleared, task_id}` |
 | POST | `/api/content/items/{content_id}/covers/generate` | **生成封面**（模板化），body `{title?, sub?, tag?, style?, size?, date?}` |
@@ -511,6 +526,21 @@ PATCH /api/queue/items/{id}
 第三条是 2026-10-22 实测踩到的坑：原本传对了一个技能，再传一个「文件名与 name
 不符」的坏文件，好技能直接被覆盖成 invalid、在用户面前凭空消失且无法撤销。
 
+### 内置技能（v1.6.0）
+
+随代码发布的技能包放在 `backend/app/services/builtin_skills/*.md`，启动时解析一次
+并缓存。**不落库**：它们是产品的一部分而不是用户数据，落库会带来「升级时被用户
+改动覆盖 / 永远升不了级」的两难，还会让技能页多出删不掉、停不掉的假行。
+
+| 行为 | 规则 |
+|---|---|
+| 出现在 catalog | 是（新用户什么都没传也能用） |
+| 与用户技能同名 | **用户的版本优先**，内置那条让位，不重复出现 |
+| 删除 / 停用 / 改名 | 不支持（没有库行、没有 id） |
+| 想改做法 | 传一个同名技能覆盖即可 |
+
+`GET /api/skills/builtins` → `{items: [{name, description}]}`（只读清单，不含正文）。
+
 ### 与对话链路的接线
 
 - `chat.py` 在 `build_context` 前调 `skill.build_catalog_for_owner(db, owner)`，
@@ -673,6 +703,8 @@ ffmpeg -y -i out.mp4 -map 0:s:0 extracted.srt
 |---|---|---|---|
 | GET | `/api/zhihu/hot?limit=&sort=trend\|rank` | 登录即可 | 当前热榜 + 趋势信号，读本地库 |
 | POST | `/api/zhihu/refresh` | 仅管理员 | 手动抓一次（`force`，跳水位保护），**消耗 1 次共享额度** |
+| GET | `/api/zhihu/question-recommendations?limit=10` | 登录即可 | **消耗 1 次额度**：按账号画像推荐「你可以答的问题」 |
+| GET | `/api/zhihu/question-answers?url=&limit=5` | 登录即可 | **消耗 1 次额度**：同问题下的头部回答摘要（动笔前看别人写到哪了） |
 | GET | `/api/zhihu/status` | 仅管理员 | 连通性 + 额度自查（会消耗 1 次额度） |
 | GET | `/api/zhihu/usage` | 仅管理员 | 后台「知乎热点」卡片数据源，**只读本地库不花钱** |
 | PUT | `/api/zhihu/secret` | 仅管理员 | 在线设置 Access Secret，保存即生效（免重启），顺手抓一次验票。**空串返回 400** |
@@ -733,6 +765,33 @@ ffmpeg -y -i out.mp4 -map 0:s:0 extracted.srt
 - **DB 优先**：保存的值落 `app_settings` 表（`owner=system`），启动时加载覆盖 `.env`；后台保存过之后 `.env` 的 `ZHIHU_ACCESS_SECRET` 就不再生效，直到后台清空该行；
 - 明文只进不出：响应只回 `masked`（后 4 位），请求体的 secret 永不明文回传；
 - 保存即生效不用重启：内存 `settings` 实例直接换值，已待命的抓取循环 5 分钟内自动感知启动。
+
+### 选题闭环（v1.6.0，会花钱，调用要克制）
+
+热榜回答「全站在看什么」，下面两个端点回答「我该答什么 / 别人已经答到哪了」。
+与热榜不同，它们**没有本地缓存可走，每次调用真实消耗 1 次额度**，所以额度
+到水位时会明确返回理由而不是静默给空列表。
+
+```
+GET /api/zhihu/question-recommendations?limit=10
+→ { ok, items: [{ title, url, question_id }], usage: {...} }
+
+GET /api/zhihu/question-answers?url=https://www.zhihu.com/question/123&limit=5
+→ { ok, question_url, items: [{ summary（截断到 200 字）, url }], usage: {...} }
+```
+
+实测确认的接口形态（2026-10-24，官方文档写错了两处，别照抄文档）：
+
+| 端点 | 路径 | 参数 |
+|---|---|---|
+| 问题推荐 | `/api/v1/user/question_recommendations` | `Count`（**不是 `/content/` 前缀**） |
+| 问题回答 | `/api/v1/content/question_answers` | `QuestionUrl`（**必须是完整问题 URL**，传纯 id 会被拒）+ `Limit` |
+
+写回答时的注入链路：前端把选中问题的 URL 放进 `POST /api/chat/stream` 的
+`zhihu_question`，后端在 `platform=zhihu` 且 `sub_type=answer` 时拉一次头部回答，
+作为「已有答案边界」追加进 system prompt（全程 try：接口挂了就本轮不带，
+不会让对话 500）。这是「必须写出比高赞多的东西」这句要求能落地的前提 ——
+不喂，模型只能靠猜。
 
 ---
 

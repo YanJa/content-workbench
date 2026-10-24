@@ -122,3 +122,66 @@ export async function refreshHot(): Promise<RefreshHotResult> {
   const { data } = await http.post('/zhihu/refresh')
   return data
 }
+
+// ---------------------------------------------------------------- 选题闭环
+
+/** 一条「推荐你答的问题」（按账号画像，接口真实返回） */
+export interface ZhihuQuestion {
+  title: string
+  /** 已剥掉 utm 的知乎问题直链 */
+  url: string
+  question_id: string
+}
+
+export interface QuestionRecResult {
+  ok: boolean
+  items: ZhihuQuestion[]
+  error?: string
+  usage?: ZhihuUsage
+}
+
+/**
+ * 拉取「推荐你答的问题」。
+ *
+ * ⚠ 与热榜不同：这个**会真实消耗 1 次知乎额度**（没有本地缓存可走），
+ * 所以调用要克制 —— 只在用户主动切到「待答问题」时拉一次。
+ */
+export async function fetchQuestionRecommendations(
+  limit = 10,
+): Promise<QuestionRecResult> {
+  const { data } = await http.get('/zhihu/question-recommendations', {
+    params: { limit },
+  })
+  return data
+}
+
+/** 同问题下的一条头部回答摘要 */
+export interface ZhihuAnswer {
+  /** 摘要（后端已截断到 200 字） */
+  summary: string
+  url: string
+}
+
+export interface QuestionAnswersResult {
+  ok: boolean
+  items: ZhihuAnswer[]
+  question_url?: string
+  error?: string
+  usage?: ZhihuUsage
+}
+
+/**
+ * 拉同问题下的头部回答摘要（写之前看别人写到哪了）。
+ *
+ * ⚠ 同样消耗 1 次额度。生产路径是后端在生成回答时自动注入，
+ * 这个接口是给「想先自己看一眼」用的。
+ */
+export async function fetchQuestionAnswers(
+  url: string,
+  limit = 5,
+): Promise<QuestionAnswersResult> {
+  const { data } = await http.get('/zhihu/question-answers', {
+    params: { url, limit },
+  })
+  return data
+}

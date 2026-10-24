@@ -67,6 +67,11 @@ _SQLITE_COLUMN_PATCHES: dict[str, dict[str, str]] = {
         "layout_status": "VARCHAR(16) DEFAULT 'none'",
         "processing": "VARCHAR(16) DEFAULT ''",
         "updated_at": "INTEGER DEFAULT 0",
+        # 知乎三形态（v1.5.7）：老行补空串 = 非知乎平台，语义正确。
+        "sub_type": "VARCHAR(16) DEFAULT ''",
+    },
+    "queue_items": {
+        "sub_type": "VARCHAR(16) DEFAULT ''",
     },
     # 关注引导：公众号加「对外号名 / slogan / 二维码」三列。
     # 老库行已存在，非空列必须带 DEFAULT，否则 ALTER TABLE 报错。

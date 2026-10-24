@@ -67,6 +67,7 @@ const SCENE_LABEL: Record<string, string> = {
   gzh: '公众号',
   xiaohongshu: '小红书',
   douyin: '抖音',
+  zhihu: '知乎',
   chat: '通用对话',
   summary: '历史压缩',
   layout: '排版装配',

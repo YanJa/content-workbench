@@ -40,8 +40,10 @@ import {
   skillsMeta,
   importSkillUrl,
   uploadSkill,
+  listBuiltinSkills,
   type Skill,
   type SkillsMeta,
+  type BuiltinSkill,
 } from '@/api/skills'
 
 const message = useMessage()
@@ -53,13 +55,21 @@ const manageGate = usePermGate({ perm: 'skill.manage' })
 const skills = ref<Skill[]>([])
 const meta = ref<SkillsMeta | null>(null)
 const loading = ref(false)
+/** 内置技能（随代码发布）：没有库行，只读展示，同名上传可覆盖 */
+const builtins = ref<BuiltinSkill[]>([])
 
 async function load() {
   loading.value = true
   try {
-    const [list, m] = await Promise.all([listSkills(), skillsMeta()])
+    // 内置清单是旁路：它挂了不该让整页报错（技能列表才是主体）
+    const [list, m, b] = await Promise.all([
+      listSkills(),
+      skillsMeta(),
+      listBuiltinSkills().catch(() => []),
+    ])
     skills.value = list
     meta.value = m
+    builtins.value = b
   } catch (e) {
     message.error((e as Error).message || '加载技能失败')
   } finally {
@@ -425,9 +435,22 @@ const columns = computed<DataTableColumns<Skill>>(() => [
       </div>
     </NAlert>
 
+    <!-- 内置技能：随版本发布、始终生效，但不能删也不能停用，所以单独一块 -->
+    <div v-if="builtins.length" class="builtin-block">
+      <div class="builtin-head">
+        <span>内置技能</span>
+        <NTag size="small" :bordered="false">{{ builtins.length }} 个</NTag>
+      </div>
+      <div class="builtin-hint">随版本发布，始终生效。想改做法就传一个同名技能覆盖它。</div>
+      <div v-for="b in builtins" :key="b.name" class="builtin-item">
+        <code class="builtin-name">{{ b.name }}</code>
+        <span class="builtin-desc">{{ b.description }}</span>
+      </div>
+    </div>
+
     <NEmpty
       v-if="!skills.length && !loading"
-      description="还没有技能。装一个之后，AI 遇到匹配的任务会自动读它的说明照着做。"
+      description="还没有自定义技能。装一个之后，AI 遇到匹配的任务会自动读它的说明照着做。"
     />
     <NDataTable
       v-else
@@ -768,5 +791,46 @@ const columns = computed<DataTableColumns<Skill>>(() => [
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+/* 内置技能区块：只读，与下面的自定义表格视觉分开 */
+.builtin-block {
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+}
+
+.builtin-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.builtin-hint {
+  margin: 4px 0 10px;
+  font-size: 11.5px;
+  color: var(--app-text-3);
+}
+
+.builtin-item {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  padding: 4px 0;
+}
+
+.builtin-name {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--app-primary);
+}
+
+.builtin-desc {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--app-text-2);
 }
 </style>

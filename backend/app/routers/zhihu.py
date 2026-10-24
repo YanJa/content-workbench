@@ -54,6 +54,52 @@ async def hot_list(
     }
 
 
+@router.get("/question-recommendations")
+async def question_recommendations(
+    limit: int = Query(10, ge=1, le=20),
+    _user: User = Depends(current_user),
+):
+    """按账号画像推荐的「你可以答的问题」（登录即可，但**要花 1 次额度**）。
+
+    与 `/hot` 的分工：热榜是「全站在看什么」，这个是你「适合答什么」。
+    因为要真调接口，额度紧张时会明确报出来而不是静默返回空。
+    """
+    usage = await zhihu.usage_today()
+    if not usage["safe_to_fetch"]:
+        return {
+            "ok": False,
+            "items": [],
+            "error": f"今日知乎额度已达水位 {usage['used']}/{usage['quota']}，不再调用",
+            "usage": usage,
+        }
+    res = await zhihu.question_recommendations(limit=limit)
+    return {**res, "usage": await zhihu.usage_today()}
+
+
+@router.get("/question-answers")
+async def question_answers(
+    url: str = Query("", description="知乎问题链接或问题 ID"),
+    limit: int = Query(5, ge=1, le=10),
+    _user: User = Depends(current_user),
+):
+    """同问题下的头部回答摘要（**要花 1 次额度**）。
+
+    写回答前看一眼别人写到哪 —— 知乎最忌讳复述高赞已经说透的东西。
+    """
+    if not (url or "").strip():
+        raise HTTPException(400, "缺少问题链接")
+    usage = await zhihu.usage_today()
+    if not usage["safe_to_fetch"]:
+        return {
+            "ok": False,
+            "items": [],
+            "error": f"今日知乎额度已达水位 {usage['used']}/{usage['quota']}，不再调用",
+            "usage": usage,
+        }
+    res = await zhihu.question_answers(url.strip(), limit=limit)
+    return {**res, "usage": await zhihu.usage_today()}
+
+
 @router.get("/usage")
 async def usage(_admin: User = Depends(require_admin)):
     """凭证状态 + 当日额度余量 + 上次抓取结果（管理后台「知乎热点」卡片）。
