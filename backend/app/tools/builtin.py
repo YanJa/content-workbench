@@ -185,6 +185,53 @@ async def activate_skill(name: str, ctx: dict | None = None):
     return await skill_svc.activate(db, owner, name)
 
 
+# ------------------------------------------------------------ 知乎直答
+@tool(
+    name="zhihu_zhida",
+    description=(
+        "调用知乎直答（Zhida），就某个问题获取知乎上的真实回答。"
+        "当用户想查询知乎、就某话题找知乎上的权威回答或不同观点、需要引用知乎内容时使用。"
+        "传入 query（用户的原问题），工具返回知乎生成的回答正文，据此组织你的回复。"
+        "会消耗知乎开放平台额度；未配置凭证时会返回明确错误提示，不要假装已有回答。"
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "要问知乎直答的问题，用用户的原话或改写后的清晰提问",
+            },
+            "model": {
+                "type": "string",
+                "enum": ["zhida-fast-1p5", "zhida-thinking-1p5", "zhida-agent"],
+                "description": "直答模型：快答/带思考/智能体，默认 zhida-fast-1p5",
+            },
+        },
+        "required": ["query"],
+    },
+)
+async def zhihu_zhida(query: str, model: str = "zhida-fast-1p5", ctx: dict | None = None):
+    """调用知乎直答获取回答（底层实现见 app/services/zhihu.zhida_query）。"""
+    from app.services import zhihu as zhihu_svc
+
+    if not (query or "").strip():
+        return {"ok": False, "error": "query 不能为空"}
+    result = await zhihu_svc.zhida_query(query.strip(), model=model)
+    if not result.get("ok"):
+        return {
+            "ok": False,
+            "error": result.get("error", "知乎直答调用失败"),
+            "hint": result.get("hint", "请确认知乎 Access Secret 是否已配置"),
+        }
+    return {
+        "ok": True,
+        "query": query,
+        "answer": result["answer"],
+        "model": result.get("model", model),
+        "note": "以上是知乎直答的回答，据此组织你的回复并注明来源是知乎。",
+    }
+
+
 # ---------------------------------------------------------------- 只读工具
 @tool(
     name="query_queue",

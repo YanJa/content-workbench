@@ -22,6 +22,16 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '1.7.3',
+    date: '2026-10-24',
+    title: '知乎直达：对话里可真实调用知乎直答',
+    highlights: [
+      '新增对话工具 zhihu_zhida：模型在对话中可主动调用知乎直答，就用户问题获取知乎上的真实回答再组织成稿，不再是「装了用不了」的脚本型技能。',
+      '改造用户安装的 zhida 技能：description 改为「查知乎时激活 + 调用 zhihu_zhida 工具」，正文从「运行 zhida.py 脚本」改为指向内置工具，使该技能真正被用到。',
+      '直答复用已有知乎鉴权（Access Secret），无需额外配置；未配置时工具返回明确错误提示，不会编造回答。',
+    ],
+  },
+  {
     version: '1.7.2',
     date: '2026-10-24',
     title: '生成端默认「像人写」：从源头去 AI 味',

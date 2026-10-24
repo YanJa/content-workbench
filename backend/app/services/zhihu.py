@@ -701,3 +701,77 @@ async def check() -> dict:
             **usage,
         }
     return {"ok": False, "configured": True, "error": raw["error"], **usage}
+
+
+# ---------------------------------------------------------------- 直答
+async def zhida_query(
+    query: str,
+    model: str = "zhida-fast-1p5",
+) -> dict:
+    """调用知乎直答（OpenAI 兼容的 /v1/chat/completions）。
+
+    这是「知乎直达」能力的底层封装：把用户问题发给 developer.zhihu.com 的
+    直答接口，返回知乎生成的回答正文。对话侧的 `zhihu_zhida` 工具（见
+    app/tools/builtin.py）就是包了一层它，再交给模型在对话里调用。
+
+    与热榜同源一套鉴权（Bearer + 秒级时间戳），复用 `_headers()`；同样吃
+    Access Secret 的共享额度池，调用过频会被平台限流。
+
+    Args:
+        query: 用户问题（必填）。
+        model: zhida-fast-1p5（快）/ zhida-thinking-1p5（带思考）/ zhida-agent。
+    Returns:
+        {ok, answer, model, error?, hint?}
+    """
+    if not _configured():
+        return {
+            "ok": False,
+            "error": "未配置 ZHIHU_ACCESS_SECRET（知乎开放平台直答凭证）",
+            "hint": "到「系统设置 → 知乎热点」卡片配置 Access Secret，"
+                    "或在 .env 加 ZHIHU_ACCESS_SECRET=<你的密钥> 后重启后端",
+        }
+    query = (query or "").strip()
+    if not query:
+        return {"ok": False, "error": "query 不能为空"}
+
+    body = {
+        "model": model,
+        "messages": [{"role": "user", "content": query}],
+        "stream": False,
+    }
+    # 直答比热榜慢，单独把超时放宽，避免复用 _client_kwargs 的默认 15s。
+    kw = _client_kwargs()
+    kw["timeout"] = settings.ZHIHU_TIMEOUT + 15
+
+    last_err = ""
+    for attempt in range(2):
+        try:
+            async with httpx.AsyncClient(**kw) as client:
+                resp = await client.post(
+                    f"{API}/v1/chat/completions",
+                    headers=_headers(),
+                    json=body,
+                )
+            data = resp.json() if resp.content else {}
+            if resp.status_code == 200 and data.get("choices"):
+                msg = data["choices"][0].get("message") or {}
+                answer = (msg.get("content") or "").strip()
+                # 思考模型可能把正文放 reasoning_content，正文为空也认
+                if not answer:
+                    answer = (msg.get("reasoning_content") or "").strip()
+                if answer:
+                    return {"ok": True, "answer": answer, "model": data.get("model") or model}
+                last_err = "知乎直答返回为空"
+            else:
+                code = data.get("Code", resp.status_code)
+                last_err = (
+                    _ERR_HINT.get(code)
+                    or f"知乎直答返回 Code={code}: {data.get('Message', '')}"
+                )
+                if resp.status_code == 401 or code in (40001, 40003):
+                    break  # 凭证问题是永久性的，重试无意义
+            await asyncio.sleep(1.5 * (attempt + 1))
+        except Exception as exc:  # noqa: BLE001
+            last_err = f"请求失败：{exc}"
+            await asyncio.sleep(1.5 * (attempt + 1))
+    return {"ok": False, "error": last_err or "未知错误"}
