@@ -6,6 +6,7 @@
  * 作者信息）在个人中心（顶栏头像下拉进入），不在这里。
  */
 import { computed, h, onMounted, onUnmounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { useVersionStore } from '@/stores/version'
 import { APP_VERSION } from '@/version/changelog'
 import { actionBtn } from '@/utils/actionBtn'
@@ -90,6 +91,7 @@ const loading = ref(true)
 const err = ref('')
 
 const auth = useAuthStore()
+const router = useRouter()
 const version = useVersionStore()
 
 // 用户当前对话通道（本页「AI 对话」卡片可改，DB 优先于 .env）——
@@ -320,6 +322,15 @@ const poolSummary = computed(() => {
 
 /** 最近 3 条异常（卡片空间有限，全部异常以健康页数据为准——目前只有这一处入口） */
 const recentErrs = computed(() => (detail.value?.recent_errors ?? []).slice(0, 3))
+
+/**
+ * 「模型池」那行跳到模型池页去设置。
+ * 只读卡片不该有编辑能力，但它必须有**出口**：看到「额度快用完了」「某槽没绑
+ * 模型」之后，下一秒的自然动作就是去改，让人自己回侧边栏找页面太笨。
+ */
+function gotoPool() {
+  router.push({ name: 'model-pool' })
+}
 
 function errTime(ts: number) {
   const d = new Date(ts * 1000)
@@ -832,7 +843,18 @@ const envColumns: DataTableColumns<EnvRow> = [
               <NDescriptionsItem label="模型池">
                 <template v-if="detail">
                   <div class="pool-cell">
-                    <span class="pool-summary">{{ poolSummary }}</span>
+                    <div class="pool-head">
+                      <span class="pool-summary">{{ poolSummary }}</span>
+                      <NButton
+                        size="tiny"
+                        quaternary
+                        type="primary"
+                        title="去「模型池」页配置服务商、模型与功能绑定"
+                        @click="gotoPool"
+                      >
+                        去设置 →
+                      </NButton>
+                    </div>
                     <div class="pool-features">
                       <div
                         v-for="b in detail.pool.bindings"
@@ -1349,6 +1371,12 @@ const envColumns: DataTableColumns<EnvRow> = [
    空间有限所以是「文字 + 百分比」而不是进度条 —— 8 条轨道太挤，
    超过 80% 的会以警示条形式浮出（pool alerts），比常驻进度条更省眼力。 */
 .pool-cell {
+  min-width: 0;
+}
+.pool-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   min-width: 0;
 }
 .pool-summary {

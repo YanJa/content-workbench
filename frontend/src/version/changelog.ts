@@ -22,6 +22,15 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '1.5.6',
+    date: '2026-10-24',
+    title: '服务健康：模型池那行可直接跳转去设置',
+    highlights: [
+      '服务健康卡片的「模型池」行多了「去设置 →」按钮，一键跳到模型池页改服务商、模型与功能绑定。',
+      '看到「额度快用完了」「某槽还没绑模型」之后的下一个动作就是去改 —— 让人自己回侧边栏找页面太笨。',
+    ],
+  },
+  {
     version: '1.5.5',
     date: '2026-10-24',
     title: '服务健康卡片升级：模型池水位、外部通道、运行时与最近异常',
