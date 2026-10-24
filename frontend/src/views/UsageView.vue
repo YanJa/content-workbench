@@ -18,6 +18,7 @@ import {
   NDataTable,
   NEmpty,
   NSelect,
+  NSpace,
   NSpin,
   NTag,
   NTooltip,
@@ -26,7 +27,13 @@ import {
 
 import * as usageApi from '@/api/usage'
 import IconTextBtn from '@/components/IconTextBtn.vue'
-import type { PriceRow, TopConversation, UsageRecord, UsageSeriesItem } from '@/api/usage'
+import type {
+  BillingKind,
+  PriceRow,
+  TopConversation,
+  UsageRecord,
+  UsageSeriesItem,
+} from '@/api/usage'
 
 // ------------------------------------------------------------------ 状态
 const loading = ref(true)
@@ -299,8 +306,20 @@ const sceneBars = computed(() => barRows(summary.value?.by_scene ?? []))
 
 /** 单价表里没登记、却被实际调用过的模型 —— 这些数字是兜底估算，必须提示 */
 const unknownModels = computed(() =>
-  (summary.value?.by_model ?? []).filter((m) => m.known === false),
+  (summary.value?.by_model ?? []).filter((m) => (m.billing ?? 'unknown') === 'unknown'),
 )
+
+/** 这条记录算哪种账。老数据没有 billing 字段，用 price_known 兜底 */
+function billingOf(r: UsageRecord): BillingKind {
+  if (r.billing) return r.billing
+  return r.price_known ? 'paid' : 'unknown'
+}
+
+/** 免费调用：不花钱，但吃的是每日额度，得让人看得见 */
+const freeStat = computed(() => {
+  const t = summary.value?.total
+  return { calls: t?.free_calls ?? 0, tokens: t?.free_tokens ?? 0 }
+})
 
 // ------------------------------------------------------------------ 单价表派生
 const hasCacheColumn = computed(() => pricing.value.some((p) => p.has_cache_price))
@@ -318,8 +337,18 @@ const columns: DataTableColumns<UsageRecord> = [
   {
     title: '模型',
     key: 'model',
-    width: 140,
-    render: (r) => (r.price_known ? r.model_label || r.model : `${r.model} ⚠`),
+    width: 160,
+    render: (r) =>
+      h(NSpace, { size: 4, wrap: false, align: 'center' }, () => [
+        h('span', r.model_label || r.model),
+        // 免费：明确标出来，别让人看着 ¥0.00 以为漏记了；
+        // 未知：标 ⚠，说明这笔是兜底估算，不是精确账单。
+        billingOf(r) === 'free'
+          ? h(NTag, { size: 'tiny', bordered: false, type: 'success' }, { default: () => '免费' })
+          : billingOf(r) === 'unknown'
+            ? h(NTag, { size: 'tiny', bordered: false, type: 'warning' }, { default: () => '⚠ 估价' })
+            : null,
+      ]),
   },
   {
     title: '输入',
@@ -354,7 +383,15 @@ const columns: DataTableColumns<UsageRecord> = [
         { default: () => (r.is_peak ? '高峰' : '低谷') },
       ),
   },
-  { title: '费用', key: 'cost', width: 92, render: (r) => fmtMoney(r.cost) },
+  {
+    title: '费用',
+    key: 'cost',
+    width: 92,
+    render: (r) =>
+      billingOf(r) === 'free'
+        ? h('span', { style: 'font-size:12px;opacity:.6' }, '免费')
+        : fmtMoney(r.cost),
+  },
   {
     title: '来源',
     key: 'estimated',
@@ -394,6 +431,9 @@ const pageCount = computed(() => Math.max(1, Math.ceil(recordsTotal.value / PAGE
             <span class="k-label">总费用</span>
             <strong class="k-value">{{ fmtMoney(total.cost) }}</strong>
             <span class="k-foot">{{ total.calls }} 次调用</span>
+            <span v-if="freeStat.calls" class="k-foot free-note">
+              含 {{ freeStat.calls }} 次免费模型（{{ fmtTokens(freeStat.tokens) }} tokens，不花钱但占额度）
+            </span>
           </div>
           <div class="kpi">
             <span class="k-label">总 tokens</span>
@@ -809,6 +849,12 @@ const pageCount = computed(() => Math.max(1, Math.ceil(recordsTotal.value / PAGE
 .k-foot {
   font-size: 12px;
   color: var(--app-text-3);
+}
+/* 免费那部分：钱是 0，但额度在消耗，得和「不花钱」区分开 */
+.k-foot.free-note {
+  display: block;
+  margin-top: 2px;
+  color: var(--app-teal);
 }
 
 .card {

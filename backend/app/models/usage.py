@@ -47,6 +47,11 @@ class LlmUsage(Base):
     #    因为 CF 等免费通道流式拿不到 usage，token 统计不到（见 models/model_pool.py）。
     cred_owner: Mapped[str] = mapped_column(String(64), default="system")
 
+    # 这次调用算哪种账："free" 免费模型（0 元）/ "paid" 有单价 / "unknown" 没登记、按兜底价估。
+    # 与 is_peak 一样是**调用当时定格**的：事后把模型改成付费，历史账单不该跟着变。
+    # 空串 = 老数据（加列之前的行），读的时候按 unknown 处理。
+    billing: Mapped[str] = mapped_column(String(8), default="")
+
     # token 明细
     prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
     completion_tokens: Mapped[int] = mapped_column(Integer, default=0)

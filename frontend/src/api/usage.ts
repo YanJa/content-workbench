@@ -1,6 +1,14 @@
 /** AI 用量接口。 */
 import { http } from './http'
 
+/**
+ * 计费性质三态。**别只用「known」去猜**：
+ *   - free：免费模型，费用 0 元，但吃的是每日额度（不是零成本）
+ *   - paid：有它自己的单价，按价算
+ *   - unknown：没登记 / 登记了没填价 → 按兜底价估，界面要标 ⚠
+ */
+export type BillingKind = 'free' | 'paid' | 'unknown'
+
 export interface UsageStat {
   calls: number
   prompt_tokens: number
@@ -10,6 +18,9 @@ export interface UsageStat {
   total_tokens: number
   cost: number
   avg_latency_ms: number
+  /** 免费模型的调用次数（费用为 0，但额度在消耗） */
+  free_calls?: number
+  free_tokens?: number
 }
 
 export interface UsageSeriesItem extends UsageStat {
@@ -18,6 +29,7 @@ export interface UsageSeriesItem extends UsageStat {
   label?: string
   known?: boolean
   priced_as?: string
+  billing?: BillingKind
 }
 
 export interface UsageSummary {
@@ -41,6 +53,8 @@ export interface UsageRecord extends UsageStat {
   created_at: number
   model_label: string
   price_known: boolean
+  /** 这次调用算哪种账。老数据没有这个字段，前端按 price_known 兜底判断 */
+  billing?: BillingKind
 }
 
 export interface TopConversation extends UsageStat {
@@ -125,6 +139,7 @@ export interface UsageBreakdown {
   model: string
   label: string
   known: boolean
+  billing?: BillingKind
   is_peak: boolean
   peak_multiplier: number
   parts: { key: string; label: string; tokens: number; unit_price: number; cost: number }[]

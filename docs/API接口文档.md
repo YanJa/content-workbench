@@ -948,3 +948,15 @@ curl -X POST localhost:8000/api/video/render -H 'Content-Type: application/json'
 | POST | `/knowledge/reembed-all` | knowledge.create | 重建「模型过期」的向量索引，返回 `{queued,items,model}` |
 
 **SSE 新事件**（`/api/chat/stream`）：`quota_warning`（`level: warn|exhausted`，80%/100% 跨阈值发一次）、`model_switched`（开流阶段失败已切到备选模型）。
+
+### 计费性质（v1.5.2）
+
+`GET /api/usage/estimate` 新增可选参数 `provider_key`（带上它才能认出「整家服务商都是免费档」的模型）。
+返回体新增 `billing` 字段：`free` / `paid` / `unknown`；`billing=free` 时 `cost` 恒为 0，`peak_multiplier` 为 1。
+
+`GET /api/usage/summary`、`GET /api/usage/records` 的每一项也带 `billing`；汇总 `total` 新增
+`free_calls` / `free_tokens`（免费模型的调用次数与 token 数 —— 费用为 0，但吃的是每日额度）。
+
+`llm_usage.billing` 是**调用当时定格**的：事后把模型改成付费，历史那笔仍是 0 元。
+加列之前的老行 `billing` 为空串（按 `unknown` 处理）；启动时 `backfill_free_billing()` 会把
+能证明当时是免费模型的行补成 `free`（不修改金额）。

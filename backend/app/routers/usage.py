@@ -85,15 +85,32 @@ async def estimate(
     completion: int = Query(0, ge=0),
     cached: int = Query(0, ge=0),
     model: str = Query("deepseek-flash"),
+    provider_key: str = Query(""),
 ):
     """估算一次调用的费用。
 
     给聊天页用 —— 每条回复流结束时把 tokens 丢过来换钱数。
     计价逻辑必须留在 Python 侧（峰谷、阶梯、别名都在引擎里），
     前端不重复实现，免得两处算出来不一样。
+
+    provider_key 可选：带上它能认出「这家服务商是免费通道」的模型
+    （比如 Cloudflare —— 它的模型免费但不一定登记过单价）。
     """
     from app.core.pricing import cost_breakdown
+    from app.services import usage as usage_svc
 
+    kind = usage_svc.billing_of(model, provider_key)
+    if kind == "free":
+        # 免费模型：把单价按 0 算，同时保留 token 明细，前端能显示「免费」
+        out = cost_breakdown(model, prompt, completion, cached)
+        out["billing"] = "free"
+        out["cost"] = 0.0
+        out["is_peak"] = False
+        out["peak_multiplier"] = 1.0
+        for p in out["parts"]:
+            p["unit_price"] = 0.0
+            p["cost"] = 0.0
+        return out
     return cost_breakdown(model, prompt, completion, cached)
 
 

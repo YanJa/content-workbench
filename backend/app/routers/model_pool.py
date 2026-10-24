@@ -92,6 +92,8 @@ def _prov_out(p: ModelProvider) -> dict:
         "monthly_token_limit": p.monthly_token_limit,
         "rpm_limit": p.rpm_limit,
         "quota_reset_tz": p.quota_reset_tz,
+        # 这家默认算什么账（模型自己没标 billing 时用它兜底）
+        "billing_default": p.billing_default or "paid",
         "updated_at": p.updated_at,
     }
 
@@ -214,6 +216,7 @@ async def create_provider(
         monthly_token_limit=payload.get("monthly_token_limit"),
         rpm_limit=payload.get("rpm_limit"),
         quota_reset_tz=str(payload.get("quota_reset_tz") or "cst"),
+        billing_default=str(payload.get("billing_default") or "paid"),
         created_at=now,
         updated_at=now,
     )
@@ -243,6 +246,7 @@ async def update_provider(
     for field in (
         "name", "kind", "base_url", "enabled", "note", "daily_calls_limit",
         "daily_token_limit", "monthly_token_limit", "rpm_limit", "quota_reset_tz",
+        "billing_default",
     ):
         if field in payload and payload[field] is not None:
             setattr(row, field, payload[field])

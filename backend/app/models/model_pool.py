@@ -102,6 +102,11 @@ class ModelProvider(Base):
     rpm_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # 日额度在哪儿重置：CF 是 00:00 UTC，国内厂商按北京时间
     quota_reset_tz: Mapped[str] = mapped_column(String(8), default="cst")
+    # 这家服务商的模型**默认**算什么账：free / paid。
+    # 只在某个模型自己没登记 billing 时兜底用 —— Cloudflare 整个账号是免费档，
+    # 但它的模型不一定都进了池（设置页的下拉可以直接选），没有这一列就会把
+    # 免费调用按兜底价记成钱。
+    billing_default: Mapped[str] = mapped_column(String(8), default="paid")
 
     created_at: Mapped[int] = mapped_column(Integer, default=_now)
     updated_at: Mapped[int] = mapped_column(Integer, default=_now)

@@ -177,7 +177,9 @@ export const useChatStore = defineStore('chat', () => {
               break
 
             case 'usage':
-              last.usage = evt.usage
+              // 带上模型名：费用要按**真正生成这条回复的模型**算，
+              // 免费模型（CF 等）才不会被按默认模型估成花钱。
+              last.usage = { ...evt.usage, model: evt.model }
               break
 
             case 'tool_call':

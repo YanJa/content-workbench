@@ -87,6 +87,9 @@ export type SSEEvent =
         total_tokens: number
         reasoning_tokens?: number
       }
+      /** 真正生成这条回复的模型（可能已被自动切换过）。算费用必须用它，
+       *  否则每条回复都按默认模型估价 —— 免费模型会被算成花钱。 */
+      model?: string
     }
   | { type: 'done'; finish_reason: string }
   | { type: 'error'; message: string }
@@ -304,8 +307,14 @@ export interface ChatMessage {
   toolCalls?: ToolCallRecord[]
   pendingConfirm?: PendingConfirm
   error?: string
-  /** 本条回复的 token 用量（后端在流末尾回传） */
-  usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number; reasoning_tokens?: number }
+  /** 本条回复的 token 用量（后端在流末尾回传）。model 用于按真实模型计价 */
+  usage?: {
+    prompt_tokens: number
+    completion_tokens: number
+    total_tokens: number
+    reasoning_tokens?: number
+    model?: string
+  }
 }
 
 export interface ToolCallRecord {
@@ -365,6 +374,8 @@ export interface ModelProviderRow {
   monthly_token_limit: number | null
   rpm_limit: number | null
   quota_reset_tz: 'cst' | 'utc'
+  /** 这家服务商默认算什么账（模型自己没标 billing 时的兜底） */
+  billing_default?: 'free' | 'paid'
   updated_at: number
 }
 

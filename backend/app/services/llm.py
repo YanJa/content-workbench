@@ -340,6 +340,8 @@ class LLMClient:
             "latency_ms": int((time.perf_counter() - started) * 1000),
             "failed": failed,
             "cred_owner": spec.cred_owner if spec else SYSTEM_OWNER,
+            "billing": spec.billing if spec else "",
+            "provider_key": spec.provider_key if spec else "",
             **usage.to_dict(),
         }
         try:

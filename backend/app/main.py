@@ -96,6 +96,17 @@ async def lifespan(app: FastAPI):
 
     async with SessionLocal() as seed_db:
         await bootstrap_pool(seed_db)
+        # 老账单补记「这笔是免费模型」：加 billing 列之前的行没有这个标记，
+        # 免费模型会一直挂着兜底价算出来的钱（与「标着免费」自相矛盾）。
+        try:
+            from app.services.usage import backfill_free_billing
+
+            n = await backfill_free_billing(seed_db)
+            if n:
+                await seed_db.commit()
+                logger.info("已为 %d 条历史用量补记「免费模型」标记", n)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("历史用量 billing 回填失败（不影响启动）: %s", exc)
     asyncio.create_task(loop_pool_refresh())
 
     # 知识库：把上次进程中断时没跑完的向量化重新排队（只捞 pending，

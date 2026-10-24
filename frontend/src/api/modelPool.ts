@@ -45,6 +45,9 @@ export interface ProviderPayload {
   monthly_token_limit?: number | null
   rpm_limit?: number | null
   quota_reset_tz?: 'cst' | 'utc'
+  /** 这家服务商的模型默认算什么账：模型自己没标 billing 时用它兜底。
+   *  整家都是免费档（Cloudflare、火山免费额度……）选 free，记账就是 0 元。 */
+  billing_default?: 'free' | 'paid'
 }
 
 export async function createProvider(payload: ProviderPayload): Promise<ModelProviderRow> {

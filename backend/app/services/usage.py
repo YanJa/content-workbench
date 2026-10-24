@@ -16,10 +16,12 @@ from typing import Any
 from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import pricing
 from app.core.pricing import (
     CST,
     canonical_model,
     estimate_cost,
+    is_free,
     is_known,
     is_peak_hour,
     label_of,
@@ -27,6 +29,36 @@ from app.core.pricing import (
 )
 from app.models.conversation import Conversation
 from app.models.usage import LlmUsage
+
+
+# ------------------------------------------------------------------ 计费性质
+def billing_of(model: str, provider_key: str = "") -> str:
+    """这次调用算哪种账：**免费 / 付费 / 不知道**。
+
+    顺序很讲究，别改：
+      1. 单价表明确标了免费 → free
+      2. 单价表登记过价 → paid
+      3. 模型池里标了 free（CF、火山免费档这些）→ free
+         —— 池是免费模型的权威来源：新接入的免费模型不会第一时间进单价表，
+            但它在池里已经挂着 billing=free 了。
+      4. 模型没进池，但它家服务商是「免费通道」（CF）→ 也算 free
+      5. 池里标了 paid 但单价表没价 → 还是 unknown（宁可按兜底价估高，
+         也不能因为「不知道多少钱」就记成免费 —— 账目偏低的后果更严重）
+      6. 都没有 → unknown
+    """
+    name = canonical_model(model or "")
+    kind = pricing.billing_of(name)
+    if kind != "unknown":
+        return kind
+    try:
+        from app.services import model_pool
+
+        pool_billing = model_pool.billing_of(name, provider_key)
+    except Exception:  # noqa: BLE001  — 记账不能因为池不可用而失败
+        pool_billing = ""
+    if pool_billing == "free":
+        return "free"
+    return "unknown"
 
 
 # ------------------------------------------------------------------ 落库
@@ -48,11 +80,16 @@ async def record(
     estimated: bool = False,
     created_at: int | None = None,
     cred_owner: str = "system",
+    billing: str | None = None,
+    provider_key: str = "",
 ) -> LlmUsage:
     """记录一次调用的用量。
 
     is_peak 在这里定格（按 created_at 当时的时段算），
     避免事后查账时因为"现在是低谷"而把白天的高峰调用算便宜了。
+
+    billing 同理定格：调用当时这个模型是免费的就是免费的，
+    之后管理员把它改成付费，不该让上个月的账单跟着涨价。
     """
     ts = created_at or int(time.time())
     total = int(prompt_tokens or 0) + int(completion_tokens or 0)
@@ -64,6 +101,7 @@ async def record(
         model=canonical_model(model),
         task_type=task_type or "",
         cred_owner=cred_owner or "system",
+        billing=(billing or billing_of(model, provider_key)),
         prompt_tokens=int(prompt_tokens or 0),
         completion_tokens=int(completion_tokens or 0),
         reasoning_tokens=int(reasoning_tokens or 0),
@@ -78,6 +116,44 @@ async def record(
     db.add(row)
     await db.flush()
     return row
+
+
+async def backfill_free_billing(db: AsyncSession, limit: int = 20_000) -> int:
+    """给加 billing 列**之前**的老行补上「这笔是免费的」。
+
+    只补能证明的那部分：这个模型现在在池里明确标着 billing=free。
+    补不了的（模型没进池、或者本来就是付费）保持空串 —— 空串 = 按兜底价估，
+    也就是维持加列之前的口径。**不回溯改任何金额**，只是把「免费」这个事实
+    补记上去，免得同一行既标着免费又显示一笔钱。
+    """
+    from sqlalchemy import select as _select
+
+    try:
+        from app.services import model_pool
+
+        snap = model_pool.snapshot()
+        free_models = {
+            str(e.get("model_id") or "")
+            for e in snap.catalog.values()
+            if e.get("billing") == "free"
+        }
+    except Exception:  # noqa: BLE001
+        return 0
+    if not free_models:
+        return 0
+
+    rows = (
+        await db.execute(
+            _select(LlmUsage)
+            .where(LlmUsage.billing == "", LlmUsage.model.in_(list(free_models)))
+            .limit(limit)
+        )
+    ).scalars().all()
+    for r in rows:
+        r.billing = "free"
+    if rows:
+        await db.flush()
+    return len(rows)
 
 
 def make_sink(db: AsyncSession, **ctx: Any) -> Callable[[dict[str, Any]], Awaitable[None]]:
@@ -97,6 +173,10 @@ def make_sink(db: AsyncSession, **ctx: Any) -> Callable[[dict[str, Any]], Awaita
             task_type=payload.get("task", ""),
             # 模型池会带上这次用的是谁的 Key（平台凭证 / 用户个人凭证）
             cred_owner=payload.get("cred_owner") or "system",
+            # 池里解析出来的模型自带 billing（free/paid）；走 .env 通道时为 ""，
+            # 由 record() 回落去查计价表 / 池快照。
+            billing=payload.get("billing") or None,
+            provider_key=payload.get("provider_key") or "",
             prompt_tokens=payload.get("prompt_tokens", 0),
             completion_tokens=payload.get("completion_tokens", 0),
             reasoning_tokens=payload.get("reasoning_tokens", 0),
@@ -116,7 +196,13 @@ def total_tokens_fallback(prompt: int, completion: int) -> int:
 
 
 def cost_of(row: LlmUsage) -> float:
-    """按当时定格的 is_peak 算费用，保证历史数据不随时间漂移。"""
+    """按当时定格的 is_peak 与 billing 算费用，保证历史数据不随时间漂移。
+
+    免费模型直接 0 元 —— 不是「单价乘出来刚好是 0」，是**性质上就不要钱**。
+    （顺带避开另一个坑：免费模型没登记单价时，兜底价会把它算成 DeepSeek 的钱。）
+    """
+    if (getattr(row, "billing", "") or "") == "free":
+        return 0.0
     return estimate_cost(
         row.model,
         row.prompt_tokens,
@@ -163,10 +249,17 @@ async def _fetch(db: AsyncSession, q: Select) -> list[LlmUsage]:
 
 
 def _agg(rows: list[LlmUsage]) -> dict:
-    """把一组记录聚合成统计块。"""
+    """把一组记录聚合成统计块。
+
+    免费调用单列出来：费用是 0，但**成本不是 0**（吃的是每日额度），
+    只给一个「花了 0 元」会让人以为这些调用不存在。
+    """
     cost = sum(cost_of(r) for r in rows)
+    free_rows = [r for r in rows if (getattr(r, "billing", "") or "") == "free"]
     return {
         "calls": len(rows),
+        "free_calls": len(free_rows),
+        "free_tokens": sum(r.total_tokens for r in free_rows),
         "prompt_tokens": sum(r.prompt_tokens for r in rows),
         "completion_tokens": sum(r.completion_tokens for r in rows),
         "reasoning_tokens": sum(r.reasoning_tokens for r in rows),
@@ -220,6 +313,10 @@ async def summary(
                 stat["label"] = label_of(key)
                 stat["known"] = is_known(key)
                 stat["priced_as"] = priced_as(key)
+                # 同一个 key 下 billing 一致（都是同一个模型），取第一行即可
+                stat["billing"] = (
+                    getattr(items[0], "billing", "") or ""
+                ) or billing_of(key)
             out.append(stat)
         out.sort(key=lambda x: x["key"])
         return out
@@ -312,4 +409,5 @@ def _row_out(r: LlmUsage) -> dict:
         "created_at": r.created_at,
         "model_label": label_of(r.model),
         "price_known": is_known(r.model),
+        "billing": (getattr(r, "billing", "") or "") or billing_of(r.model),
     }

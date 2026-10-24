@@ -67,12 +67,16 @@ const route = useRoute()
  */
 const costCache = ref<Record<string, UsageBreakdown>>({})
 
-async function loadCost(msgId: string, usage: { prompt_tokens: number; completion_tokens: number }) {
+async function loadCost(
+  msgId: string,
+  usage: { prompt_tokens: number; completion_tokens: number; model?: string },
+) {
   if (costCache.value[msgId]) return
   try {
     const r = await estimateUsage({
       prompt: usage.prompt_tokens,
       completion: usage.completion_tokens,
+      model: usage.model,
     })
     costCache.value = { ...costCache.value, [msgId]: r }
   } catch {
@@ -839,12 +843,22 @@ async function restoreFromQueue() {
                 > · 思维链 {{ m.usage.reasoning_tokens }}</template>）
                 <template v-if="costCache[m.id]">
                   ·
-                  <span class="cost" :title="costCache[m.id].is_peak ? '高峰时段，单价翻倍' : '空闲时段'">
-                    {{ fmtCost(costCache[m.id].cost) }}
-                    <template v-if="costCache[m.id].is_peak">· 高峰</template>
-                    <template v-if="!costCache[m.id].known">
-                      · 按 {{ costCache[m.id].model }} 估价
-                    </template>
+                  <span
+                    class="cost"
+                    :title="
+                      costCache[m.id].billing === 'free'
+                        ? '免费模型：不花钱，但吃每日额度'
+                        : costCache[m.id].is_peak
+                          ? '高峰时段，单价翻倍'
+                          : '空闲时段'
+                    "
+                  >
+                    <template v-if="costCache[m.id].billing === 'free'">免费</template>
+                    <template v-else>{{ fmtCost(costCache[m.id].cost) }}</template>
+                    <template
+                      v-if="costCache[m.id].billing !== 'free' && costCache[m.id].is_peak"
+                    >· 高峰</template>
+                    <template v-if="!costCache[m.id].known">· 按 {{ costCache[m.id].model }} 估价</template>
                   </span>
                 </template>
               </div>

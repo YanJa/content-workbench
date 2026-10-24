@@ -315,6 +315,7 @@ function openProvCreate() {
     api_key: '',
     enabled: true,
     quota_reset_tz: 'cst',
+    billing_default: 'paid',
   }
   provShow.value = true
 }
@@ -329,6 +330,7 @@ function openProvEdit(row: ModelProviderRow) {
     enabled: row.enabled,
     note: row.note,
     quota_reset_tz: row.quota_reset_tz,
+    billing_default: row.billing_default || 'paid',
     daily_calls_limit: row.daily_calls_limit,
     daily_token_limit: row.daily_token_limit,
     monthly_token_limit: row.monthly_token_limit,
@@ -415,7 +417,12 @@ const provColumns = computed<DataTableColumns<ModelProviderRow>>(() => [
     minWidth: 200,
     render: (r) =>
       h('div', [
-        h('div', { style: 'font-weight:600' }, r.name),
+        h(NSpace, { size: 4, wrap: false, align: 'center' }, () => [
+          h('div', { style: 'font-weight:600' }, r.name),
+          r.billing_default === 'free'
+            ? h(NTag, { size: 'tiny', bordered: false, type: 'success' }, () => '免费通道')
+            : null,
+        ]),
         h('div', { style: 'font-size:12px;opacity:.6' }, `${r.key} · ${r.kind}`),
       ]),
   },
@@ -1040,6 +1047,19 @@ const provFormRef = ref<FormInst | null>(null)
               { label: 'UTC 00:00（Cloudflare / OpenRouter）', value: 'utc' },
             ]"
           />
+        </NFormItem>
+        <NFormItem label="默认计费">
+          <NSelect
+            v-model:value="provForm.billing_default"
+            :options="[
+              { label: '免费通道（记账 0 元）', value: 'free' },
+              { label: '付费（按单价表算）', value: 'paid' },
+            ]"
+          />
+          <template #feedback>
+            只在这家下面的模型**自己没标**计费性质时兜底。整家都是免费档（Cloudflare
+            这类）选「免费通道」，它家没进池的模型也不会被按兜底价记成钱。
+          </template>
         </NFormItem>
         <NFormItem label="账号级护栏">
           <NSpace :size="8" align="center">

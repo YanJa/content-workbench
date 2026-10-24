@@ -107,6 +107,9 @@ class ModelSpec:
     label: str = ""
     cred_owner: str = SYSTEM_OWNER
     quota_scope: str = "model"
+    # 计费性质："free" / "paid"。空串 = 不走池（回落 .env 通道），由计价表判定。
+    # 带上它是为了让**记账那一瞬间**就知道要不要钱，而不是事后按模型名反查。
+    billing: str = ""
 
     @property
     def display(self) -> str:
@@ -159,7 +162,7 @@ def _row_dict(obj: Any, cols: tuple[str, ...]) -> dict[str, Any]:
 _PROVIDER_COLS = (
     "id", "owner", "key", "name", "kind", "base_url", "api_key", "enabled",
     "daily_calls_limit", "daily_token_limit", "monthly_token_limit", "rpm_limit",
-    "quota_reset_tz",
+    "quota_reset_tz", "billing_default",
 )
 _CATALOG_COLS = (
     "id", "provider_key", "model_id", "label", "capabilities", "protocol",
@@ -397,6 +400,7 @@ def _spec_of(entry: dict[str, Any], prov: dict[str, Any], api_key: str, cred_own
         label=entry.get("label") or "",
         cred_owner=cred_owner,
         quota_scope=entry.get("quota_scope") or "model",
+        billing=str(entry.get("billing") or ""),
     )
 
 
@@ -460,6 +464,29 @@ def resolve_model(
         return None
     _record_rpm({"model_id": cands[0].model}, cands[0].cred_owner)
     return cands[0]
+
+
+def billing_of(model_id: str, provider_key: str = "") -> str:
+    """查这次调用算什么账："free" / "paid"，查不到返回 ""。
+
+    两级判定：**模型自己说了算，没说就看它家服务商的默认值**。
+    第二级很关键 —— Cloudflare 整个账号是免费档，但设置页的下拉能直接选一个
+    没进池的 CF 模型，只看模型级就会把它漏判成「不知道」，于是按兜底价记钱。
+
+    **纯内存查快照**，不碰数据库 —— 记账发生在每次调用之后，不能有 IO。
+    """
+    try:
+        snap = snapshot()
+        for entry in snap.catalog.values():
+            if entry.get("model_id") == model_id:
+                return str(entry.get("billing") or "")
+        if provider_key:
+            for prov in snap.providers.values():
+                if prov.get("key") == provider_key:
+                    return str(prov.get("billing_default") or "")
+    except Exception:  # noqa: BLE001
+        return ""
+    return ""
 
 
 async def load_personal_keys(db: Any, owner: str | None) -> dict[str, str]:
@@ -733,6 +760,9 @@ async def seed_model_pool(db: Any) -> dict[str, int]:
                 api_key=settings.CLOUDFLARE_API_TOKEN, enabled=True,
                 # 官方：免费计划 10,000 Neurons/天，账号级、跨模型共享、00:00 UTC 重置
                 quota_reset_tz="utc",
+                # 整个账号是免费档：即使某个模型没进池（设置页下拉可以直接选），
+                # 记账也应该算 0 元，而不是按兜底价记成钱。
+                billing_default="free",
                 note="由 .env 的 CLOUDFLARE_* 自动播种；免费额度账号级共享（10k Neurons/天）",
                 created_at=now, updated_at=now,
             )
@@ -804,6 +834,30 @@ async def seed_model_pool(db: Any) -> dict[str, int]:
     return {"seeded": len(providers) + len(catalog)}
 
 
+async def migrate_free_providers(db: Any) -> int:
+    """把「整家服务商都是免费档」这件事补到已有的服务商行上。
+
+    加 billing_default 列时老库补的是 'paid'，Cloudflare 那行必须改回 'free'，
+    否则它家没进池的模型（设置页下拉可以直接选一个）会被按兜底价记成钱。
+    """
+    from sqlalchemy import select as _select
+
+    rows = (
+        await db.execute(
+            _select(ModelProvider).where(ModelProvider.kind == "cloudflare")
+        )
+    ).scalars().all()
+    n = 0
+    for p in rows:
+        if (p.billing_default or "") != "free":
+            p.billing_default = "free"
+            n += 1
+    if n:
+        await db.flush()
+        logger.info("已把 %d 个 Cloudflare 服务商标为免费通道（记账 0 元）", n)
+    return n
+
+
 async def migrate_legacy_chat_provider(db: Any) -> bool:
     """把老口径的 app_settings（chat_provider / cloudflare_chat_model）迁到绑定。
 
@@ -868,6 +922,7 @@ async def bootstrap_pool(db: Any) -> None:
     """启动时调用：建默认数据 → 迁移旧设置 → 读进内存快照。"""
     try:
         await seed_model_pool(db)
+        await migrate_free_providers(db)
         await migrate_legacy_chat_provider(db)
         await db.commit()
     except Exception as exc:  # noqa: BLE001

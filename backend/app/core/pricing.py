@@ -184,14 +184,60 @@ def is_known(model: str) -> bool:
     return canonical_model(model) in PRICING
 
 
+def is_free(model: str) -> bool:
+    """这是免费模型吗？
+
+    两种写法都认：显式 `"free": true`，或者 in/out/in_cached 全填 0。
+    免费模型的费用是 **0 元**，但它**不是未知模型** —— 这两件事必须分开，
+    否则「没登记过单价」会被当成「不要钱」，账目只会越算越少，比算多了更危险。
+    """
+    rules = PRICING.get(canonical_model(model))
+    if rules is None:
+        return False
+    if rules.get("free") is True:
+        return True
+    keys = [k for k in ("in", "out", "in_cached") if rules.get(k) is not None]
+    # 一个价都没填不算免费，算「不知道多少钱」
+    if not keys:
+        return False
+    return all(float(rules[k]) == 0.0 for k in keys) and not rules.get("tiers")
+
+
+def _has_any_price(rules: dict[str, Any]) -> bool:
+    """这条规则里有任何一个可用单价吗？
+
+    「登记了条目但一条价都没填」是很常见的疏漏（只填了 label）。这种情况
+    **不能当成免费** —— 它和没登记是一回事，都得按兜底价估，否则账目偏低。
+    """
+    return any(rules.get(k) is not None for k in ("in", "out", "in_cached"))
+
+
+def billing_of(model: str) -> str:
+    """这个模型在单价表里的性质："free" / "paid" / "unknown"。
+
+    与 `is_known` 的区别是它直接给出**三态**，调用方不用自己拼逻辑：
+      - free：明确免费（free 标记或单价全 0）→ 记 0 元
+      - paid：有它自己的价 → 按价算
+      - unknown：没登记 / 登记了没填价 → 按兜底价估，前端标 ⚠
+    """
+    if is_free(model):
+        return "free"
+    if priced_as(model) == canonical_model(model):
+        return "paid"
+    return "unknown"
+
+
 def priced_as(model: str) -> str:
-    """实际按哪个模型的价在算（未登记时返回兜底模型名）。"""
+    """实际按哪个模型的价在算（没价可依时返回兜底模型名）。"""
     name = canonical_model(model)
-    return name if name in PRICING else DEFAULT_MODEL
+    rules = PRICING.get(name)
+    if rules is not None and _has_any_price(rules):
+        return name
+    return DEFAULT_MODEL
 
 
 def price_of(model: str) -> dict[str, Any]:
-    """取单价规则。未知模型回落到兜底模型的价。"""
+    """取单价规则。没登记 / 登记了但没价，都回落到兜底模型的价。"""
     return PRICING.get(priced_as(model), PRICING[DEFAULT_MODEL])
 
 
@@ -248,6 +294,7 @@ def cost_breakdown(
     返回：
       {
         "model": 实际计价的模型, "label": 展示名, "known": 是否登记过单价,
+        "billing": "free" | "paid" | "unknown"（免费 / 有价 / 没登记按兜底估）,
         "is_peak": ..., "peak_multiplier": ...,
         "parts": [{"key","label","tokens","unit_price","cost"}...],
         "cost": 合计
@@ -260,11 +307,15 @@ def cost_breakdown(
 
     actual = priced_as(model)
     rules = price_of(model)
-    known = is_known(model)
+    free = is_free(model)
+    # 「known」= 这笔钱是按**它自己的价**算出来的。
+    # 没登记、或登记了没填价，都是按兜底价估的，前端要给 ⚠，别装作精确。
+    known = free or actual == canonical_model(model)
 
     if is_peak is None:
         is_peak = is_peak_hour(ts)
-    mult = peak_multiplier_of(model) if is_peak else 1.0
+    # 免费模型不谈峰谷：0 乘几倍都是 0，但展示「高峰 ×2」会让人以为有价格波动
+    mult = 1.0 if free else (peak_multiplier_of(model) if is_peak else 1.0)
 
     parts: list[dict[str, Any]] = []
     if cached:
@@ -306,6 +357,7 @@ def cost_breakdown(
         "model": actual,
         "label": label_of(actual),
         "known": known,
+        "billing": "free" if free else ("paid" if known else "unknown"),
         "is_peak": bool(is_peak),
         "peak_multiplier": mult,
         "parts": parts,
@@ -354,6 +406,7 @@ def pricing_table() -> list[dict[str, Any]]:
             "idle": {},
             "peak": {},
             "tiers": p.get("tiers", []),
+            "free": is_free(model),
         }
         for key in ("in_cached", "in", "out"):
             if p.get(key) is None:

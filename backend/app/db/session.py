@@ -83,8 +83,16 @@ _SQLITE_COLUMN_PATCHES: dict[str, dict[str, str]] = {
     },
     # 用量表：这次调用烧的是谁的 Key（平台凭证 / 某用户的个人凭证）。
     # 老库行补 'system' —— 改造前的调用全部走 .env，语义正确。
+    # 模型池（v1.5.0 建表，v1.5.2 补列）：服务商的默认计费性质。
+    # 老库补 'paid' —— 保持加列之前的口径，CF 那一行由播种/迁移改成 'free'。
+    "model_providers": {
+        "billing_default": "VARCHAR(8) DEFAULT 'paid'",
+    },
     "llm_usage": {
         "cred_owner": "VARCHAR(64) DEFAULT 'system'",
+        # 这次调用算哪种账（free/paid/unknown）。老库行补空串 = 按 unknown 处理，
+        # 也就是维持加列之前的口径（兜底价 + ⚠），不回溯篡改历史账单。
+        "billing": "VARCHAR(8) DEFAULT ''",
     },
     # RBAC：用户表加角色与停用标记。老库已有用户行，所以两列都必须带
     # DEFAULT —— 补出来的是 'member' / 1，真正的管理员由启动时自愈
