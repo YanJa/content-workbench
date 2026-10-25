@@ -1337,6 +1337,29 @@ async function restoreFromQueue() {
   overflow: hidden;
 }
 
+/**
+ * 修「会话列表长了滚不动」：只动这一层，ConvList 与抽屉都不动。
+ *
+ * 现象：会话一多，侧栏列表尾部看不到，也没有滚动条。
+ * 根因：naive-ui 的 NCard 会把内容包一层 .n-card-content，而这层默认
+ * display:block 且高度 auto —— ConvList 的 height:100% 解析成 auto，
+ * 列表按内容撑高（无头浏览器实测 60 条会话 = 2640px），NScrollbar 的
+ * flex:1/min-height:0 在 auto 高度里毫无意义，滚动区零溢出 → 没有滚动条，
+ * 超出侧栏的部分被 .conv-panel 的 overflow:hidden 裁掉，彻底够不着。
+ *
+ * 为什么只修这里：移动抽屉里 .n-drawer-body 是固定高度 flex column 的
+ * flex:1 项，本身有确定高度，ConvList 的 height:100% 一直好使（实测对照
+ * 列表 800px、内嵌滚动正常）——所以抽屉侧零改动、无回归风险。把这层
+ * 内容体也变成 column flex + min-height:0 后，桌面链一样坐实：
+ * 实测列表收成 654px、滚动区 2640 内容可滚、滚到底最后一项可达。
+ */
+.conv-panel :deep(.n-card-content) {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+}
+
 /* 右侧提问导航轨容器：极窄列，只放一列 marker；浮层是 fixed 定位不受这里裁剪 */
 .qnav-rail-wrap {
   min-width: 0;
