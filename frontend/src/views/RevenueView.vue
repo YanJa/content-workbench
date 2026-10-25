@@ -53,7 +53,9 @@ import {
 // ---------------------------------------------------------------- 筛选状态
 const accounts = ref<RevenueAccount[]>([])
 const accountId = ref<string>('__all__') // '__all__' = 全部账号聚合
-const preset = ref<'yesterday' | '7' | '30' | '90' | ''>('30')
+// 默认「昨日」：流量主数据 T+1，昨天是最近一个已出数的完整自然日，
+// 打开看板第一眼看的就该是「昨天赚了多少」——而不是一个自己没选过的 30 天区间。
+const preset = ref<'yesterday' | '7' | '30' | '90' | ''>('yesterday')
 const customRange = ref<[number, number] | null>(null) // 自定义：[startTs, endTs]
 
 // 把日期格式化成 YYYY-MM-DD（本地时区，避免 toISOString 的 UTC 偏移）
