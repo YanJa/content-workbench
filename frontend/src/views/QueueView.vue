@@ -153,11 +153,12 @@ const layoutContent = ref<ContentItem | null>(null)
 /** 已发布任务的排版面板为只读「排版详情」（由队列状态驱动，见 LayoutPanel 的 readonly） */
 const layoutReadonly = ref(false)
 
-const statusMeta: Record<QueueStatus, { label: string; type: 'default' | 'warning' | 'success' | 'info' }> = {
+const statusMeta: Record<QueueStatus, { label: string; type: 'default' | 'warning' | 'success' | 'info' | 'error' }> = {
   draft: { label: '待加工', type: 'default' },
   ready: { label: '待发布', type: 'warning' },
   published: { label: '已发布', type: 'success' },
   archived: { label: '已归档', type: 'info' },
+  abandoned: { label: '已放弃', type: 'error' },
 }
 
 const platformName: Record<string, string> = {
@@ -385,12 +386,20 @@ const columns = computed<DataTableColumns<QueueItem>>(() => [
     render: (row) => {
       // 加工中（排版/生图）禁用所有会改状态的操作，避免重复触发/冲突
       const busy = !!row.processing
+      // 已放弃：不发了，发布链路上的所有操作都停掉，只保留「恢复」与「删除」等管理项
+      const isAbandoned = row.status === 'abandoned'
       // 贴图是公众号的图片消息形态：没有草稿箱接口，复制的是纯文本，
       // 所以发布链路上的「推送 / 标记已发」门槛与图文文章不同。
       const isTietu = row.platform === 'gzh' && (row.sub_type ?? 'article') === 'tietu'
       const isGzh = row.platform === 'gzh' && !isTietu
       const isZhihu = row.platform === 'zhihu'
       const items = [
+        // 已放弃态：提供「恢复加工」把任务拉回待加工，撤销放弃
+        isAbandoned
+          ? actionBtn('refresh', '恢复加工（撤销放弃，回到待加工）', () => onRestore(row), {
+              type: 'default',
+            })
+          : null,
         // 加工排版 / 查看排版：加工中时禁用，tooltip 显示当前加工阶段
         actionBtn(
           'edit',
@@ -400,10 +409,10 @@ const columns = computed<DataTableColumns<QueueItem>>(() => [
               ? '查看排版'
               : '加工排版',
           () => openLayout(row),
-          { type: row.status === 'published' ? 'default' : 'primary', disabled: busy },
+          { type: row.status === 'published' ? 'default' : 'primary', disabled: busy || isAbandoned },
         ),
         // 发布检查
-        actionBtn('search', '发布检查', () => openCheck(row), { disabled: busy }),
+        actionBtn('search', '发布检查', () => openCheck(row), { disabled: busy || isAbandoned }),
         // 推微信草稿箱（公众号）/ 复制文案（其它平台）：额度耗尽时禁用并说明。
         // pushing = 有一条推送请求正在飞：此时禁用所有行的推送按钮，防止
         // 用户连点同一条记录造成二次推送（后端回填 media_id 有回程延迟）。
@@ -436,12 +445,12 @@ const columns = computed<DataTableColumns<QueueItem>>(() => [
                 {
                   type: isGzh ? 'primary' : 'default',
                   // 注意：这里是 script 作用域，ref 不会自动解包，必须 .value
-                  disabled: busy || pushing.value || (isGzh && pushGate.blocked.value),
+                  disabled: busy || pushing.value || (isGzh && pushGate.blocked.value) || isAbandoned,
                 },
               ),
         // 知乎：官方没有发布接口，系统给的是「人带着内容去发」的入口。
         // 这个按钮省掉的是「我该去哪个页面发」这一步 —— 三种形态入口各不相同。
-        isZhihu && row.publish_url
+        isZhihu && row.publish_url && !isAbandoned
           ? actionBtn('link', '去知乎发布（打开对应形态的发布页）', () => gotoPublish(row), {
               type: 'primary',
               disabled: busy,
@@ -450,7 +459,8 @@ const columns = computed<DataTableColumns<QueueItem>>(() => [
         // 标记已发：图文必须先推到微信草稿箱（wechat_media_id 非空）才能标记，
         // 否则推完草稿箱前就标记完成，等于绕过合规发布流程。
         // 贴图没有草稿箱接口，复制文案即可去发布，不做此门槛。
-        row.status !== 'published'
+        // 已放弃的任务不再能标记已发（先恢复才能继续发布流程）。
+        row.status !== 'published' && !isAbandoned
           ? actionBtn(
               'check-circle',
               isGzh && !row.wechat_media_id
@@ -480,6 +490,15 @@ const columns = computed<DataTableColumns<QueueItem>>(() => [
             : actionBtn('book', '存入知识库（写稿时 AI 自动参考）', () => onSaveKnowledge(row), {
                 loading: savingKbId.value === row.content_id,
               }),
+        // 放弃：把任务移出发布流程（内容保留，可随时「恢复加工」撤销）。已放弃的不显示。
+        !isAbandoned
+          ? actionBtn(
+              'close-circle',
+              '放弃这条内容（移出发布流程，可随时恢复加工）',
+              () => onAbandon(row),
+              { type: 'warning' },
+            )
+          : null,
         // 删除
         actionBtn('trash', '删除该内容', () => onDelete(row), { type: 'error', disabled: busy }),
         // 来源是某条对话 → 跳回会话并定位到那条 AI 回复（非会话来源没有此字段）
@@ -656,6 +675,30 @@ async function onDelete(row: QueueItem) {
       message.success('已删除')
     },
   })
+}
+
+// ------------------------------------------------------------------ 放弃 / 恢复
+/**
+ * 放弃：把任务移出发布流程。内容本身保留（不删数据），只是不再走发布链路。
+ * 放弃后发布相关操作全部禁用，只留「恢复加工」拉回待加工。可逆。
+ */
+function onAbandon(row: QueueItem) {
+  dialog.warning({
+    title: '放弃这条内容？',
+    content: `「${row.title}」将标记为「已放弃」，移出发布流程。内容保留，可随时点「恢复加工」撤销。`,
+    positiveText: '放弃',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      await queue.setStatus(row.id, 'abandoned')
+      message.success('已放弃，内容保留')
+    },
+  })
+}
+
+/** 恢复：把已放弃的任务拉回「待加工」，重新进入发布流程。 */
+async function onRestore(row: QueueItem) {
+  await queue.setStatus(row.id, 'draft')
+  message.success('已恢复，回到待加工')
 }
 
 // ------------------------------------------------------------------ 改标题
@@ -990,6 +1033,7 @@ const statusOptions: { label: string; value: QueueStatus }[] = [
   { label: '待发布', value: 'ready' },
   { label: '已发布', value: 'published' },
   { label: '已归档', value: 'archived' },
+  { label: '已放弃', value: 'abandoned' },
 ]
 
 /** 标题/正文模糊搜索：本地输入做 300ms 防抖，再交给 store（后端匹配）。 */

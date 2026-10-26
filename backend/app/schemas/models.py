@@ -274,7 +274,8 @@ class QueueItemOut(BaseModel):
 
 class QueueStatusUpdate(BaseModel):
     # 两个字段都可选：可以只改状态，也可以只改标题（改标题时不用硬塞一个状态）
-    status: Literal["draft", "ready", "published", "archived"] | None = None
+    # 状态枚举：draft 待加工 / ready 待发布 / published 已发布 / archived 已归档 / abandoned 已放弃
+    status: Literal["draft", "ready", "published", "archived", "abandoned"] | None = None
     # 改标题。只有未排版（且没推过草稿箱、没在加工中）的项才让改 ——
     # 排版之后标题已经跟正文/草稿箱绑定了，改了会对不上。
     title: str | None = None

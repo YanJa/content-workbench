@@ -12,7 +12,7 @@ export type Platform = 'gzh' | 'xiaohongshu' | 'douyin' | 'zhihu'
  */
 export type ZhihuSubType = 'answer' | 'article' | 'idea'
 
-export type QueueStatus = 'draft' | 'ready' | 'published' | 'archived'
+export type QueueStatus = 'draft' | 'ready' | 'published' | 'archived' | 'abandoned'
 
 export type JobStatus = 'queued' | 'running' | 'done' | 'failed'
 
