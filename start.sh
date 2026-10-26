@@ -56,7 +56,7 @@ if [ "$HAS_SUPERVISOR" = "1" ]; then
         exit 0
         ;;
     stop)
-        "$SV_BIN" -c "$SV_CONF" ctl stop cwb-tunnel cwb-frontend cwb-backend 2>/dev/null || true
+        "$SV_BIN" -c "$SV_CONF" ctl stop cwb-keepalive cwb-tunnel cwb-frontend cwb-backend 2>/dev/null || true
         echo "  已停止"
         exit 0
         ;;
