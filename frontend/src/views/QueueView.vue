@@ -388,6 +388,9 @@ const columns = computed<DataTableColumns<QueueItem>>(() => [
       const busy = !!row.processing
       // 已放弃：不发了，发布链路上的所有操作都停掉，只保留「恢复」与「删除」等管理项
       const isAbandoned = row.status === 'abandoned'
+      // 仅「未发布」的任务可放弃：待加工 / 待发布。已发布、已归档、已放弃都不提供放弃入口
+      // （已发布是终态、已归档是已归档的完结态、已放弃本身就是放弃态，都不该再被放弃）。
+      const canAbandon = row.status === 'draft' || row.status === 'ready'
       // 贴图是公众号的图片消息形态：没有草稿箱接口，复制的是纯文本，
       // 所以发布链路上的「推送 / 标记已发」门槛与图文文章不同。
       const isTietu = row.platform === 'gzh' && (row.sub_type ?? 'article') === 'tietu'
@@ -490,8 +493,8 @@ const columns = computed<DataTableColumns<QueueItem>>(() => [
             : actionBtn('book', '存入知识库（写稿时 AI 自动参考）', () => onSaveKnowledge(row), {
                 loading: savingKbId.value === row.content_id,
               }),
-        // 放弃：把任务移出发布流程（内容保留，可随时「恢复加工」撤销）。已放弃的不显示。
-        !isAbandoned
+        // 放弃：仅未发布（待加工/待发布）可放弃；已发布/已归档/已放弃均不显示该入口
+        canAbandon
           ? actionBtn(
               'close-circle',
               '放弃这条内容（移出发布流程，可随时恢复加工）',

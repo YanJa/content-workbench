@@ -218,6 +218,10 @@ async def update_status(
             content.title = item.title
 
     if req.status:
+        # 放弃只允许从「未发布」状态进入：已发布/已归档是完结态、已放弃本身是放弃态，
+        # 都不该再被标记放弃（与前端口径一致：只有待加工/待发布能放弃）。
+        if req.status == "abandoned" and item.status in ("published", "archived", "abandoned"):
+            raise HTTPException(400, "已发布、已归档或已放弃的内容不能再放弃")
         item.status = req.status
         if req.status == "published":
             item.published_at = int(time.time())
