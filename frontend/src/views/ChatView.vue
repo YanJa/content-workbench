@@ -43,8 +43,10 @@ import {
   refreshHot,
   fetchQuestionRecommendations,
   type HotTopicItem,
+  type InspireItem,
   type ZhihuQuestion,
 } from '@/api/zhihu'
+import { fetchWeiboHot } from '@/api/weibo'
 import type { UsageBreakdown } from '@/api/usage'
 import type { Platform } from '@/types'
 import MarkdownView from '@/components/MarkdownView.vue'
@@ -413,10 +415,18 @@ const inspireShow = ref(false)
 /** 抽屉展示全量（桌面 8 条），空白会话只露 Top 5，避免欢迎区被榜单淹没 */
 const hotTop5 = computed(() => hotItems.value.slice(0, 5))
 
+// ---- 微博热搜（灵感模块的第二个热点源，方案 A：免费聚合，实时拉取）----
+// 与知乎热榜同源「不知道写什么」的灵感场景，但来自另一个平台，且免费、
+// 不消耗知乎额度。同样只在用户主动切到「微博」tab 时才拉。
+const weiboItems = ref<InspireItem[]>([])
+const weiboLoading = ref(false)
+const weiboError = ref('')
+const weiboFetchedAt = ref(0)
+
 // ---- 知乎「待答问题」（选题闭环的另一半）----
 // 热榜是「全站在看什么」，这个是「适合我答什么」。差别不只是角度：
 // 推荐接口**每次调用都真金白银花额度**，所以只能用户主动切过来才拉。
-const inspireTab = ref<'hot' | 'questions'>('hot')
+const inspireTab = ref<'hot' | 'weibo' | 'questions'>('hot')
 const recItems = ref<ZhihuQuestion[]>([])
 const recLoading = ref(false)
 const recError = ref('')
@@ -453,6 +463,28 @@ const qidLabel = computed(() => {
 /** 切到「待答问题」时才拉 —— 这个接口真的花额度，不能打开抽屉就烧一次 */
 function onInspireTab(v: string) {
   if (v === 'questions') void loadRecommendations()
+  else if (v === 'weibo') void loadWeiboHot()
+}
+
+async function loadWeiboHot() {
+  weiboLoading.value = true
+  weiboError.value = ''
+  try {
+    const r = await fetchWeiboHot(20)
+    weiboItems.value = (r.items ?? []).map((it) => ({
+      rank: it.rank,
+      title: it.title,
+      url: it.url,
+      hot: it.hot,
+    }))
+    // 聚合接口给的是 UTC ISO 时间，转成 unix 秒用于「更新于」展示
+    weiboFetchedAt.value = r.update_time ? Date.parse(r.update_time) / 1000 : 0
+    if (!r.ok) weiboError.value = r.error || '微博热搜加载失败'
+  } catch (e) {
+    weiboError.value = (e as Error).message
+  } finally {
+    weiboLoading.value = false
+  }
 }
 
 function useRecommendedQuestion(q: ZhihuQuestion) {
@@ -512,29 +544,31 @@ async function onRefreshHot() {
  *   - 不自动发送：热点只是起点，用户看完还能改，发了就改不了了；
  *   - 平台感知：与快捷指令同一套口径，切了小红书就不能问出公众号句式。
  */
-function topicPrompt(title: string): string {
+function topicPrompt(title: string, source: 'zhihu' | 'weibo' = 'zhihu'): string {
   const t = `「${title}」`
+  // 来源词：知乎热榜 / 微博热搜，其余句式不变
+  const srcWord = source === 'weibo' ? '微博热搜话题' : '知乎热榜话题'
   if (scene.value === 'gzh') {
     if (gzhSub.value === 'tietu')
-      return `知乎热榜话题${t}很适合贴图，帮我写一条 100 字左右的短文案，再想 3 个首图标题`
-    return `围绕知乎热榜话题${t}写一篇公众号文章，先给我 3 个不同的切入角度`
+      return `${srcWord}${t}很适合贴图，帮我写一条 100 字左右的短文案，再想 3 个首图标题`
+    return `围绕${srcWord}${t}写一篇公众号文章，先给我 3 个不同的切入角度`
   }
   if (scene.value === 'xiaohongshu')
-    return `知乎热榜话题${t}很适合小红书，帮我写一篇观点笔记，标题要有点击欲`
+    return `${srcWord}${t}很适合小红书，帮我写一篇观点笔记，标题要有点击欲`
   if (scene.value === 'douyin')
-    return `把知乎热榜话题${t}拆成一条 60 秒口播脚本，前 3 秒要有钩子`
+    return `把${srcWord}${t}拆成一条 60 秒口播脚本，前 3 秒要有钩子`
   if (scene.value === 'zhihu') {
     if (zhihuSub.value === 'article')
-      return `就知乎热榜话题${t}写一篇专栏文章，要有自己的判断和可复现的方法`
+      return `就${srcWord}${t}写一篇专栏文章，要有自己的判断和可复现的方法`
     if (zhihuSub.value === 'idea')
-      return `就知乎热榜话题${t}写一条想法，只讲一个观察，100 字左右`
-    return `以知乎热榜话题${t}为背景，写一个回答：结论放在开头，并写出比现有高赞回答多的那部分`
+      return `就${srcWord}${t}写一条想法，只讲一个观察，100 字左右`
+    return `以${srcWord}${t}为背景，写一个回答：结论放在开头，并写出比现有高赞回答多的那部分`
   }
-  return `我想写知乎热榜话题${t}，帮我分析有哪些切入角度，各自适合什么平台`
+  return `我想写${srcWord}${t}，帮我分析有哪些切入角度，各自适合什么平台`
 }
 
-function useHotTopic(t: HotTopicItem) {
-  input.value = topicPrompt(t.title)
+function useHotTopic(t: InspireItem, source: 'zhihu' | 'weibo' = 'zhihu') {
+  input.value = topicPrompt(t.title, source)
   inspireShow.value = false
   // 聚焦输入框：抽屉/卡片点完，光标就该在用户要改的地方
   void nextTick(() => {
@@ -1280,6 +1314,16 @@ async function restoreFromQueue() {
               :configured="hotConfigured"
               @use="useHotTopic"
               @refresh="onRefreshHot"
+            />
+          </NTabPane>
+          <NTabPane name="weibo" tab="🔥 微博">
+            <HotInspiration
+              source="weibo"
+              :items="weiboItems"
+              :loading="weiboLoading"
+              :error="weiboError"
+              :fetched-at="weiboFetchedAt"
+              @use="(t) => useHotTopic(t, 'weibo')"
             />
           </NTabPane>
           <NTabPane name="questions" tab="✍️ 待答问题">

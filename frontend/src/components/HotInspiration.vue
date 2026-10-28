@@ -18,10 +18,12 @@ import { NButton, NSpin, NTag } from 'naive-ui'
 
 import { useAuthStore } from '@/stores/auth'
 import IconTextBtn from './IconTextBtn.vue'
-import type { HotTopicItem } from '@/api/zhihu'
+import type { InspireItem } from '@/api/zhihu'
 
 const props = defineProps<{
-  items: HotTopicItem[]
+  /** 热点源：知乎热榜 / 微博热搜（决定标题与热度信号展示） */
+  source?: 'zhihu' | 'weibo'
+  items: InspireItem[]
   loading: boolean
   error: string
   /** 数据批次时间（unix 秒），0 = 未知 */
@@ -31,11 +33,12 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  (e: 'use', topic: HotTopicItem): void
+  (e: 'use', topic: InspireItem): void
   (e: 'refresh'): void
 }>()
 
 const auth = useAuthStore()
+const isWeibo = computed(() => props.source === 'weibo')
 
 /** 批次时间：今天只显示时分，跨天带上日期（热点是当日话题，不需要年份） */
 const fetchedLabel = computed(() => {
@@ -53,16 +56,25 @@ const unavailable = computed(() => props.configured === false && !props.items.le
 function stayingLabel(hours: number): string {
   return `在榜 ${Math.round(hours)} 小时`
 }
+
+/** 微博热度值友好化：亿/万单位，纯展示 */
+function formatHot(hot: number): string {
+  if (!hot) return ''
+  if (hot >= 1e8) return `${(hot / 1e8).toFixed(1)} 亿`
+  if (hot >= 1e4) return `${(hot / 1e4).toFixed(1)} 万`
+  return String(hot)
+}
 </script>
 
 <template>
   <section class="hot-inspire">
     <header class="hot-head">
-      <span class="hot-title">🔥 知乎热榜灵感</span>
+      <span class="hot-title">🔥 {{ isWeibo ? '微博热搜灵感' : '知乎热榜灵感' }}</span>
       <span v-if="fetchedLabel" class="hot-time">更新于 {{ fetchedLabel }}</span>
       <div class="hot-head-spacer" />
+      <!-- 微博是免费实时聚合，无需管理员刷新（也无额度概念），故仅知乎显示 -->
       <IconTextBtn
-        v-if="auth.isAdmin"
+        v-if="auth.isAdmin && !isWeibo"
         name="reset"
         size="tiny"
         quaternary
@@ -94,13 +106,18 @@ function stayingLabel(hours: number): string {
             }}</a>
           </div>
           <div class="hot-tags">
-            <NTag v-if="t.climb > 0" size="tiny" :bordered="false" type="success">
-              ↑ {{ t.climb }} 位
+            <NTag v-if="isWeibo && t.hot" size="tiny" :bordered="false" type="error">
+              🔥 {{ formatHot(t.hot) }}
             </NTag>
-            <NTag v-if="t.is_new" size="tiny" :bordered="false" type="warning">🆕 新上榜</NTag>
-            <NTag v-if="t.staying_hours >= 2" size="tiny" :bordered="false">
-              {{ stayingLabel(t.staying_hours) }}
-            </NTag>
+            <template v-else>
+              <NTag v-if="t.climb > 0" size="tiny" :bordered="false" type="success">
+                ↑ {{ t.climb }} 位
+              </NTag>
+              <NTag v-if="t.is_new" size="tiny" :bordered="false" type="warning">🆕 新上榜</NTag>
+              <NTag v-if="t.staying_hours >= 2" size="tiny" :bordered="false">
+                {{ stayingLabel(t.staying_hours) }}
+              </NTag>
+            </template>
           </div>
           <p v-if="t.summary" class="hot-summary">{{ t.summary }}</p>
         </div>

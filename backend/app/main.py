@@ -35,6 +35,7 @@ from app.routers import (
     tools,
     usage,
     voice_clone,
+    weibo,
     zhihu,
 )
 
@@ -159,6 +160,7 @@ app.include_router(usage.router, prefix=settings.API_PREFIX)
 app.include_router(revenue.router, prefix=settings.API_PREFIX)
 app.include_router(admin.router, prefix=settings.API_PREFIX)
 app.include_router(zhihu.router, prefix=settings.API_PREFIX)
+app.include_router(weibo.router, prefix=settings.API_PREFIX)
 app.include_router(knowledge.router, prefix=settings.API_PREFIX)
 app.include_router(model_pool.router, prefix=settings.API_PREFIX)
 app.include_router(skills.router, prefix=settings.API_PREFIX)

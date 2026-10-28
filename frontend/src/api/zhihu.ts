@@ -10,6 +10,23 @@
  */
 import { http } from './http'
 
+/** 灵感卡通用条目：知乎热榜与微博热搜共用，趋势字段对微博可缺省。 */
+export interface InspireItem {
+  /** 名次（知乎/微博都有）；缺省时按列表顺序显示 */
+  rank?: number
+  title: string
+  /** 已整理好的可点击链接（知乎直链 / 微博搜索入口） */
+  url: string
+  /** 平台摘要（知乎有，微博无） */
+  summary?: string | null
+  /** 微博热搜值（已归一为整数）；知乎无此项 */
+  hot?: number
+  /** 以下为知乎趋势信号，微博缺省 */
+  climb?: number
+  is_new?: boolean
+  staying_hours?: number
+}
+
 /** 一条热榜话题（含后端算好的趋势信号） */
 export interface HotTopicItem {
   question_id: string
