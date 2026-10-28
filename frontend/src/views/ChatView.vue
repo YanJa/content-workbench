@@ -631,7 +631,10 @@ function openSaveModal(msg: { id: string; content: string }) {
   savePlatform.value = (scene.value || 'gzh') as Platform
   saveZhihuSub.value = zhihuSub.value || 'answer'
   saveGzhSub.value = gzhSub.value || 'article'
-  saveZhihuQuestion.value = ''
+  // 已选定了待答问题（chat.zhihuQuestion 存的是问题直链）就预填进去，
+  // 这样保存队列时会带上归属问题，队列页「去知乎发布」能直接定位到该问题下。
+  // 没选则留空（用户仍可手填），articles/idea 不需要归属问题，填了也不会用。
+  saveZhihuQuestion.value = chat.zhihuQuestion || ''
   saveTitle.value = guessTitle(msg.content)
   saveModalShow.value = true
 }
