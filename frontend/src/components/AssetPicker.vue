@@ -16,6 +16,7 @@ import {
   NEmpty,
   NInput,
   NPagination,
+  NSelect,
   NSpin,
   NTabPane,
   NTabs,
@@ -28,6 +29,7 @@ import {
 import {
   importCandidate,
   listAssetSources,
+  listAssetFolders,
   listAssets,
   searchOnline,
   uploadAsset,
@@ -58,6 +60,22 @@ const page = ref(1)
 const pageSize = 24
 const loading = ref(false)
 const keyword = ref('')
+/** 目录过滤：'' 不限 / 'none' 未归类 / 具体目录 id */
+const folderFilter = ref('')
+const folderOptions = ref<{ label: string; value: string }[]>([])
+
+async function loadFolderOptions() {
+  try {
+    const r = await listAssetFolders()
+    folderOptions.value = [
+      { label: '全部目录', value: '' },
+      { label: '未归类', value: 'none' },
+      ...r.items.map((f) => ({ label: f.name, value: f.id })),
+    ]
+  } catch {
+    folderOptions.value = [{ label: '全部目录', value: '' }]
+  }
+}
 
 // ---------------- 在线搜图 ----------------
 const sources = ref<AssetSourceStatus[]>([])
@@ -85,7 +103,12 @@ const pixabayReady = computed(
 async function loadLocal() {
   loading.value = true
   try {
-    const r = await listAssets({ q: keyword.value.trim() || undefined, page: page.value, page_size: pageSize })
+    const r = await listAssets({
+      q: keyword.value.trim() || undefined,
+      folder_id: folderFilter.value || undefined,
+      page: page.value,
+      page_size: pageSize,
+    })
     items.value = r.items
     total.value = r.total
   } catch {
@@ -222,11 +245,13 @@ watch(
     inserted.value = new Set()
     page.value = 1
     keyword.value = ''
+    folderFilter.value = ''
     onlineQ.value = ''
     onlineItems.value = []
     onlineSearched.value = false
     void loadLocal()
     void loadSources()
+    void loadFolderOptions()
   },
 )
 
@@ -252,6 +277,13 @@ watch(page, () => void loadLocal())
             size="small"
             style="width: 220px"
             @keyup.enter="onSearch"
+          />
+          <NSelect
+            v-model:value="folderFilter"
+            :options="folderOptions"
+            size="small"
+            style="width: 130px"
+            @update:value="onSearch"
           />
           <NButton size="small" secondary @click="onSearch">搜索</NButton>
           <div class="bar-gap" />

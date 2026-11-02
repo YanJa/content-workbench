@@ -15,16 +15,17 @@ import hashlib
 import io
 import time
 import uuid
+import zipfile
 from typing import Any
 
 from PIL import Image
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.logging import logger
-from app.models.asset import Asset
+from app.models.asset import Asset, AssetFolder
 from app.services.storage import get_storage
 
 # 允许的图片后缀与对应 MIME。白名单而不是黑名单：PIL 能开的格式很多，
@@ -158,6 +159,7 @@ async def save_bytes(
     tags: list[str] | None = None,
     mime: str = "",
     filename: str = "",
+    folder_id: str | None = None,
 ) -> tuple[Asset, bool]:
     """落盘 + 入库。返回 (asset, created)。created=False 表示命中已有素材。
 
@@ -196,6 +198,11 @@ async def save_bytes(
             if value and not getattr(dup, field):
                 setattr(dup, field, value)
                 changed = True
+        # 去重命中且目标条还没归类、本次又明确指定了目录 → 顺手归位。
+        # 只补空不覆盖：重复上传同一张图不应把已整理好的素材拖走。
+        if folder_id and not dup.folder_id:
+            dup.folder_id = folder_id
+            changed = True
         if changed:
             await db.commit()
         return dup, False
@@ -238,6 +245,7 @@ async def save_bytes(
         storage=settings.STORAGE_BACKEND,
         storage_key=key,
         thumb_key=thumb_key,
+        folder_id=folder_id,
         created_at=now,
         updated_at=now,
     )
@@ -316,9 +324,285 @@ def asset_dict(asset: Asset) -> dict[str, Any]:
         "watermark_state": asset.watermark_state,
         "used_count": asset.used_count,
         "created_at": asset.created_at,
+        "folder_id": asset.folder_id or "",  # 空串 = 未归类
         "url": storage.url(asset.storage_key, owner) if asset.storage_key else "",
         # 没缩略图（老数据或生成失败）就让前端回落到原图，而不是显示破图
         "thumb_url": storage.url(asset.thumb_key, owner)
         if asset.thumb_key
         else (storage.url(asset.storage_key, owner) if asset.storage_key else ""),
     }
+
+
+# ---------------------------------------------------------------- 目录（folder）
+def folder_dict(f: AssetFolder) -> dict[str, Any]:
+    return {
+        "id": f.id,
+        "name": f.name,
+        "parent_id": f.parent_id or "",
+        "created_at": f.created_at,
+    }
+
+
+async def list_folders(db: AsyncSession, owner: str) -> list[AssetFolder]:
+    """用户全部目录（扁平）。前端组树，后端不做过滤/排序逻辑。"""
+    rows = (
+        (
+            await db.execute(
+                select(AssetFolder)
+                .where(AssetFolder.owner == owner)
+                .order_by(AssetFolder.created_at)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return list(rows)
+
+
+async def get_folder(db: AsyncSession, folder_id: str, owner: str) -> AssetFolder:
+    """取目录并校验归属。不存在与不属于当前用户都当 404。"""
+    f = await db.get(AssetFolder, folder_id)
+    if not f or f.owner != owner:
+        raise AssetError("目录不存在")
+    return f
+
+
+async def create_folder(
+    db: AsyncSession, owner: str, name: str, parent_id: str | None
+) -> AssetFolder:
+    name = (name or "").strip()[:120]
+    if not name:
+        raise AssetError("目录名不能为空")
+    if parent_id:
+        await get_folder(db, parent_id, owner)  # 校验父目录存在且属于当前用户
+    # 同级重名先查一遍给友好报错（唯一约束挡并发，查询给文案）
+    dup = (
+        await db.execute(
+            select(AssetFolder).where(
+                AssetFolder.owner == owner,
+                AssetFolder.parent_id == parent_id if parent_id else AssetFolder.parent_id.is_(None),
+                AssetFolder.name == name,
+            )
+        )
+    ).scalar_one_or_none()
+    if dup:
+        raise AssetError("同级已存在同名目录")
+    f = AssetFolder(id=uuid.uuid4().hex[:12], owner=owner, name=name, parent_id=parent_id)
+    db.add(f)
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise AssetError("同级已存在同名目录") from exc
+    await db.refresh(f)
+    return f
+
+
+def _is_descendant(folders: list[AssetFolder], cand_id: str, ancestor_id: str) -> bool:
+    """cand_id 是否是 ancestor_id 的后代（含间接）。"""
+    parent_map = {f.id: f.parent_id for f in folders}
+    cur = cand_id
+    seen = set()
+    while cur and cur not in seen:
+        if cur == ancestor_id:
+            return True
+        seen.add(cur)
+        cur = parent_map.get(cur) or None
+    return False
+
+
+async def update_folder(
+    db: AsyncSession,
+    owner: str,
+    folder: AssetFolder,
+    *,
+    name: str | None = None,
+    parent_id: str | None = None,
+    parent_set: bool = False,
+) -> AssetFolder:
+    """改名 / 移动。移动要防环：新父不能是自己或自己的后代。"""
+    if name is not None:
+        new_name = name.strip()[:120]
+        if not new_name:
+            raise AssetError("目录名不能为空")
+        if new_name != folder.name:
+            dup = (
+                await db.execute(
+                    select(AssetFolder).where(
+                        AssetFolder.owner == owner,
+                        AssetFolder.parent_id == folder.parent_id
+                        if folder.parent_id
+                        else AssetFolder.parent_id.is_(None),
+                        AssetFolder.name == new_name,
+                        AssetFolder.id != folder.id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if dup:
+                raise AssetError("同级已存在同名目录")
+            folder.name = new_name
+    if parent_set:
+        new_parent = parent_id or None
+        if new_parent == folder.id:
+            raise AssetError("不能把目录移到它自己下面")
+        if new_parent:
+            await get_folder(db, new_parent, owner)
+            all_folders = await list_folders(db, owner)
+            if _is_descendant(all_folders, new_parent, folder.id):
+                raise AssetError("不能把目录移到它自己的子目录下面")
+        folder.parent_id = new_parent
+    await db.commit()
+    await db.refresh(folder)
+    return folder
+
+
+async def collect_subtree_ids(db: AsyncSession, owner: str, root_id: str) -> list[str]:
+    """root_id 及其全部后代目录的 id 列表（含 root）。"""
+    folders = await list_folders(db, owner)
+    children: dict[str | None, list[str]] = {}
+    for f in folders:
+        children.setdefault(f.parent_id, []).append(f.id)
+    out: list[str] = []
+    stack = [root_id]
+    while stack:
+        cur = stack.pop()
+        out.append(cur)
+        stack.extend(children.get(cur, []))
+    return out
+
+
+async def delete_folder(
+    db: AsyncSession, owner: str, folder: AssetFolder, strategy: str
+) -> dict[str, Any]:
+    """删目录。strategy 决定目录内素材的去向：
+
+    - move-to-parent：素材与子目录挂回被删目录的父级（子目录逐层上提）。
+      简化实现：子目录的 parent_id 直接改到被删目录的 parent_id；
+      素材 folder_id 同理。不保持"相对层级"，但对用户是无损的。
+    - delete-assets：子目录连同其中素材**全部删除**（记录+文件）。
+    """
+    if strategy not in ("move-to-parent", "delete-assets"):
+        raise AssetError("未知的删除策略")
+    subtree = await collect_subtree_ids(db, owner, folder.id)
+    if strategy == "move-to-parent":
+        # 素材挂回父级；子目录也挂回父级（被删目录消失后层级压缩一层）
+        await db.execute(
+            Asset.__table__.update()
+            .where(Asset.owner == owner, Asset.folder_id.in_(subtree))
+            .values(folder_id=folder.parent_id)
+        )
+        await db.execute(
+            AssetFolder.__table__.update()
+            .where(
+                AssetFolder.owner == owner,
+                AssetFolder.id.in_(subtree),
+                AssetFolder.id != folder.id,
+            )
+            .values(parent_id=folder.parent_id)
+        )
+        # 孙目录以下保持与"上提一层"的父目录的相对关系 —— 上面的 update
+        # 把所有后代都挂到 folder.parent_id，这会让深层结构塌陷到一层。
+        # 见 plan R1：接受塌陷（目录量小、用户可再整理），换取实现简单可靠。
+        await db.delete(folder)
+        await db.commit()
+        return {"ok": True, "deleted_assets": 0, "moved_assets": True}
+    # delete-assets：先删素材文件与记录，再删目录
+    deleted_assets = 0
+    for chunk_start in range(0, len(subtree), 50):
+        chunk = subtree[chunk_start : chunk_start + 50]
+        rows = (
+            (
+                await db.execute(
+                    select(Asset).where(Asset.owner == owner, Asset.folder_id.in_(chunk))
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for a in rows:
+            await delete_asset(db, a)
+            deleted_assets += 1
+    await db.execute(
+        AssetFolder.__table__.delete().where(
+            AssetFolder.owner == owner, AssetFolder.id.in_(subtree)
+        )
+    )
+    await db.commit()
+    return {"ok": True, "deleted_assets": deleted_assets, "moved_assets": False}
+
+
+async def folder_asset_counts(db: AsyncSession, owner: str) -> dict[str, int]:
+    """每个目录（含间接）下的素材数。树形视图角标用。"""
+    folders = await list_folders(db, owner)
+    direct = dict(
+        (
+            await db.execute(
+                select(Asset.folder_id, func.count(Asset.id))
+                .where(Asset.owner == owner)
+                .group_by(Asset.folder_id)
+            )
+        ).all()
+    )
+    children: dict[str | None, list[str]] = {}
+    for f in folders:
+        children.setdefault(f.parent_id, []).append(f.id)
+
+    counts: dict[str, int] = {}
+
+    def _count(fid: str) -> int:
+        n = int(direct.get(fid) or 0)
+        for c in children.get(fid, []):
+            n += _count(c)
+        counts[fid] = n
+        return n
+
+    for f in folders:
+        if not f.parent_id:
+            _count(f.id)
+    counts[""] = sum(int(v or 0) for k, v in direct.items() if not k)  # 未归类
+    return counts
+
+
+# ---------------------------------------------------------------- zip 打包
+def _zip_entry_name(title: str, storage_key: str, used: set[str]) -> str:
+    """zip 内文件名：优先 title（带扩展名），冲突加 (1)(2)…序号。"""
+    import os
+    import re
+
+    ext = os.path.splitext(storage_key or "")[1] or ".bin"
+    base = (title or os.path.basename(storage_key or "asset")).strip()
+    base = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", base)[:80] or "asset"
+    if not base.lower().endswith(ext.lower()):
+        base = f"{base}{ext}"
+    name = base
+    i = 1
+    while name in used:
+        name = f"{base[: -len(ext)]}({i}){ext}"
+        i += 1
+    used.add(name)
+    return name
+
+
+async def build_assets_zip(db: AsyncSession, owner: str, ids: list[str]) -> tuple[bytes, int]:
+    """把若干素材打包成 zip 字节流。返回 (zip_bytes, packed_count)。
+
+    走 storage 抽象取字节（TOS 模式回源拉对象），不直接读本地盘 ——
+    否则切到 s3 后端后本地没有文件，下载全是空 zip。
+    """
+    storage = get_storage()
+    used: set[str] = set()
+    buf = io.BytesIO()
+    packed = 0
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for aid in ids[:200]:
+            asset = await db.get(Asset, aid)
+            if not asset or asset.owner != owner or not asset.storage_key:
+                continue
+            try:
+                data = await storage.get(asset.storage_key)
+            except (ValueError, FileNotFoundError, OSError):
+                logger.warning("zip 打包跳过（取不到文件）id=%s key=%s", aid, asset.storage_key)
+                continue
+            zf.writestr(_zip_entry_name(asset.title, asset.storage_key, used), data)
+            packed += 1
+    return buf.getvalue(), packed

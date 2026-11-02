@@ -14,10 +14,21 @@ from __future__ import annotations
 
 import mimetypes
 import time
+import urllib.parse
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+)
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,7 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.tenant import current_owner_id, link_auth
 from app.db.session import get_db
-from app.models.asset import Asset
+from app.models.asset import Asset, AssetFolder
 from app.models.content import Content
 from app.services import assets as svc
 from app.services import asset_sources
@@ -42,6 +53,10 @@ async def list_assets(
     source: str | None = Query(default=None, description="upload / search / ai / cover"),
     q: str | None = Query(default=None, description="标题或标签关键词"),
     tag: str | None = Query(default=None),
+    folder_id: str | None = Query(
+        default=None,
+        description="目录过滤。空=不按目录过滤；'none'=未归类（folder_id 为 NULL）",
+    ),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=30, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
@@ -59,6 +74,10 @@ async def list_assets(
         cond.append(or_(Asset.title.like(like), Asset.tags.like(like)))
     if tag:
         cond.append(Asset.tags.like(f"%{tag}%"))
+    if folder_id == "none":
+        cond.append(Asset.folder_id.is_(None))
+    elif folder_id:
+        cond.append(Asset.folder_id == folder_id)
 
     total = int(
         (await db.execute(select(func.count(Asset.id)).where(*cond))).scalar() or 0
@@ -129,12 +148,18 @@ async def asset_stats(
 @router.post("/assets/upload")
 async def upload_asset(
     file: UploadFile = File(...),
-    title: str | None = None,
+    title: str | None = Form(default=None),
+    folder_id: str | None = Form(default=None),
     db: AsyncSession = Depends(get_db),
     owner: str = Depends(current_owner_id),
 ) -> dict[str, Any]:
     """上传入库。同一张图重复上传会命中已有记录，返回 `created=False`。"""
     data = await file.read()
+    if folder_id:
+        try:
+            await svc.get_folder(db, folder_id, owner)
+        except AssetError as exc:
+            raise HTTPException(404, str(exc)) from exc
     try:
         asset, created = await svc.save_bytes(
             db,
@@ -145,10 +170,51 @@ async def upload_asset(
             license="own",  # 上传默认视作自有素材；P2 去水印会据此放行
             filename=file.filename or "",
             title=title or "",
+            folder_id=folder_id or None,
         )
     except AssetError as exc:
         raise HTTPException(400, str(exc)) from exc
     return {"ok": True, "created": created, "asset": svc.asset_dict(asset)}
+
+
+@router.post("/assets/upload-batch")
+async def upload_assets_batch(
+    files: list[UploadFile] = File(...),
+    folder_id: str | None = Form(default=None),
+    db: AsyncSession = Depends(get_db),
+    owner: str = Depends(current_owner_id),
+) -> dict[str, Any]:
+    """批量上传。逐个走 save_bytes（与单传同一条去重/落盘路径），单个失败不中断整批。
+
+    返回 `{ok, items, failed}`：items 为入库的素材，failed 为 {name, reason}。
+    """
+    if folder_id:
+        try:
+            await svc.get_folder(db, folder_id, owner)
+        except AssetError as exc:
+            raise HTTPException(404, str(exc)) from exc
+    items: list[dict[str, Any]] = []
+    failed: list[dict[str, str]] = []
+    for f in files[:50]:
+        name = f.filename or "未命名"
+        try:
+            data = await f.read()
+            asset, _created = await svc.save_bytes(
+                db,
+                owner,
+                data,
+                kind="image",
+                source="upload",
+                license="own",
+                filename=name,
+                folder_id=folder_id or None,
+            )
+            items.append(svc.asset_dict(asset))
+        except AssetError as exc:
+            failed.append({"name": name, "reason": str(exc)})
+        except Exception as exc:  # noqa: BLE001
+            failed.append({"name": name, "reason": f"入库失败：{exc}"})
+    return {"ok": True, "items": items, "failed": failed}
 
 
 @router.get("/assets/file/{key:path}")
@@ -190,6 +256,9 @@ async def serve_asset_file(
 class AssetUpdate(BaseModel):
     title: str | None = None
     tags: list[str] | None = None
+    # None = 不改；"" = 移到未归类；其他 = 移到指定目录
+    folder_id: str | None = None
+    folder_set: bool = False  # 显式置位：区分「不改」与「移到未归类」
 
 
 @router.patch("/assets/{asset_id}")
@@ -210,6 +279,15 @@ async def update_asset(
             if t and t not in seen:
                 seen.append(t)
         asset.tags = seen[:20]
+    if req.folder_set:
+        if req.folder_id:
+            try:
+                await svc.get_folder(db, req.folder_id, owner)
+            except AssetError as exc:
+                raise HTTPException(404, str(exc)) from exc
+            asset.folder_id = req.folder_id
+        else:
+            asset.folder_id = None
     asset.updated_at = int(time.time())
     await db.commit()
     return {"ok": True, "asset": svc.asset_dict(asset)}
@@ -231,6 +309,199 @@ async def delete_asset(
     referenced = asset.used_count or 0
     await svc.delete_asset(db, asset)
     return {"ok": True, "referenced": referenced}
+
+
+# ---------------------------------------------------------------- 目录（folder）
+class FolderCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    parent_id: str | None = None
+
+
+class FolderUpdate(BaseModel):
+    name: str | None = None
+    # None 且 folder_set=False = 不改父级；folder_set=True 且 parent_id=None = 移到根级
+    parent_id: str | None = None
+    folder_set: bool = False
+
+
+@router.get("/assets/folders")
+async def list_asset_folders(
+    db: AsyncSession = Depends(get_db),
+    owner: str = Depends(current_owner_id),
+) -> dict[str, Any]:
+    """当前用户的全部目录（扁平），前端组树。顺带给每个目录的素材计数（含子目录）。"""
+    folders = await svc.list_folders(db, owner)
+    counts = await svc.folder_asset_counts(db, owner)
+    items = []
+    for f in folders:
+        d = svc.folder_dict(f)
+        d["asset_count"] = int(counts.get(f.id, 0))
+        items.append(d)
+    return {
+        "ok": True,
+        "items": items,
+        "uncategorized_count": int(counts.get("", 0)),
+    }
+
+
+@router.post("/assets/folders")
+async def create_asset_folder(
+    req: FolderCreate,
+    db: AsyncSession = Depends(get_db),
+    owner: str = Depends(current_owner_id),
+) -> dict[str, Any]:
+    try:
+        f = await svc.create_folder(db, owner, req.name, req.parent_id or None)
+    except AssetError as exc:
+        status = 404 if "不存在" in str(exc) else 409
+        raise HTTPException(status, str(exc)) from exc
+    return {"ok": True, "folder": svc.folder_dict(f)}
+
+
+@router.patch("/assets/folders/{folder_id}")
+async def update_asset_folder(
+    folder_id: str,
+    req: FolderUpdate,
+    db: AsyncSession = Depends(get_db),
+    owner: str = Depends(current_owner_id),
+) -> dict[str, Any]:
+    try:
+        f = await svc.get_folder(db, folder_id, owner)
+        f = await svc.update_folder(
+            db,
+            owner,
+            f,
+            name=req.name,
+            parent_id=req.parent_id,
+            parent_set=req.folder_set,
+        )
+    except AssetError as exc:
+        status = 404 if "不存在" in str(exc) else 409
+        raise HTTPException(status, str(exc)) from exc
+    return {"ok": True, "folder": svc.folder_dict(f)}
+
+
+@router.delete("/assets/folders/{folder_id}")
+async def delete_asset_folder(
+    folder_id: str,
+    strategy: str = Query(default="move-to-parent", description="move-to-parent / delete-assets"),
+    db: AsyncSession = Depends(get_db),
+    owner: str = Depends(current_owner_id),
+) -> dict[str, Any]:
+    """删除目录。strategy 见 services.assets.delete_folder 文档。"""
+    try:
+        f = await svc.get_folder(db, folder_id, owner)
+        return await svc.delete_folder(db, owner, f, strategy)
+    except AssetError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.get("/assets/tree")
+async def asset_tree(
+    db: AsyncSession = Depends(get_db),
+    owner: str = Depends(current_owner_id),
+) -> dict[str, Any]:
+    """树形视图数据：目录树（含子目录递归）+ 每个节点的直接素材 + 未归类素材。
+
+    一次取齐，前端免去再按节点逐个拉列表。
+    """
+    folders = await svc.list_folders(db, owner)
+    counts = await svc.folder_asset_counts(db, owner)
+    rows = (
+        (
+            await db.execute(
+                select(Asset)
+                .where(Asset.owner == owner)
+                .order_by(Asset.created_at.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    by_folder: dict[str, list[dict[str, Any]]] = {}
+    for a in rows:
+        by_folder.setdefault(a.folder_id or "", []).append(svc.asset_dict(a))
+
+    children: dict[str | None, list[AssetFolder]] = {}
+    for f in folders:
+        children.setdefault(f.parent_id, []).append(f)
+
+    def _build(parent: str | None) -> list[dict[str, Any]]:
+        out = []
+        for f in children.get(parent, []):
+            out.append(
+                {
+                    **svc.folder_dict(f),
+                    "asset_count": int(counts.get(f.id, 0)),
+                    "assets": by_folder.get(f.id, []),
+                    "children": _build(f.id),
+                }
+            )
+        return out
+
+    return {
+        "ok": True,
+        "folders": _build(None),
+        "uncategorized": by_folder.get("", []),
+        "uncategorized_count": int(counts.get("", 0)),
+    }
+
+
+class MoveReq(BaseModel):
+    asset_ids: list[str] = Field(default_factory=list, max_length=500)
+    # None = 移到未归类
+    folder_id: str | None = None
+
+
+@router.post("/assets/move")
+async def move_assets(
+    req: MoveReq,
+    db: AsyncSession = Depends(get_db),
+    owner: str = Depends(current_owner_id),
+) -> dict[str, Any]:
+    """批量移动素材到目标目录（folder_id=None 表示未归类）。"""
+    if req.folder_id:
+        try:
+            await svc.get_folder(db, req.folder_id, owner)
+        except AssetError as exc:
+            raise HTTPException(404, str(exc)) from exc
+    moved = 0
+    for aid in req.asset_ids[:500]:
+        asset = await db.get(Asset, aid)
+        if not asset or asset.owner != owner:
+            continue
+        asset.folder_id = req.folder_id or None
+        asset.updated_at = int(time.time())
+        moved += 1
+    await db.commit()
+    return {"ok": True, "moved": moved}
+
+
+class DownloadReq(BaseModel):
+    asset_ids: list[str] = Field(default_factory=list, max_length=200)
+
+
+@router.post("/assets/download")
+async def download_assets_zip(
+    req: DownloadReq,
+    db: AsyncSession = Depends(get_db),
+    owner: str = Depends(current_owner_id),
+) -> Response:
+    """把所选素材打包成 zip 下载。ids ≤ 200（内存/超时保护，见 plan R3）。"""
+    if not req.asset_ids:
+        raise HTTPException(400, "请选择要下载的素材")
+    data, packed = await svc.build_assets_zip(db, owner, req.asset_ids)
+    if packed == 0:
+        raise HTTPException(404, "没有可下载的素材（可能已被删除）")
+    fname = f"assets_{time.strftime('%Y%m%d_%H%M%S')}.zip"
+    # RFC5987 filename*：中文/特殊文件名在各浏览器都能正确落地（先例 revenue.py L474）
+    return Response(
+        content=data,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{urllib.parse.quote(fname)}",
+        },
+    )
 
 
 # ---------------------------------------------------------------- 在线搜索与导入

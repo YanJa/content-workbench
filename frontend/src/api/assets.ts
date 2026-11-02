@@ -32,8 +32,21 @@ export interface Asset {
   watermark_state: string
   used_count: number
   created_at: number
+  /** 所属目录 id，空串 = 未归类 */
+  folder_id: string
   url: string
   thumb_url: string
+}
+
+/** 一个素材目录（可多层嵌套，前端用 parent_id 组树） */
+export interface AssetFolder {
+  id: string
+  name: string
+  /** 空串 = 根级 */
+  parent_id: string
+  created_at: number
+  /** 本目录 + 全部子目录的素材总数 */
+  asset_count?: number
 }
 
 /** 在线搜索候选（还没入库，所以没有 id 与本地 url） */
@@ -79,6 +92,8 @@ export interface ListParams {
   source?: string
   q?: string
   tag?: string
+  /** 目录过滤：'none' = 未归类；具体 id = 该目录；不传 = 全部 */
+  folder_id?: string
   page?: number
   page_size?: number
 }
@@ -98,20 +113,72 @@ export async function assetStats(): Promise<AssetStats & { ok: boolean }> {
 export async function uploadAsset(
   file: File,
   title?: string,
+  folderId?: string | null,
 ): Promise<{ ok: boolean; created: boolean; asset: Asset }> {
   const form = new FormData()
   form.append('file', file)
+  if (title) form.append('title', title)
+  if (folderId) form.append('folder_id', folderId)
   const { data } = await http.post('/assets/upload', form, {
     headers: { 'Content-Type': 'multipart/form-data' },
-    params: title ? { title } : undefined,
     timeout: 60000,
   })
   return data
 }
 
+/** 批量上传：一次请求带多个文件。单个失败不中断整批，failed 里逐条给原因。 */
+export async function uploadAssetBatch(
+  files: File[],
+  folderId?: string | null,
+): Promise<{ ok: boolean; items: Asset[]; failed: { name: string; reason: string }[] }> {
+  const form = new FormData()
+  for (const f of files) form.append('files', f)
+  if (folderId) form.append('folder_id', folderId)
+  const { data } = await http.post('/assets/upload-batch', form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 120000,
+  })
+  return data
+}
+
+/** 批量移动素材。folderId 为 null/空 = 移到「未归类」。 */
+export async function moveAssets(
+  assetIds: string[],
+  folderId: string | null,
+): Promise<{ ok: boolean; moved: number }> {
+  const { data } = await http.post('/assets/move', {
+    asset_ids: assetIds,
+    folder_id: folderId || null,
+  })
+  return data
+}
+
+/**
+ * 打包下载选中素材（zip）。走 blob 下载范式：临时 <a> + object URL，用完即焚。
+ * 文件名优先取 content-disposition（后端 RFC5987 签好），取不到就用兜底名。
+ */
+export async function downloadAssetsZip(assetIds: string[]): Promise<void> {
+  const { data, headers } = await http.post(
+    '/assets/download',
+    { asset_ids: assetIds },
+    { responseType: 'blob', timeout: 120000 },
+  )
+  const cd = headers?.['content-disposition'] as string | undefined
+  const star = cd && /filename\*=UTF-8''([^;]+)/i.exec(cd)
+  const fname = (star && decodeURIComponent(star[1])) || `素材_${assetIds.length}张.zip`
+  const url = URL.createObjectURL(data)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = fname
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+}
+
 export async function updateAsset(
   id: string,
-  patch: { title?: string; tags?: string[] },
+  patch: { title?: string; tags?: string[]; folder_id?: string | null; folder_set?: boolean },
 ): Promise<{ ok: boolean; asset: Asset }> {
   const { data } = await http.patch(`/assets/${id}`, patch)
   return data
@@ -163,5 +230,64 @@ export async function attachAssetToContent(
   const { data } = await http.post(`/content/items/${contentId}/images/from-asset`, {
     asset_id: assetId,
   })
+  return data
+}
+
+// ---------------------------------------------------------------- 目录（folder）
+/** 当前用户全部目录（扁平）+ 未归类计数。前端自行组树。 */
+export async function listAssetFolders(): Promise<{
+  ok: boolean
+  items: AssetFolder[]
+  uncategorized_count: number
+}> {
+  const { data } = await http.get('/assets/folders')
+  return data
+}
+
+export async function createAssetFolder(
+  name: string,
+  parentId?: string | null,
+): Promise<{ ok: boolean; folder: AssetFolder }> {
+  const { data } = await http.post('/assets/folders', {
+    name,
+    parent_id: parentId || null,
+  })
+  return data
+}
+
+/** 改名 / 移动。parent_id 为 null 且 folder_set=true 表示移到根级。 */
+export async function updateAssetFolder(
+  id: string,
+  patch: { name?: string; parent_id?: string | null; folder_set?: boolean },
+): Promise<{ ok: boolean; folder: AssetFolder }> {
+  const { data } = await http.patch(`/assets/folders/${id}`, patch)
+  return data
+}
+
+/**
+ * 删除目录。
+ * strategy：'move-to-parent' 素材与子目录挂回父级；'delete-assets' 连同素材全部删除。
+ */
+export async function deleteAssetFolder(
+  id: string,
+  strategy: 'move-to-parent' | 'delete-assets',
+): Promise<{ ok: boolean; deleted_assets: number; moved_assets: boolean }> {
+  const { data } = await http.delete(`/assets/folders/${id}`, { params: { strategy } })
+  return data
+}
+
+/** 树形视图数据：文件夹树 + 每节点素材 + 未归类素材，一次取齐。 */
+export interface AssetTreeNode extends AssetFolder {
+  assets: Asset[]
+  children: AssetTreeNode[]
+}
+
+export async function assetTree(): Promise<{
+  ok: boolean
+  folders: AssetTreeNode[]
+  uncategorized: Asset[]
+  uncategorized_count: number
+}> {
+  const { data } = await http.get('/assets/tree')
   return data
 }

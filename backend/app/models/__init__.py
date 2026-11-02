@@ -3,7 +3,7 @@
 导入顺序很重要：`Base.metadata.create_all` 只认识已经被 import 过的模型类。
 这里统一导入一遍，避免"表建不出来"的坑。
 """
-from app.models.asset import Asset  # noqa: F401
+from app.models.asset import Asset, AssetFolder  # noqa: F401
 from app.models.content import Content, QueueItem  # noqa: F401
 from app.models.conversation import Conversation, Message  # noqa: F401
 from app.models.invite import InviteCode  # noqa: F401
@@ -30,6 +30,7 @@ __all__ = [
     "Content",
     "QueueItem",
     "Asset",
+    "AssetFolder",
     "Conversation",
     "Message",
     "LlmUsage",

@@ -120,6 +120,11 @@ _SQLITE_COLUMN_PATCHES: dict[str, dict[str, str]] = {
         "avatar": "VARCHAR(256)",
         "email": "VARCHAR(128)",
     },
+    # 素材目录（v1.x）：assets 补 folder_id。⚠️ 刻意不带 DEFAULT ——
+    # 语义是「NULL = 未归类」，带 DEFAULT 会把老素材误塞进某个目录。
+    "assets": {
+        "folder_id": "VARCHAR(36)",
+    },
 }
 
 

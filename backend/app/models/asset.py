@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import time
 
-from sqlalchemy import JSON, Index, String, Text, UniqueConstraint
+from sqlalchemy import JSON, ForeignKey, Index, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.session import Base
@@ -26,6 +26,35 @@ from app.db.session import Base
 
 def _now() -> int:
     return int(time.time())
+
+
+class AssetFolder(Base):
+    """素材目录（可多层嵌套）。
+
+    两条设计决定：
+
+    1. **parent_id 自引用即可，不用 path/level 冗余列**。目录总量按用户计是
+       几十个的量级，组树/查祖先在内存里做就够了；冗余列反而要维护一致性。
+    2. **(owner, parent_id, name) 唯一**。同级重名直接靠约束挡（SQLite 对
+       NULL parent_id 的 UNIQUE 组合视为各 NULL 互不相等 —— 根级目录同名
+       不会被挡，故创建路由里仍需先查重；约束挡并发，查询给友好报错）。
+    """
+
+    __tablename__ = "asset_folders"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    owner: Mapped[str] = mapped_column(String(64), default="default", index=True)
+    name: Mapped[str] = mapped_column(String(120), default="")
+    # 空/NULL = 根级目录。自引用外键，删除策略在路由层决定（挂父/删素材）
+    parent_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("asset_folders.id", ondelete="CASCADE"), nullable=True
+    )
+    created_at: Mapped[int] = mapped_column(default=_now)
+
+    __table_args__ = (
+        UniqueConstraint("owner", "parent_id", "name", name="uq_folder_owner_parent_name"),
+        Index("ix_asset_folder_owner_parent", "owner", "parent_id"),
+    )
 
 
 class Asset(Base):
@@ -78,6 +107,15 @@ class Asset(Base):
     original_key: Mapped[str] = mapped_column(String(255), default="")
     # none（无）/ removed（已去水印）。P2 起使用
     watermark_state: Mapped[str] = mapped_column(String(16), default="none")
+
+    # ---------- 归属目录 ----------
+    # NULL = 「未归类」。存量素材全部是 NULL，前端按未归类展示即可，
+    # 不建物理"未归类"文件夹行。外键不加 ondelete=SET NULL：目录删除
+    # 策略在路由层显式决定（挂回父级 or 连删素材），交给数据库级联会
+    # 在 delete-assets 策略下误留孤儿素材。
+    folder_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("asset_folders.id"), nullable=True, index=True
+    )
 
     # ---------- 使用统计 ----------
     used_count: Mapped[int] = mapped_column(default=0)
