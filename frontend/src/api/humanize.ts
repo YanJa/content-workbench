@@ -156,6 +156,30 @@ export async function zhuqueDetect(payload: {
   return data
 }
 
+/** 本月朱雀 token 用量估算（非权威，详见 note，以 EdgeOne 控制台为准）。 */
+export interface ZhuqueUsage {
+  /** 月份，'YYYY-MM' */
+  month: string
+  /** 本月累计消耗 token */
+  tokens: number
+  /** 本月累计检测次数 */
+  calls: number
+  /** 月度额度（configured 时才有意义） */
+  quota: number
+  /** 剩余估算 = max(0, quota - tokens) */
+  remaining_est: number
+  /** 朱雀密钥是否已配置 */
+  configured: boolean
+  /** 免责说明：仅本应用内估算，非权威 */
+  note: string
+}
+
+/** 本月朱雀 token 用量估算（非权威）。 */
+export async function getZhuqueUsage(): Promise<ZhuqueUsage> {
+  const { data } = await http.get('/humanize/zhuque-usage')
+  return data
+}
+
 /** 把一次检测结果存成快照，挂到内容的 meta['aigc_trace']（已发布态回看用）。 */
 export async function saveTraceSnapshot(
   contentId: string,

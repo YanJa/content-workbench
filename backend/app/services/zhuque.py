@@ -21,10 +21,14 @@ from __future__ import annotations
 
 import asyncio
 import time
+from datetime import datetime
 
 import httpx
+from sqlalchemy import select
 
 from app.core.config import settings
+from app.db.session import SessionLocal
+from app.models.zhuque import ZhuqueUsage
 
 API = "https://ai-gateway.edgeone.link/v1/providers/zhuque-text/classify"
 
@@ -152,3 +156,73 @@ def conclusion(human_ratio: float, ai_ratio: float, suspect_ratio: float) -> tup
     if ai_ratio > 0.2 or suspect_ratio > 0.2:
         return "warn", "存在一定 AI 生成特征"
     return "good", "人工创作特征明显"
+
+
+# ---------------------------------------------------------------------------
+# 用量估算（仅本应用视角，非权威）
+# ---------------------------------------------------------------------------
+
+def _month_key() -> str:
+    """当月 key（YYYY-MM，按服务器本地时区，与 Makers 自然月口径基本一致）。"""
+    return datetime.now().strftime("%Y-%m")
+
+
+async def bump_zhuque_usage(owner: str, tokens: int) -> None:
+    """累加本月朱雀 token 用量（仅统计真实消耗，tokens<=0 忽略）。
+
+    owner 是「账号」维度：多端登录同一账号、不同内容，都归到这一个计数。
+    """
+    if tokens <= 0:
+        return
+    month = _month_key()
+    async with SessionLocal() as session:
+        row = (
+            await session.execute(
+                select(ZhuqueUsage).where(
+                    ZhuqueUsage.owner == owner, ZhuqueUsage.month == month
+                )
+            )
+        ).scalar_one_or_none()
+        if row:
+            row.tokens += tokens
+            row.calls += 1
+            row.updated_at = int(time.time())
+        else:
+            session.add(
+                ZhuqueUsage(
+                    owner=owner, month=month, tokens=tokens, calls=1, updated_at=int(time.time())
+                )
+            )
+        await session.commit()
+
+
+async def get_zhuque_month_usage(owner: str) -> dict:
+    """本月朱雀 token 用量估算（非权威）。
+
+    返回里带了 note，前端必须原样展示——这是「本应用内估算」，不算别的渠道消耗，
+    也不反映月切重置，权威剩余以 EdgeOne 控制台为准。
+    """
+    month = _month_key()
+    async with SessionLocal() as session:
+        row = (
+            await session.execute(
+                select(ZhuqueUsage).where(
+                    ZhuqueUsage.owner == owner, ZhuqueUsage.month == month
+                )
+            )
+        ).scalar_one_or_none()
+        tokens = row.tokens if row else 0
+        calls = row.calls if row else 0
+    quota = settings.ZHUQUE_MONTHLY_QUOTA
+    return {
+        "month": month,
+        "tokens": tokens,
+        "calls": calls,
+        "quota": quota,
+        "remaining_est": max(0, quota - tokens),
+        "configured": configured(),
+        "note": (
+            "本应用内估算：仅统计本账号用本平台朱雀密钥发起的检测，"
+            "不算其它渠道/其它用户的消耗，也不反映月切重置——权威剩余以 EdgeOne 控制台为准"
+        ),
+    }

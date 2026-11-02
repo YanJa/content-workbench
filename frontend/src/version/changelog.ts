@@ -22,6 +22,16 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '1.10.6',
+    date: '2026-11-02',
+    title: '新增：应用内本月朱雀用量估算',
+    highlights: [
+      '痕迹体检抽屉新增「本月朱雀用量估算」卡片：展示本月累计消耗 token / 月度额度（默认 50 万，Makers 免费额度）、已检测次数与进度条，检测成功后即时刷新。',
+      '后端新增 zhuque_usage 表，每次朱雀检测（含报告单生成）按本账号月度聚合累加 makers_models_usage.total_tokens，并新增 GET /humanize/zhuque-usage 查询端点。',
+      '明确标注「非权威估算」：仅统计本账号用本平台朱雀密钥发起的检测，不算其它渠道/用户消耗，也不反映月切重置——权威剩余额度以 EdgeOne 控制台为准。',
+    ],
+  },
+  {
     version: '1.10.5',
     date: '2026-11-02',
     title: '修正：发布队列改标题按钮应为图标而非汉字',

@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     APP_NAME: str = "内容运营工作台"
     # 版本号：全系统唯一来源。前端从 /health 读它展示，并据它判断「是否升过级」
     # 来弹「新功能」提醒。改版本请同步 frontend/package.json（仅作人工对照）。
-    APP_VERSION: str = "1.10.5"
+    APP_VERSION: str = "1.10.6"
     APP_ENV: Literal["dev", "prod"] = "dev"
     DEBUG: bool = True
     API_PREFIX: str = "/api"
@@ -324,6 +324,9 @@ class Settings(BaseSettings):
     ZHUQUE_API_KEY: str = ""
     # 单次检测文本上限（字符）。一篇自媒体稿远用不到这么多，主要挡误传整本书。
     ZHUQUE_TEXT_MAX: int = 30_000
+    # 朱雀免费额度（token/月），EdgeOne Makers 标准额度。本应用只做「估算」，
+    # 权威剩余以 EdgeOne 控制台 Makers → 用量/账单 为准。
+    ZHUQUE_MONTHLY_QUOTA: int = 500_000
 
     # ---------- 封面图（模板化，与上面的 AI 生图是两条独立通道） ----------
     # 封面脚本：HTML 模板 + 无头浏览器截图，出「文字确定、品牌统一」的头图。

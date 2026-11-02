@@ -38,11 +38,13 @@ import {
   zhuqueDetect,
   downloadDetectReport,
   saveTraceSnapshot,
+  getZhuqueUsage,
   type TraceReport,
   type HumanizeResult,
   type LevelOption,
   type TraceSource,
   type ZhuqueResult,
+  type ZhuqueUsage,
 } from '@/api/humanize'
 
 const props = defineProps<{
@@ -101,6 +103,8 @@ const zhuqueLoading = ref(false)
 const zhuqueMap = ref<Partial<Record<TraceSource, ZhuqueResult>>>({})
 /** 当前对象的那份结果（实际口径由后端回传，回落时也跟着对） */
 const zhuque = computed<ZhuqueResult | null>(() => zhuqueMap.value[actualSource.value] || null)
+/** 本月朱雀 token 用量估算（非权威，详见 zhuqueUsage.note）。 */
+const zhuqueUsage = ref<ZhuqueUsage | null>(null)
 const reportLoading = ref(false)
 /** 进度区 DOM：起跑时滚进视口用（见 onRewrite） */
 const progressBox = ref<HTMLElement | null>(null)
@@ -189,6 +193,8 @@ async function load() {
     }
     // 体检结果存成快照：已发布内容回看「当时的检测数据」用。零成本，随手存。
     if (rep.ok) void persistSnapshot(actualSource.value, rep, null)
+    // 用量估算与体检无关，单独拉、失败静默（不挡主流程）
+    void refreshZhuqueUsage()
   } catch (e: any) {
     message.error(e?.response?.data?.detail || '体检失败')
   } finally {
@@ -332,6 +338,23 @@ async function onApply() {
 const confColor = (c: number) =>
   c >= 0.9 ? 'var(--app-error, #d03050)' : c >= 0.5 ? 'var(--app-warning, #f0a020)' : 'var(--app-success, #18a058)'
 const pct = (x: number) => `${(x * 100).toFixed(2)}%`
+/** 本月用量占额度的百分比（封顶 100，给进度条用）。 */
+const zhuqueUsagePct = computed(() => {
+  const u = zhuqueUsage.value
+  if (!u || !u.quota) return 0
+  return Math.min(100, Math.round((u.tokens / u.quota) * 100))
+})
+/** 千分位格式化，避免一长串数字看花眼。 */
+const formatInt = (n: number) => (n ?? 0).toLocaleString('en-US')
+
+/** 拉取本月朱雀用量估算（与体检无关，失败静默，绝不挡主流程）。 */
+async function refreshZhuqueUsage() {
+  try {
+    zhuqueUsage.value = await getZhuqueUsage()
+  } catch {
+    /* 静默：用量仅为辅助信息 */
+  }
+}
 
 async function onZhuque() {
   zhuqueLoading.value = true
@@ -346,7 +369,11 @@ async function onZhuque() {
     const key: TraceSource = (r.source as TraceSource) || source.value
     zhuqueMap.value = { ...zhuqueMap.value, [key]: r }
     // 朱雀结果也存成快照（花钱的检测，落一份免得以后回看还要重测）
-    if (r.ok) void persistSnapshot(key, null, r)
+    if (r.ok) {
+      void persistSnapshot(key, null, r)
+      // 本次消耗已落库，立即刷新月度估算
+      void refreshZhuqueUsage()
+    }
     if (!r.ok) message.warning(r.error || '朱雀检测失败')
   } catch (e: any) {
     message.error(e?.response?.data?.detail || '朱雀检测请求失败')
@@ -485,6 +512,19 @@ async function onDownloadReport() {
               <span class="zq-hint">
                 外部模型，消耗 Makers 免费 token 额度；中文文本有固有误差，结果仅为辅助判断。
               </span>
+            </div>
+            <div v-if="zhuqueUsage && zhuqueUsage.configured" class="zq-usage">
+              <div class="zq-usage-head">
+                <span>本月朱雀用量估算（{{ zhuqueUsage.month }}）· 已检 {{ zhuqueUsage.calls }} 次</span>
+                <span class="zq-usage-num">{{ formatInt(zhuqueUsage.tokens) }} / {{ formatInt(zhuqueUsage.quota) }} tokens</span>
+              </div>
+              <NProgress
+                :percentage="zhuqueUsagePct"
+                :height="4"
+                :show-indicator="false"
+                :color="zhuqueUsagePct > 90 ? 'var(--app-error, #d03050)' : 'var(--app-warning, #f0a020)'"
+              />
+              <div class="zq-hint zq-usage-note">估算值，非权威：仅统计本账号用本平台朱雀密钥发起的检测，不算其它渠道；权威剩余以 EdgeOne 控制台为准。</div>
             </div>
             <div v-if="zhuque && zhuque.ok" class="zq-result">
               <div class="zq-bar">
@@ -771,6 +811,30 @@ async function onDownloadReport() {
   opacity: 0.6;
   line-height: 1.6;
   line-height: 1.5;
+}
+.zq-usage {
+  margin: 10px 0 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--n-border-color, rgba(255, 255, 255, 0.12));
+  border-radius: 8px;
+  background: var(--n-color-embedded, rgba(255, 255, 255, 0.03));
+}
+.zq-usage-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 12px;
+  opacity: 0.82;
+  flex-wrap: wrap;
+}
+.zq-usage-num {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  opacity: 1;
+}
+.zq-usage-note {
+  margin-top: 6px;
 }
 .zq-result {
   margin-top: 12px;

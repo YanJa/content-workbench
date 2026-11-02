@@ -25,6 +25,7 @@ from app.models.slide import PptSlideClaim  # noqa: F401
 from app.models.user import User  # noqa: F401
 from app.models.usage import LlmUsage  # noqa: F401
 from app.models.zhihu import HotSnapshot, HotTopic, ZhihuApiUsage  # noqa: F401
+from app.models.zhuque import ZhuqueUsage  # noqa: F401
 
 __all__ = [
     "Content",
@@ -53,5 +54,6 @@ __all__ = [
     "HotSnapshot",
     "HotTopic",
     "ZhihuApiUsage",
+    "ZhuqueUsage",
     "WechatAdDaily",
 ]

@@ -222,7 +222,19 @@ async def zhuque_detect(
         raise HTTPException(status_code=400, detail="没有可检测的正文")
     # 把实际检的口径带回去：前端要按它归档结果，避免「检的是源文、标的是排版产物」
     res = await zhuque_svc.classify(text)
+    # 真实消耗才累加（失败/未配置都返回 0）；这是「估算」口径，仅本应用视角
+    if res.get("ok") and res.get("tokens_used"):
+        await zhuque_svc.bump_zhuque_usage(owner, res["tokens_used"])
     return {**res, "source": actual}
+
+
+@router.get("/zhuque-usage")
+async def zhuque_usage(owner: str = Depends(current_owner_id)):
+    """本月朱雀 token 用量估算（非权威，详见返回里的 note）。
+
+    仅统计本账号用本平台朱雀密钥发起的检测，不算其它渠道/用户消耗，也不反映月切重置。
+    """
+    return await zhuque_svc.get_zhuque_month_usage(owner)
 
 
 @router.post("/report", response_class=HTMLResponse)
@@ -257,6 +269,8 @@ async def detect_report_page(
     zhuque_result = None
     if zhuque_svc.configured():
         zhuque_result = await zhuque_svc.classify(text)
+        if zhuque_result.get("ok") and zhuque_result.get("tokens_used"):
+            await zhuque_svc.bump_zhuque_usage(owner, zhuque_result["tokens_used"])
     html_text = detect_report.render_report(
         text=text,
         scan=scan,
