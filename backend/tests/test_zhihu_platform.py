@@ -68,8 +68,9 @@ def test_zhihu_unknown_falls_back_to_answer():
 # ------------------------------------------------------- 2. 提示词拼装
 
 def test_prompt_has_no_platform_block_when_unknown():
+    # 通用写作基调里合法举例「比如知乎回答」不算泄漏；要查的是平台块本体
     p = build_system_prompt("weibo")
-    assert "知乎" not in p
+    assert "【平台：知乎】" not in p
 
 
 @pytest.mark.parametrize("st,kw", [

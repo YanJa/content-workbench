@@ -6,7 +6,7 @@
 
 ![桌面端](docs/screenshots/desktop_chat.png)
 
-**当前版本 v1.10.1** — 完整变更见 [CHANGELOG.md](CHANGELOG.md)，应用内「关于 → 更新日志」同步可查。
+**当前版本 v1.10.2** — 完整变更见 [CHANGELOG.md](CHANGELOG.md)，应用内「关于 → 更新日志」同步可查。
 
 ## 核心能力
 

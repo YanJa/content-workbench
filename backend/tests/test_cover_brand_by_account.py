@@ -91,6 +91,10 @@ class _FakeCoverPath:
     def relative_to(self, _base):
         return Path(self._name)
 
+    def read_bytes(self) -> bytes:
+        # put_gen 镜像封面字节到对象存储时会读（TOS 接入后 layout.py 调用）
+        return b"fake-cover-bytes"
+
 
 def test_cover_brand_follows_selected_account(db_env):
     Maker = db_env
