@@ -53,6 +53,19 @@ class RedisCache:
 
     def __init__(self, url: str) -> None:
         self._client = aioredis.from_url(url, encoding="utf-8", decode_responses=True)
+        # 构造即同步探活：aioredis.from_url 是惰性连接，不真正建连，
+        # 若 Redis 实际不可达，构造不报错会让上层误以为缓存已就绪，
+        # 运行期首次 get/set 才抛异常。这里 ping 一次，不可达就抛错，
+        # 由 get_cache() 捕获后降级为内存缓存。
+        import redis
+
+        probe = redis.Redis.from_url(
+            url, socket_connect_timeout=3, socket_timeout=3
+        )
+        try:
+            probe.ping()
+        finally:
+            probe.connection_pool.disconnect()
 
     async def get(self, key: str) -> Any | None:
         raw = await self._client.get(key)

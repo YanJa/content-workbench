@@ -78,6 +78,47 @@ PRICING: dict[str, dict[str, Any]] = {
         "context_window": 1_000_000,
         "reasoning": True,
     },
+    # 免费模型：in/out 填 0（是「明确不要钱」，不是「没登记」），并显式标 free: true。
+    # 要点：免费模型也必须在表里登记——否则 priced_as 会回落到兜底模型（DeepSeek），
+    # 标签被错显成 DeepSeek；且 is_known 会判 False，前端又补「单价未登记」，
+    # 于是出现「免费·单价未登记」这种自相矛盾。填 0 + free:true 可同时解决这两点。
+    "glm-4-flash": {
+        "label": "GLM-4-Flash",
+        "vendor": "zhipu",
+        "in": 0.0,
+        "out": 0.0,
+        "free": True,
+    },
+    "@cf/meta/llama-3.1-8b-instruct-fp8": {
+        "label": "Cloudflare 对话（免费）",
+        "vendor": "cloudflare",
+        "in": 0.0,
+        "out": 0.0,
+        "free": True,
+    },
+    "@cf/baai/bge-m3": {
+        "label": "Cloudflare 向量化（免费）",
+        "vendor": "cloudflare",
+        "in": 0.0,
+        "out": 0.0,
+        "free": True,
+    },
+    "@cf/black-forest-labs/flux-1-schnell": {
+        "label": "Cloudflare 文生图（免费）",
+        "vendor": "cloudflare",
+        "in": 0.0,
+        "out": 0.0,
+        "free": True,
+    },
+    # 同上：CF 上的智谱开源模型，免费档。和 glm-4-flash（zhipu）一样是免费模型，
+    # 不在表里的后果是「单价未登记」警告 + 按 deepseek 兜底价误记成花钱。
+    "@cf/zai-org/glm-4.7-flash": {
+        "label": "GLM-4.7-Flash（CF 免费）",
+        "vendor": "cloudflare",
+        "in": 0.0,
+        "out": 0.0,
+        "free": True,
+    },
 }
 
 # 模型别名：官方说旧名仍可调用，但按新名价格计费

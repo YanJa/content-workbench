@@ -593,17 +593,68 @@ async def push_wechat_draft(
         except Exception as exc:  # noqa: BLE001
             logger.warning("读取作者信息失败（草稿 author 留空）: %s", exc)
 
-    result = await client.add_draft(
-        title=title,
-        html=html,
-        digest=digest,
-        thumb_media_id=thumb_id,
-        author=final_author,
-        need_open_comment=need_open_comment,
-    )
+    # 同一任务再次推送：若本地已记录上一次推送的 media_id，则原地更新那篇草稿
+    # （draft/update），而不是在微信草稿箱里再加一条，避免重复堆积。
+    # 原草稿若已失效（被群发 / 后台删除 / 过期清理，微信返回 40007），
+    # 退回新建一篇（add_draft）。
+    existing_media_id = ""
+    if content_id and db is not None:
+        try:
+            from sqlalchemy import select
+
+            from app.models.content import QueueItem
+
+            owner = ctx.get("owner", "default")
+            stmt = select(QueueItem).where(
+                QueueItem.owner == owner,
+                QueueItem.content_id == content_id,
+            )
+            items = list((await db.execute(stmt)).scalars().all())
+            for it in items:
+                if getattr(it, "wechat_media_id", ""):
+                    existing_media_id = it.wechat_media_id
+                    break
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("查询已有推送记录失败（按新建走）: %s", exc)
+
+    if existing_media_id:
+        result = await client.update_draft(
+            media_id=existing_media_id,
+            title=title,
+            html=html,
+            digest=digest,
+            thumb_media_id=thumb_id,
+            author=final_author,
+            need_open_comment=need_open_comment,
+        )
+        if not result.get("ok") and result.get("errcode") == 40007:
+            # 原草稿已不存在（被群发 / 后台删除）→ 退回新建一篇
+            logger.info("替换草稿返回 40007，退回新建: content_id=%s", content_id)
+            result = await client.add_draft(
+                title=title,
+                html=html,
+                digest=digest,
+                thumb_media_id=thumb_id,
+                author=final_author,
+                need_open_comment=need_open_comment,
+            )
+            if result.get("ok"):
+                result["replaced"] = False
+                result["note"] = "原草稿已不存在（可能已群发），已为你新建一篇到草稿箱"
+        else:
+            result["replaced"] = True
+    else:
+        result = await client.add_draft(
+            title=title,
+            html=html,
+            digest=digest,
+            thumb_media_id=thumb_id,
+            author=final_author,
+            need_open_comment=need_open_comment,
+        )
     logger.info(
-        "推送草稿箱: title=%s ok=%s 凭证来源=%s 封面=%s",
-        title, result.get("ok"), source, bool(thumb_id),
+        "推送草稿箱: title=%s ok=%s 凭证来源=%s 封面=%s 替换=%s",
+        title, result.get("ok"), source, bool(thumb_id), bool(existing_media_id),
     )
     return result
 

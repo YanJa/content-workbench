@@ -198,7 +198,7 @@ def render_zhihu(markdown: str) -> str:
 def plain_text(markdown: str) -> str:
     """去掉 Markdown 标记符的纯文本兜底（复制富文本不可用时的降级形态）。
 
-    注意：小红书那份是让模型重写一遍（services/layout.py:_layout_xiaohongshu），
+    注意：小红书那份是让模型重写一遍（services/layout.py:_layout_plaintext），
     这里不能照抄 —— 知乎要的是「原样保结构」，让模型重写会把内容改写掉。
     所以只做机械剥离，不动一个字。
     """
@@ -214,3 +214,122 @@ def plain_text(markdown: str) -> str:
     s = re.sub(r"^\s*(?:-{3,}|\*{3,}|_{3,})\s*$", "", s, flags=re.M)
     s = re.sub(r"\n{3,}", "\n\n", s)
     return s.strip()
+
+
+def render_gzh_plain(markdown: str) -> str:
+    """公众号「普通排版」：纯 Markdown → 最素 HTML，**不调 LLM**。
+
+    场景：用户只要把 Markdown 段落干净地呈现出来，不要任何主题配色 / 装饰组件。
+    纯机械转换（无需语义判断、不该再创作一次），故复用本文件的思路——
+    正则状态机把 Markdown 转成带基础内联样式的 HTML，零 token、秒出。
+
+    与 render_zhihu 的两点不同：
+      1. 给每个中文文本节点包 `<span leaf="">`（公众号编辑器硬性要求，否则
+         粘贴后样式大面积丢失，见 gzh_validate）；
+      2. 块级标签带**中性**基础内联样式（只保证可读性，不引入任何主题配色）。
+
+    配图不在此处处理：排版后处理 `_inject_images` 按 `<!--IMG:n-->` 占位注入；
+    普通排版让布局在文末补占位（见 layout.py），与主题排版走同一套插入逻辑。
+    """
+    P = 'style="margin:1em 0;line-height:1.8;font-size:16px;letter-spacing:.5px;"'
+    H2 = 'style="font-size:20px;font-weight:bold;margin:1.4em 0 .6em;line-height:1.4;"'
+    H3 = 'style="font-size:17px;font-weight:bold;margin:1.2em 0 .5em;line-height:1.4;"'
+    QUOTE = (
+        'style="margin:1em 0;padding:.6em 1em;border-left:4px solid #e5e5e5;'
+        'color:#888;background:#fafafa;"'
+    )
+    UL = 'style="padding-left:1.4em;margin:1em 0;line-height:1.8;"'
+    LI = 'style="margin:.3em 0;"'
+    HR = 'style="border:none;border-top:1px solid #e5e5e5;margin:1.4em 0;"'
+    PRE = (
+        'style="white-space:pre;background:#f6f6f6;padding:12px 14px;'
+        'border-radius:6px;font-size:14px;line-height:1.6;overflow:auto;"'
+    )
+
+    lines = (markdown or "").replace("\r\n", "\n").split("\n")
+    out: list[str] = []
+    para: list[str] = []
+
+    def leaf(text: str) -> str:
+        return f'<span leaf="">{text}</span>'
+
+    def flush_para() -> None:
+        if para:
+            out.append(f"<p {P}>{leaf(_inline(' '.join(para)))}</p>")
+            para.clear()
+
+    i, n = 0, len(lines)
+    while i < n:
+        line = lines[i].strip()
+        if line.startswith("```"):
+            flush_para()
+            i += 1
+            buf: list[str] = []
+            while i < n and not lines[i].strip().startswith("```"):
+                buf.append(lines[i])
+                i += 1
+            i += 1
+            out.append(f"<pre {PRE}><code><span leaf=\"\">{_escape(chr(10).join(buf))}</span></code></pre>")
+            continue
+        if not line:
+            flush_para()
+            i += 1
+            continue
+        if _HR_RE.match(line):
+            flush_para()
+            out.append(f"<hr {HR} />")
+            i += 1
+            continue
+        m = _H_RE.match(line)
+        if m:
+            flush_para()
+            tag = "h2" if len(m.group(1)) <= 2 else "h3"
+            st = H2 if tag == "h2" else H3
+            out.append(f"<{tag} {st}>{leaf(_inline(m.group(2).strip()))}</{tag}>")
+            i += 1
+            continue
+        m = _QUOTE_RE.match(line)
+        if m:
+            flush_para()
+            buf = [m.group(1)]
+            i += 1
+            while i < n:
+                s2 = lines[i].strip()
+                m2 = _QUOTE_RE.match(s2)
+                if m2:
+                    buf.append(m2.group(1))
+                    i += 1
+                elif s2:
+                    buf.append(s2)
+                    i += 1
+                else:
+                    break
+            # 引用里可能含二级结构（标题 / 列表），递归渲染保证每段都包 leaf
+            out.append(f"<blockquote {QUOTE}>{render_gzh_plain(chr(10).join(buf))}</blockquote>")
+            continue
+        is_ul = _UL_RE.match(line)
+        is_ol = _OL_RE.match(line)
+        if is_ul or is_ol:
+            flush_para()
+            tag = "ul" if is_ul else "ol"
+            pat = _UL_RE if is_ul else _OL_RE
+            items: list[str] = []
+            while i < n:
+                s2 = lines[i].strip()
+                m2 = pat.match(s2)
+                if m2:
+                    items.append(m2.group(1))
+                    i += 1
+                elif s2 and items and not s2.startswith(("#", ">", "```")):
+                    items[-1] += " " + s2
+                    i += 1
+                else:
+                    break
+            body = "".join(f"<li {LI}>{leaf(_inline(t))}</li>" for t in items)
+            out.append(f"<{tag} {UL}>{body}</{tag}>")
+            continue
+        para.append(line)
+        i += 1
+
+    flush_para()
+    return "\n".join(out)

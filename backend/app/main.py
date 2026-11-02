@@ -21,6 +21,7 @@ from app.core.tenant import current_owner_id
 from app.db.session import SessionLocal, init_db
 from app.routers import (
     admin,
+    assets,
     auth,
     chat,
     humanize,
@@ -152,6 +153,7 @@ app.include_router(chat.router, prefix=settings.API_PREFIX)
 app.include_router(queue.router, prefix=settings.API_PREFIX)
 app.include_router(queue.content_router, prefix=settings.API_PREFIX)
 app.include_router(layout.router, prefix=settings.API_PREFIX)
+app.include_router(assets.router, prefix=settings.API_PREFIX)
 app.include_router(settings_router.router, prefix=settings.API_PREFIX)
 app.include_router(tools.router, prefix=settings.API_PREFIX)
 app.include_router(tools.video_router, prefix=settings.API_PREFIX)

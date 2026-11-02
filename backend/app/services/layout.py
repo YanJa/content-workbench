@@ -31,10 +31,12 @@ from app.core.config import settings
 from app.core.logging import logger
 from app.core.security import link_url
 from app.db.session import SessionLocal
+from app.services.storage import get_storage, gen_key, put_gen
 from app.models.content import Content, QueueItem
 from app.prompts.layout_prompt import LAYOUT_FIX_HINT, build_layout_messages
 from app.services.author import apply_author_placeholders, apply_placeholders
 from app.services.gzh_validate import validate_gzh_html
+from app.services.zhihu_render import render_gzh_plain
 from app.services.llm import get_llm
 from app.services.usage import make_sink
 
@@ -434,19 +436,39 @@ async def layout_content(
 
     if platform == "xiaohongshu":
         tick(40, "AI 正在规整小红书笔记文本…")
-        return await _layout_xiaohongshu(db, content)
+        return await _layout_plaintext(db, content, "xiaohongshu")
+
+    # 今日头条 / 百家号：发布端粘贴的是纯文本，不需要公众号那种精细 HTML。
+    # 只做「Markdown → 可直接粘贴的纯文本」规整（去掉 # * > 等语法符号）。
+    if platform in ("toutiao", "baijiahao"):
+        tick(40, "AI 正在规整正文为可粘贴纯文本…")
+        return await _layout_plaintext(db, content, platform)
 
     if platform == "zhihu":
         tick(40, "正在生成知乎可粘贴富文本…")
         return await _layout_zhihu(db, content)
 
     images = content.images or []
-    manifest = _image_manifest(images)
 
-    tick(15, "正在准备主题组件库…")
-    html, errors, warnings = await _llm_layout(
-        markdown, theme_id, manifest, db=db, owner=content.owner or "default", on_progress=on_progress
-    )
+    if platform == "gzh" and theme_id == "plain":
+        # 普通排版：纯 Markdown 渲染，不调 LLM（最素、最快、零成本，内容原样呈现）。
+        # 复用下方统一的「配图注入 / 关注卡 / 二维码 / 作者 / 日期 / 话题标签」后处理。
+        if on_progress:
+            on_progress(15, "正在生成普通排版…")
+        html = render_gzh_plain(markdown)
+        # 普通排版不依赖 LLM 在正文里埋 <!--IMG:n--> 占位：
+        # 若有配图且正文没有占位，则按序在文末追加占位，交给 _inject_images 居中插入。
+        if images and "<!--IMG:" not in html:
+            html += "\n" + "\n".join(f"<!--IMG:{i + 1}-->" for i in range(len(images)))
+        errors: list[str] = []
+        warnings: list[str] = []
+    else:
+        manifest = _image_manifest(images)
+        if on_progress:
+            on_progress(15, "正在准备主题组件库…")
+        html, errors, warnings = await _llm_layout(
+            markdown, theme_id, manifest, db=db, owner=content.owner or "default", on_progress=on_progress
+        )
     # 把配图占位替换成真实图片
     html = _inject_images(html, images)
     # 关注卡处理：先剥离开头卡，再替换账号占位符、注入二维码。
@@ -519,24 +541,58 @@ async def layout_content(
     }
 
 
-async def _layout_xiaohongshu(db: AsyncSession, content: Content) -> dict[str, Any]:
-    """小红书不做 HTML 排版，只做文本规整（分点/emoji/标签归位）。
+#: 纯文本平台的规整指令。三个平台都「不要 HTML、不要 Markdown 语法符号、
+#: 只输出可直接粘贴的纯文本」，差别只在标题/分段/标签的形态，所以共用一套
+#: 函数（_layout_plaintext），只换这句 system prompt。
+_PLAINTEXT_FORMAT_PROMPTS: dict[str, str] = {
+    "xiaohongshu": (
+        "你是小红书文案排版助手。把下面的 Markdown 笔记整理成可直接粘贴到"
+        "小红书 App 的纯文本：标题单独一行（不超过 20 字，可带 emoji），"
+        "正文分点、每点用 emoji 开头、段间空行，话题标签放在最后一行、"
+        "以 # 开头空格分隔。不要输出 Markdown 语法符号（#、*、>），"
+        "不要输出任何解释说明，只输出整理后的纯文本。"
+    ),
+    "toutiao": (
+        "你是今日头条排版助手。把下面的 Markdown 整理成可直接粘贴到头条号后台的"
+        "纯文本：第一行是标题（15-28 字，不带 # 号、不加书名号装饰），"
+        "正文按小节分段、每段不超过 3 行、段间空一行；小节标题单独成行。"
+        "若结尾有话题标签，放最后一行、以 # 开头空格分隔。"
+        "不要输出 Markdown 语法符号（#、*、>、``），不要输出任何解释说明，"
+        "只输出整理后的纯文本。"
+    ),
+    "baijiahao": (
+        "你是百度百家号排版助手。把下面的 Markdown 整理成可直接粘贴到百家号后台的"
+        "纯文本：第一行是标题（20-30 字，不带 # 号），"
+        "正文用多级小节分节、每段不超过 5 行、段间空一行；数据用「- 」项目符号罗列。"
+        "若结尾有话题标签，放最后一行、以 # 开头空格分隔。"
+        "不要输出 Markdown 语法符号（#、*、>、``），不要输出任何解释说明，"
+        "只输出整理后的纯文本。"
+    ),
+}
 
-    小红书是纯文本 + emoji + 图，没有富文本概念。这里让轻量模型把
-    Markdown 整理成可直接粘贴的笔记文本。
+#: 纯文本规整的平台展示名（写回 layouts 时展示用）
+_PLAINTEXT_LABELS: dict[str, str] = {
+    "xiaohongshu": "小红书文本规整",
+    "toutiao": "今日头条文本规整",
+    "baijiahao": "百家号文本规整",
+}
+
+
+async def _layout_plaintext(
+    db: AsyncSession, content: Content, platform: str
+) -> dict[str, Any]:
+    """纯文本规整：小红书 / 今日头条 / 百家号共用。
+
+    这三个平台发布端粘贴的都是**纯文本**（没有富文本概念），所以不走
+    公众号那套 HTML 排版，只让轻量模型把 Markdown 整理成可直接粘贴的正文。
+
+    槽位统一走 `xhs_format`（模型池里已注册的「轻量文本规整」槽）——
+    对模型的要求完全一样，没必要为一个平台多开一个槽把模型池面板搞复杂。
     """
     llm = get_llm()
+    system = _PLAINTEXT_FORMAT_PROMPTS.get(platform) or _PLAINTEXT_FORMAT_PROMPTS["xiaohongshu"]
     messages = [
-        {
-            "role": "system",
-            "content": (
-                "你是小红书文案排版助手。把下面的 Markdown 笔记整理成可直接粘贴到"
-                "小红书 App 的纯文本：标题单独一行（不超过 20 字，可带 emoji），"
-                "正文分点、每点用 emoji 开头、段间空行，话题标签放在最后一行、"
-                "以 # 开头空格分隔。不要输出 Markdown 语法符号（#、*、>），"
-                "不要输出任何解释说明，只输出整理后的纯文本。"
-            ),
-        },
+        {"role": "system", "content": system},
         {"role": "user", "content": content.body or ""},
     ]
     result = await llm.chat(
@@ -550,15 +606,22 @@ async def _layout_xiaohongshu(db: AsyncSession, content: Content) -> dict[str, A
 
     now = int(time.time())
     layouts = dict(content.layouts or {})
-    layouts["xiaohongshu"] = {"text": text, "updated_at": now}
+    layouts[platform] = {"text": text, "updated_at": now}
     content.layouts = layouts
     content.layout_status = "ready"
     content.updated_at = now
+    # 排版完成 → 队列项从「待加工」转「待发布」（与公众号分支对齐，
+    # 否则小红书 / 头条 / 百家号排版完仍卡在「待加工」，与事实不符）
+    item = (
+        await db.execute(select(QueueItem).where(QueueItem.content_id == content.id))
+    ).scalars().first()
+    if item and item.status == "draft":
+        item.status = "ready"
     await db.flush()
     return {
         "ok": True,
-        "theme": "xiaohongshu",
-        "theme_name": "小红书文本规整",
+        "theme": platform,
+        "theme_name": _PLAINTEXT_LABELS.get(platform, "文本规整"),
         "html_len": len(text),
         "errors": [],
         "warnings": [],
@@ -655,6 +718,13 @@ async def _layout_zhihu(db: AsyncSession, content: Content) -> dict[str, Any]:
     content.body_html = html
     content.layout_status = "ready"
     content.updated_at = now
+    # 排版完成 → 队列项从「待加工」转「待发布」（与公众号分支对齐，
+    # 否则知乎排版完仍卡在「待加工」，与事实不符）
+    item = (
+        await db.execute(select(QueueItem).where(QueueItem.content_id == content.id))
+    ).scalars().first()
+    if item and item.status == "draft":
+        item.status = "ready"
     await db.flush()
     return {
         "ok": True,
@@ -798,7 +868,7 @@ async def submit_layout_job(
     }
 
 
-async def _ensure_cover(db: AsyncSession, content: Content, theme: str = "") -> None:
+async def _ensure_cover(db: AsyncSession, content: Content, theme: str = "", account_id: str = "") -> None:
     """排版前确保有封面：没有就按正文自动生成一张，插到配图首位。
 
     封面跟随「本次排版主题」theme：
@@ -806,6 +876,9 @@ async def _ensure_cover(db: AsyncSession, content: Content, theme: str = "") -> 
         此时仍是旧主题/空，会导致封面配色与正文主题不一致）；
       - 已存在自动封面且生成主题与本次主题不同 → 换掉（换主题时封面跟着换）；
       - 手动上传的封面没有 theme 字段 → 保留，尊重用户选择。
+
+    封面右下角品牌名跟随排版所选公众号 account_id（gzh_name → name 兜底），
+    不再一律写死默认号的「码上聊聊」。account_id 留空则回落默认号。
 
     失败只记日志——封面是锦上添花，绝不能因为它把排版带崩。
     """
@@ -817,8 +890,16 @@ async def _ensure_cover(db: AsyncSession, content: Content, theme: str = "") -> 
     cover_idx = next((i for i, im in enumerate(imgs) if im.get("source") == "cover"), None)
     if cover_idx is not None:
         old = imgs[cover_idx]
-        # 自动封面且主题不一致 → 删旧文件、重新生成；手动上传（无 theme）则保留
+        # 自动封面且以下任一变化 → 删旧文件、重新生成：
+        #   - 主题不一致（换主题时封面配色/品牌跟着换）；
+        #   - 所选公众号不一致（封面右下角品牌名需跟随账号）。
+        # 手动上传的封面没有 theme、也没有 account_id → 两项都不触发，保留。
+        regen = False
         if theme and old.get("theme") and old["theme"] != theme:
+            regen = True
+        if account_id and old.get("account_id") and old["account_id"] != account_id:
+            regen = True
+        if regen:
             try:
                 f = Path(settings.UPLOAD_DIR) / (old.get("path") or "")
                 if old.get("path") and f.exists():
@@ -829,19 +910,37 @@ async def _ensure_cover(db: AsyncSession, content: Content, theme: str = "") -> 
         else:
             return
 
+    # 封面品牌名：跟随排版所选公众号（与关注卡 {{号名}} 同一口径）
+    brand_name = ""
+    brand_slogan = ""
+    account = await _resolve_account(db, content, account_id)
+    if account is not None:
+        brand_name = (account.gzh_name or account.name or "").strip()
+        brand_slogan = (account.slogan or "").strip()
+
     title, sub = covers.derive_cover_text(content.body or "")
     if not title:
         return
     try:
         out_dir = Path(settings.UPLOAD_DIR) / "gen" / content.id
-        # 关键：用本次排版主题生成封面
-        path = await covers.generate_cover(title, out_dir, sub=sub, theme=theme or content.theme)
+        # 关键：用本次排版主题生成封面，品牌名跟随所选公众号
+        path = await covers.generate_cover(
+            title,
+            out_dir,
+            sub=sub,
+            theme=theme or content.theme,
+            brand_name=brand_name,
+            brand_slogan=brand_slogan,
+        )
     except Exception as exc:  # noqa: BLE001
         logger.warning("自动生成封面失败（跳过，不影响排版）: %s", exc)
         return
 
+    # 云端后端时把封面字节镜像到 TOS（本地后端直接跳过，文件已落盘）
+    await put_gen(content.id, path.name, path.read_bytes())
+
     owner = content.owner or "default"
-    url = link_url(f"{settings.API_PREFIX}/content/images/{content.id}/{path.name}", owner)
+    url = get_storage().url(gen_key(content.id, path.name), owner)
     imgs.insert(
         0,
         {
@@ -852,8 +951,9 @@ async def _ensure_cover(db: AsyncSession, content: Content, theme: str = "") -> 
             "source": "cover",
             "prompt": f"{title} / {sub}".strip(" /"),
             "position": 0,
-            # 记录生成主题，便于下次换主题时识别并重新生成
+            # 记录生成主题与所用公众号，便于下次换主题/换账号时识别并重新生成
             "theme": theme or content.theme or "",
+            "account_id": account_id or "",
         },
     )
     content.images = imgs
@@ -899,7 +999,7 @@ async def _run_layout_job(
                         platform == "zhihu" and (c.sub_type or "answer") != "article"
                     ):
                         _set_job(task_id, progress=8, stage="生成封面…")
-                        await _ensure_cover(db, c, theme_id)
+                        await _ensure_cover(db, c, theme_id, account_id)
                     result = await layout_content(
                         db,
                         c,

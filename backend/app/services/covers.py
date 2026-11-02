@@ -140,6 +140,8 @@ async def generate_cover(
     size: str = "",
     date: str = "",
     theme: str = "",
+    brand_name: str = "",
+    brand_slogan: str = "",
 ) -> Path:
     """生成一张封面，返回 PNG 路径。
 
@@ -175,6 +177,12 @@ async def generate_cover(
         cmd += ["--tag", tag]
     if date.strip():
         cmd += ["--date", date.strip()]
+    # 品牌名/口号：多公众号场景下让封面右下角跟随实际选用的账号，
+    # 不再一律写死默认号的「码上聊聊」。两者都留空则沿用脚本默认品牌。
+    if brand_name.strip():
+        cmd += ["--name", brand_name.strip()]
+    if brand_slogan.strip():
+        cmd += ["--slogan", brand_slogan.strip()]
     # 排版主题调色板：让封面配色跟随选中的排版主题（不传则用默认品牌色，向后兼容）
     if theme.strip():
         pal = cover_palette(theme.strip())

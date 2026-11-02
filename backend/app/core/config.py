@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     APP_NAME: str = "内容运营工作台"
     # 版本号：全系统唯一来源。前端从 /health 读它展示，并据它判断「是否升过级」
     # 来弹「新功能」提醒。改版本请同步 frontend/package.json（仅作人工对照）。
-    APP_VERSION: str = "1.7.9"
+    APP_VERSION: str = "1.9.13"
     APP_ENV: Literal["dev", "prod"] = "dev"
     DEBUG: bool = True
     API_PREFIX: str = "/api"
@@ -67,6 +67,13 @@ class Settings(BaseSettings):
     LLM_TEMPERATURE: float = 0.8
     LLM_MAX_TOKENS: int = 4096
     LLM_TIMEOUT: int = 120
+
+    # 「加人工痕迹」单次改写的**总时长**上限（秒）。
+    # 注意与 LLM_TIMEOUT 的区别：LLM_TIMEOUT 是 httpx 的「单次读写」超时，
+    # 推理模型边想边吐，永远触发不了它；这里卡的是墙钟总时长。
+    # 实测 deepseek-v4-pro 改 900 字要 130~150 秒（思考 token 近 1 万），
+    # 300 秒能覆盖 2000 字左右的稿子；再长就该拆稿，而不是无限等。
+    HUMANIZE_TIMEOUT: int = 300
 
     # 峰谷感知：高峰时段价格翻倍，批量任务应避开
     # 高峰 = 工作日 UTC 01:00-04:00 与 06:00-10:00（北京时间 09-12 点、14-18 点）
@@ -117,6 +124,71 @@ class Settings(BaseSettings):
     UPLOAD_DIR: str = "./data/uploads"
     OUTPUT_DIR: str = "./data/outputs"
     MAX_UPLOAD_MB: int = 50
+
+    # ---------- 素材库 ----------
+    # 存储后端：local（本地磁盘）/ s3（火山 TOS 对象存储）。
+    # 切 s3 后素材与排版配图都直出 TOS，浏览器直连 TOS 公网 URL，
+    # 把图片流量从 ECS 带宽剥离。见 services/storage.py。
+    STORAGE_BACKEND: str = "local"
+
+    # ---------- 火山引擎 TOS（对象存储，STORAGE_BACKEND=s3 时启用）----------
+    # 凭证在火山控制台 → 访问控制 → 密钥管理获取。
+    # ⚠️ 只放 .env，绝不进代码/日志/git（.env 已在 .gitignore 覆盖）。
+    TOS_ACCESS_KEY: str = ""
+    TOS_SECRET_KEY: str = ""
+    TOS_BUCKET: str = "cwb"
+    TOS_REGION: str = "cn-beijing"
+    # 浏览器加载用的公网桶域名（如 cwb.tos-cn-beijing.volces.com）。
+    # 留空则按 {bucket}.tos-{region}.volces.com 推导。
+    TOS_PUBLIC_DOMAIN: str = ""
+    # S3 接口端点：put/get/delete 走这里。内网（ivolces.com）同地域免费、更快；
+    # 公网端点作兜底。一般不用改，除非换地域。
+    TOS_ENDPOINT_PUBLIC: str = "https://tos-s3-cn-beijing.volces.com"
+    TOS_ENDPOINT_INTERNAL: str = "https://tos-s3-cn-beijing.ivolces.com"
+    TOS_USE_INTERNAL: bool = True
+    # 对象是否设 public-read：True 时 url() 返回永久公网直链（无需预签名），
+    # 浏览器/微信直接拉。需桶未开启「阻止公开访问」。
+    TOS_ACL_PUBLIC: bool = True
+    # 单用户素材总容量上限（MB）。超出拒收并提示清理。
+    # 不用 core/quota.py：那套是按「次数」计数的，不支持字节维度。
+    ASSET_QUOTA_MB: int = 2048
+    # 单个素材文件上限（MB）。图片一般 1-5MB，20MB 足够放 4K 原图；
+    # 视频在 P3 接入，届时按需调大。
+    ASSET_MAX_MB: int = 20
+    # 每小时最多从在线图源导入多少张（合规护栏）。
+    # Pixabay 条款写着「系统性的批量下载不被允许」，这个上限就是那条线的落点：
+    # 正常写文章一次选几张，60 足够；批量抓图会被卡住。
+    ASSET_IMPORT_PER_HOUR: int = 60
+    # 在线搜索超时（秒）
+    ASSET_SEARCH_TIMEOUT: int = 20
+
+    # ---------- 在线图源 ----------
+    # Pixabay：条款明确要求「下载到自己的服务器」，是唯一可自存的主力图源。
+    # 免费注册即得 key：https://pixabay.com/api/docs/
+    # 留空 = 该源不可用（前端搜索面板显示「未配置」而不是报错）。
+    PIXABAY_API_KEY: str = ""
+    # Openverse：CC 授权聚合源，可按「允许商用」过滤，作为合规补充。
+    # 匿名也能用（100 次/天，5 次/小时）；要提到 10000 次/天需注册 OAuth 拿 token。
+    OPENVERSE_TOKEN: str = ""
+
+    # ---------- 火山引擎 / 小云雀（Pippit）----------
+    # 小云雀的开放 API 托管在火山引擎「视觉智能」下（Service=cv，Region=cn-north-1），
+    # 走火山 Signature V4 签名（AK/SK）。凭证在火山控制台 → 访问控制 → 密钥管理获取。
+    # 除了要在「智能视觉」下开通小云雀服务，AK 所属账号还得有该服务的调用权限。
+    VOLC_ACCESS_KEY: str = ""
+    VOLC_SECRET_KEY: str = ""
+    # 视觉智能固定 cn-north-1；留默认即可，单独提出来是为了将来接别的 region 不用改代码
+    VOLC_REGION: str = "cn-north-1"
+    # 单次 HTTP 调用超时（秒）。提交任务很快，查结果也快，慢的是生成本身。
+    VOLC_TIMEOUT: int = 30
+
+    # 小云雀生视频：提交后轮询的间隔与总超时（秒）。
+    # 出片要 Agent 自己写脚本、分镜、合成，几分钟很正常，给足 10 分钟。
+    # 超时不等于失败——任务还在服务端跑，可以拿 task_id 再查，不必重新提交。
+    PIPPIT_POLL_INTERVAL: float = 5.0
+    PIPPIT_TIMEOUT: int = 600
+    # 成片下载体积上限（MB）。1 小时过期的链接必须立刻转存，这个上限防拖死内存。
+    PIPPIT_MAX_MB: int = 200
 
     # ---------- 配图生图 ----------
     # 本地生图脚本的绝对路径（用户提供）。留空则前端降级为「手动上传图片」。
@@ -302,6 +374,19 @@ class Settings(BaseSettings):
     @property
     def use_redis(self) -> bool:
         return bool(self.REDIS_URL)
+
+    @property
+    def tos_endpoint(self) -> str:
+        """put/get/delete 实际走哪个 S3 端点（内网优先，同地域免费）。"""
+        if self.TOS_USE_INTERNAL:
+            return self.TOS_ENDPOINT_INTERNAL
+        return self.TOS_ENDPOINT_PUBLIC
+
+    @property
+    def tos_public_base(self) -> str:
+        """浏览器加载用的公网 URL 基址（不含对象 key）。"""
+        domain = self.TOS_PUBLIC_DOMAIN or f"{self.TOS_BUCKET}.tos-{self.TOS_REGION}.volces.com"
+        return f"https://{domain}"
 
 
 @lru_cache

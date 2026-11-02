@@ -79,6 +79,8 @@ interface NavItem {
 const NAV: NavItem[] = [
   { key: 'chat', icon: 'chat', label: '对话创作', short: '对话', perm: 'menu.chat' },
   { key: 'queue', icon: 'queue', label: '发布队列', short: '队列', perm: 'menu.queue' },
+  // 素材库：写文章时要频繁取图，桌面端常驻；移动端插图场景少，不进底栏
+  { key: 'assets', icon: 'assets', label: '素材库', perm: 'menu.assets', mobile: false },
   // 知识库**不进移动端底栏**（见 NavItem.mobile 的说明）
   { key: 'knowledge', icon: 'book', label: '知识库', perm: 'menu.knowledge', mobile: false },
   // 技能包同理：管理动作（上传 SKILL.md / 启停），移动端无此诉求

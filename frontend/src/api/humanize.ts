@@ -24,8 +24,13 @@ export interface TraceReport {
   /** 必须展示给用户的口径说明（短文会说明统计层未参与，正常样本会说明这不是判定） */
   note: string
   short_sample: boolean
+  /** 这次**实际**检的是哪一份：layout=排版产物，body=源文。请求 layout 但还没排版时会回落成 body，前端必须据此提示 */
+  source?: TraceSource
   error?: string
 }
+
+/** 检测对象：layout=排版产物（待发布的那一份，默认），body=源文 Markdown（改写前后的基准） */
+export type TraceSource = 'layout' | 'body'
 
 export interface HumanizeResult {
   ok: boolean
@@ -46,6 +51,10 @@ export interface HumanizeJob {
   level: string
   status: 'queued' | 'running' | 'done' | 'error'
   progress: number
+  /** 当前阶段百分比不可信（模型调用中）：该展示已用时长而不是死盯进度条 */
+  indeterminate?: boolean
+  /** 服务端算出的已用秒数（含排队） */
+  elapsed?: number
   stage: string
   result: HumanizeResult | null
   error: string
@@ -64,6 +73,8 @@ export async function scanTrace(payload: {
   platform?: string
   /** 子形态（知乎：answer/article/idea；公众号：article/tietu） */
   sub_type?: string
+  /** 检哪一份：不传 = 排版产物 */
+  source?: TraceSource
 }): Promise<TraceReport> {
   const { data } = await http.post('/humanize/scan', payload)
   return data
@@ -128,6 +139,8 @@ export interface ZhuqueResult {
   segments: ZhuqueSegment[]
   tokens_used?: number
   ms?: number
+  /** 这次实际检的是哪一份（后端回传，可能因未排版而回落成 body） */
+  source?: TraceSource
   error?: string
 }
 
@@ -135,9 +148,26 @@ export interface ZhuqueResult {
 export async function zhuqueDetect(payload: {
   content_id?: string
   text?: string
+  platform?: string
+  /** 跟本地体检同一个开关：检排版产物还是源文 */
+  source?: TraceSource
 }): Promise<ZhuqueResult> {
   const { data } = await http.post('/humanize/zhuque', payload)
   return data
+}
+
+/** 把一次检测结果存成快照，挂到内容的 meta['aigc_trace']（已发布态回看用）。 */
+export async function saveTraceSnapshot(
+  contentId: string,
+  payload: {
+    platform?: string
+    sub_type?: string
+    source?: TraceSource
+    scan?: TraceReport | null
+    zhuque?: ZhuqueResult | null
+  },
+): Promise<void> {
+  await http.put(`/content/items/${contentId}/trace-snapshot`, payload)
 }
 
 /** 下载「AI 生成检测报告单」HTML（朱雀 + 本地体检，浏览器打开后可 Ctrl+P 存 PDF）。 */
@@ -147,6 +177,7 @@ export async function downloadDetectReport(payload: {
   platform?: string
   /** 子形态（知乎：answer/article/idea；公众号：article/tietu） */
   sub_type?: string
+  source?: TraceSource
 }): Promise<Blob> {
   const resp = await http.post('/humanize/report', payload, { responseType: 'blob' })
   return resp.data

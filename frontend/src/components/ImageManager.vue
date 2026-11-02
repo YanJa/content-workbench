@@ -9,6 +9,7 @@
  */
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import {
+  NButton,
   NDivider,
   NEmpty,
   NImage,
@@ -23,6 +24,7 @@ import {
   useMessage,
 } from 'naive-ui'
 import IconTextBtn from './IconTextBtn.vue'
+import AssetPicker from './AssetPicker.vue'
 import type { UploadFileInfo } from 'naive-ui'
 import {
   deleteImage,
@@ -32,6 +34,7 @@ import {
   updateImage,
   uploadImage,
 } from '@/api/layout'
+import { attachAssetToContent, type Asset } from '@/api/assets'
 import { usePermGate } from '@/composables/usePermGate'
 import type { ContentImage } from '@/types'
 
@@ -78,6 +81,25 @@ const prompt = ref('')
 const count = ref(1)
 const generating = ref(false)
 const uploading = ref(false)
+
+// ---- 素材库选取 ----
+const assetPickerShow = ref(false)
+
+/**
+ * 从素材库选了一张：由后端把素材插进 content.images，再用返回的完整列表覆盖本地。
+ *
+ * 为什么不让弹窗自己插：弹窗的职责是「选」，落地方式该由使用方决定
+ * （配图面板要插进文章，别处可能只是取个链接）。职责分开后弹窗可复用。
+ */
+async function onAssetPicked(a: Asset) {
+  try {
+    const r = await attachAssetToContent(props.contentId, a.id)
+    emit('changed', r.images as ContentImage[])
+    message.success(`已插入「${a.title || '素材'}」`)
+  } catch {
+    message.error('插入素材失败')
+  }
+}
 
 // ---- 封面表单 ----
 const coverTitle = ref('')
@@ -424,6 +446,17 @@ async function confirmAlt(img: ContentImage) {
       >
         <IconTextBtn name="upload" size="small" :loading="uploading" :disabled="uploading">上传图片</IconTextBtn>
       </NUpload>
+      <!-- 素材库：与「上传图片」并列 —— 一个是现在找图，一个是用攒下来的图 -->
+      <NButton
+        v-if="!isReadonly"
+        size="small"
+        secondary
+        style="margin-left: 6px"
+        @click="assetPickerShow = true"
+      >
+        从素材库选
+      </NButton>
+      <AssetPicker v-model:show="assetPickerShow" @picked="onAssetPicked" />
       <div v-if="imageGenGate.reason.value" class="hint warn gate-tip">
         {{ imageGenGate.reason.value }}
       </div>

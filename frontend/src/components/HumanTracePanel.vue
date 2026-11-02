@@ -12,7 +12,7 @@
  * 报告里那条 note 必须原样展示：这是特征扫描，不是「是否 AI 生成」的判定。
  * 检测器真实场景误判率 15-30%，给一个看起来精确的判定结论是害人。
  */
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import {
   NDrawer,
   NDrawerContent,
@@ -24,6 +24,8 @@ import {
   NDivider,
   NProgress,
   NButton,
+  NRadioGroup,
+  NRadioButton,
   useMessage,
 } from 'naive-ui'
 import IconTextBtn from './IconTextBtn.vue'
@@ -35,9 +37,11 @@ import {
   getHumanizeLevels,
   zhuqueDetect,
   downloadDetectReport,
+  saveTraceSnapshot,
   type TraceReport,
   type HumanizeResult,
   type LevelOption,
+  type TraceSource,
   type ZhuqueResult,
 } from '@/api/humanize'
 
@@ -60,19 +64,57 @@ const message = useMessage()
 
 const loading = ref(false)
 const report = ref<TraceReport | null>(null)
+/**
+ * 检哪一份：排版产物（默认）还是源文。
+ *
+ * 默认检排版产物的理由：真正发出去、被平台判 AIGC 的是**排版后那份纯文本**，
+ * 源文只是中间稿。两者分数可能差一大截（实测同一条内容：源文 70、排版产物 86），
+ * 拿源文分数判断「能不能发」会判断错。
+ */
+const source = ref<TraceSource>('layout')
+/** 这次实际检的口径（后端回落时会和 source 不一致，要如实告诉用户） */
+const actualSource = computed(() => report.value?.source || source.value)
+/** 口径的中文名，界面统一从这里取，避免各处写死「源文/排版产物」写串 */
+const srcLabel = (s: TraceSource) => (s === 'body' ? '源文' : '排版产物')
 const levels = ref<LevelOption[]>([])
 const platformDefault = ref<Record<string, string>>({})
 const level = ref('')
 const rewriting = ref(false)
 const rewriteStage = ref('')
 const rewriteProgress = ref(0)
+/**
+ * 模型调用阶段没有可信百分比，进度条该停住、由「已用 xx 秒」证明它还活着。
+ * 之前只给一个静止的 55%，用户看到的就是「卡死」。
+ */
+const rewriteIndeterminate = ref(false)
+const elapsedSec = ref(0)
 const result = ref<HumanizeResult | null>(null)
 const applying = ref(false)
 // 朱雀 AI 检测：外部模型、花额度，必须用户点按钮才发起（和本地体检的界线）
 const zhuqueLoading = ref(false)
-const zhuque = ref<ZhuqueResult | null>(null)
+/**
+ * 朱雀结果按「检测对象」各存一份，切换开关不丢。
+ *
+ * 朱雀是一次花钱的外部调用，切个开关就清零等于逼用户重测一遍。
+ * 但两份结果必须分开放 —— 混成一个就会出现「显示源文的结论、标的却是排版产物」。
+ */
+const zhuqueMap = ref<Partial<Record<TraceSource, ZhuqueResult>>>({})
+/** 当前对象的那份结果（实际口径由后端回传，回落时也跟着对） */
+const zhuque = computed<ZhuqueResult | null>(() => zhuqueMap.value[actualSource.value] || null)
 const reportLoading = ref(false)
+/** 进度区 DOM：起跑时滚进视口用（见 onRewrite） */
+const progressBox = ref<HTMLElement | null>(null)
 let pollTimer: ReturnType<typeof setInterval> | null = null
+let tickTimer: ReturnType<typeof setInterval> | null = null
+// 连续轮询失败次数：任务在内存里，服务一重启就 404，静默重试只会永远转圈
+let pollFailures = 0
+
+/** 已用时长：本地每秒自增，不依赖轮询（网络抖动时秒数也得继续走）。 */
+const elapsedText = computed(() => {
+  const s = elapsedSec.value
+  if (s < 60) return `${s} 秒`
+  return `${Math.floor(s / 60)} 分 ${s % 60} 秒`
+})
 
 const levelOptions = computed(() =>
   levels.value.map((l) => ({ label: `${l.label} · ${l.desc}`, value: l.id })),
@@ -98,12 +140,20 @@ watch(
   },
 )
 
-/** 换了一条内容：档位偏好不串味，重新按这条内容的平台/子形态取默认。 */
+/**
+ * 换了一条内容：档位偏好、上一次的改写结果、朱雀结果都不许串味。
+ *
+ * 朱雀那份尤其致命：它现在按对象缓存在组件里（切换对象不丢），
+ * 换文章时若不清，B 文章的界面会挂着 A 文章的检测结论，
+ * 而且标注还写着「检测对象：排版产物」—— 看起来完全像是 B 的。
+ */
 watch(
   () => props.contentId,
   () => {
     levelTouched.value = false
     level.value = ''
+    result.value = null
+    zhuqueMap.value = {}
   },
 )
 
@@ -119,14 +169,15 @@ const severityLabel = (s: string) => (s === 'high' ? '明显' : s === 'mid' ? '�
 
 async function load() {
   loading.value = true
-  result.value = null
   try {
     const [rep, lv] = await Promise.all([
       scanTrace({
         content_id: props.contentId,
-        text: props.text || '',
+        // 切到「源文」时以面板里正在编辑的正文为准；排版产物只能读库
+        text: source.value === 'body' ? props.text || '' : '',
         platform: props.platform,
         sub_type: props.subType || '',
+        source: source.value,
       }),
       getHumanizeLevels(),
     ])
@@ -136,6 +187,8 @@ async function load() {
     if (!levelTouched.value) {
       level.value = lv.platform_default[levelKey.value] || 'medium'
     }
+    // 体检结果存成快照：已发布内容回看「当时的检测数据」用。零成本，随手存。
+    if (rep.ok) void persistSnapshot(actualSource.value, rep, null)
   } catch (e: any) {
     message.error(e?.response?.data?.detail || '体检失败')
   } finally {
@@ -143,11 +196,40 @@ async function load() {
   }
 }
 
+/**
+ * 把刚拿到的检测结果存成快照（检哪份存哪份），供已发布内容回看「当时的检测数据」。
+ * 失败静默：快照只是辅助回看，绝不能因为存失败而打断体检/检测本身。
+ */
+async function persistSnapshot(
+  sourceKey: TraceSource,
+  scan?: TraceReport | null,
+  zhuque?: ZhuqueResult | null,
+) {
+  if (!props.contentId || (!scan && !zhuque)) return
+  try {
+    await saveTraceSnapshot(props.contentId, {
+      platform: props.platform,
+      sub_type: props.subType || '',
+      source: sourceKey,
+      scan: scan ?? null,
+      zhuque: zhuque ?? null,
+    })
+  } catch {
+    /* 静默 */
+  }
+}
+
 watch(
   () => props.show,
   async (v) => {
-    if (v) await load()
-    else stopPoll()
+    if (!v) return
+    await load()
+    // 关掉抽屉**不停轮询**：任务还在模型那边跑，停下来只会让回来时看到一屏
+    // 冻住的百分比。跑完照样弹「改写完成」，重新打开也还看得见结果。
+    // 重新打开时抽屉滚回顶部，进度区又沉到视口外了 —— 再顶一次。
+    if (rewriting.value) {
+      nextTick(() => progressBox.value?.scrollIntoView({ block: 'center' }))
+    }
   },
 )
 
@@ -156,6 +238,17 @@ function stopPoll() {
     clearInterval(pollTimer)
     pollTimer = null
   }
+  if (tickTimer) {
+    clearInterval(tickTimer)
+    tickTimer = null
+  }
+}
+
+/** 收尾：停轮询、停计时、恢复按钮（三个出错分支都要走到这里，别各写一遍）。 */
+function finishRewrite() {
+  stopPoll()
+  rewriting.value = false
+  rewriteIndeterminate.value = false
 }
 
 async function onRewrite() {
@@ -163,6 +256,12 @@ async function onRewrite() {
   rewriting.value = true
   rewriteStage.value = '正在提交…'
   rewriteProgress.value = 5
+  rewriteIndeterminate.value = false
+  elapsedSec.value = 0
+  pollFailures = 0
+  // 抽屉内容可能很长（体检命中一堆），进度区在按钮下方，滚出视口就等于没反馈。
+  // 起跑后把它顶进可视范围，用户的眼睛不用自己找。
+  requestAnimationFrame(() => progressBox.value?.scrollIntoView({ block: 'center' }))
   try {
     const { task_id } = await submitHumanize({
       content_id: props.contentId,
@@ -170,30 +269,46 @@ async function onRewrite() {
       level: level.value,
       sub_type: props.subType || '',
     })
+    // 秒表先跑起来：模型一次要两分钟，界面必须一直在动
+    stopPoll()
+    tickTimer = setInterval(() => {
+      elapsedSec.value += 1
+    }, 1000)
     pollTimer = setInterval(async () => {
       try {
         const job = await getHumanizeJob(task_id)
+        pollFailures = 0
         rewriteProgress.value = job.progress
         rewriteStage.value = job.stage
+        rewriteIndeterminate.value = !!job.indeterminate
+        if (job.elapsed != null) elapsedSec.value = Math.max(elapsedSec.value, job.elapsed)
         if (job.status === 'done') {
-          stopPoll()
-          rewriting.value = false
+          finishRewrite()
           result.value = job.result
           const gained = (job.result?.after_score ?? 0) - (job.result?.before_score ?? 0)
           // 分数没涨也要如实说，不能一律弹「改写成功」
           if (gained <= 0) message.warning('改写完成，但痕迹指数没有提升——建议手动再改几处')
           else message.success(`改写完成，人工痕迹指数 +${gained}`)
         } else if (job.status === 'error') {
-          stopPoll()
-          rewriting.value = false
+          finishRewrite()
           message.error(job.error || '改写失败')
         }
-      } catch {
-        /* 轮询失败不打断：下次 tick 继续 */
+      } catch (e: any) {
+        // 404 = 任务已经不存在（服务重启会清空内存任务表）。继续重试只会
+        // 让界面永远停在最后一个百分比上——那才是真正的「卡死」。
+        if (e?.response?.status === 404) {
+          finishRewrite()
+          message.error('这次改写的任务已失效（后端可能重启过），请重新点一次「AI 加痕迹」')
+          return
+        }
+        if (++pollFailures >= 5) {
+          finishRewrite()
+          message.error('查询改写进度连续失败，已停止等待。请检查后端是否在运行后重试')
+        }
       }
     }, 1500)
   } catch (e: any) {
-    rewriting.value = false
+    finishRewrite()
     message.error(e?.response?.data?.detail || '提交改写失败')
   }
 }
@@ -221,11 +336,18 @@ const pct = (x: number) => `${(x * 100).toFixed(2)}%`
 async function onZhuque() {
   zhuqueLoading.value = true
   try {
-    zhuque.value = await zhuqueDetect({
+    const r = await zhuqueDetect({
       content_id: props.contentId,
-      text: props.text || '',
+      text: source.value === 'body' ? props.text || '' : '',
+      platform: props.platform,
+      source: source.value,
     })
-    if (!zhuque.value.ok) message.warning(zhuque.value.error || '朱雀检测失败')
+    // 按后端回传的实际口径归档（请求 layout 但没排版时会回落成 body）
+    const key: TraceSource = (r.source as TraceSource) || source.value
+    zhuqueMap.value = { ...zhuqueMap.value, [key]: r }
+    // 朱雀结果也存成快照（花钱的检测，落一份免得以后回看还要重测）
+    if (r.ok) void persistSnapshot(key, null, r)
+    if (!r.ok) message.warning(r.error || '朱雀检测失败')
   } catch (e: any) {
     message.error(e?.response?.data?.detail || '朱雀检测请求失败')
   } finally {
@@ -233,15 +355,35 @@ async function onZhuque() {
   }
 }
 
+/** 组件卸载（切页面/关标签）也要停掉计时器，否则定时器泄漏。 */
+onBeforeUnmount(() => stopPoll())
+
+/**
+ * 切换检测对象：立刻重体检。
+ * 朱雀结果**不清** —— 它按对象各存一份，切回来还在，不必重复花钱。
+ */
+watch(source, async () => {
+  await load()
+})
+
+/** 体检对象没排版可用时后端会回落成源文，这时把开关也拨回去，免得开关和结果对不上。 */
+watch(
+  () => report.value?.source,
+  (s) => {
+    if (s && s !== source.value) source.value = s
+  },
+)
+
 /** 下载报告单：新窗口打开（可 Ctrl+P 存 PDF），被拦截则退化为文件下载。 */
 async function onDownloadReport() {
   reportLoading.value = true
   try {
     const blob = await downloadDetectReport({
       content_id: props.contentId,
-      text: props.text || '',
+      text: source.value === 'body' ? props.text || '' : '',
       platform: props.platform,
       sub_type: props.subType || '',
+      source: source.value,
     })
     const url = URL.createObjectURL(new Blob([blob], { type: 'text/html' }))
     const w = window.open(url, '_blank')
@@ -264,6 +406,28 @@ async function onDownloadReport() {
   <NDrawer :show="show" width="min(560px, 92vw)" placement="right" @update:show="(v) => emit('update:show', v)">
     <NDrawerContent title="人工痕迹体检" closable>
       <div class="trace">
+        <!-- 检测对象开关：默认检排版产物（真正发出去的那一份） -->
+        <div class="src-row">
+          <NRadioGroup v-model:value="source" size="small">
+            <NRadioButton value="layout">排版产物</NRadioButton>
+            <NRadioButton value="body">源文</NRadioButton>
+          </NRadioGroup>
+          <span class="src-hint">
+            {{
+              source === 'layout'
+                ? '检的是排版后待发布的纯文本 —— 平台判 AIGC 看的是它'
+                : '检的是未排版的源文（Markdown）—— 改写前后的基准'
+            }}
+          </span>
+        </div>
+        <NAlert
+          v-if="report && report.ok && actualSource !== source"
+          type="warning"
+          :bordered="false"
+          class="src-fallback"
+        >
+          这条内容还没排版，没有可检的排版产物，上面检的是<strong>源文</strong>。排版后再来才能看到发布版的分数。
+        </NAlert>
         <NSpin :show="loading">
           <template v-if="report && report.ok">
             <!-- 分数：人工痕迹指数，越高越像人写的 -->
@@ -315,6 +479,9 @@ async function onDownloadReport() {
               <NButton size="small" :loading="zhuqueLoading" @click="onZhuque">
                 {{ zhuque && zhuque.ok ? '重新检测' : '开始检测' }}
               </NButton>
+              <NTag v-if="zhuque && zhuque.ok" size="small" :bordered="false" type="info">
+                检测对象：{{ srcLabel(actualSource) }}
+              </NTag>
               <span class="zq-hint">
                 外部模型，消耗 Makers 免费 token 额度；中文文本有固有误差，结果仅为辅助判断。
               </span>
@@ -346,6 +513,9 @@ async function onDownloadReport() {
             <NAlert v-else-if="zhuque && !zhuque.ok" type="warning" :bordered="false" class="zq-err">
               {{ zhuque.error }}
             </NAlert>
+            <div v-else class="zq-hint zq-empty">
+              这一份（{{ srcLabel(actualSource) }}）还没做过朱雀检测。两份结果各自保留，切回去就能看到，不用重测。
+            </div>
             <div class="zq-report-row">
               <NButton size="small" :loading="reportLoading" @click="onDownloadReport">
                 下载报告单（HTML）
@@ -371,9 +541,21 @@ async function onDownloadReport() {
               改写会消耗模型额度，且保留所有数字与事实（改完自动校验，丢了会报警）。
             </div>
 
-            <div v-if="rewriting" class="rewrite-progress">
-              <NProgress :percentage="rewriteProgress" :height="6" />
-              <div class="stage">{{ rewriteStage }}</div>
+            <div v-if="rewriting" ref="progressBox" class="rewrite-progress">
+              <NProgress
+                :percentage="rewriteProgress"
+                :height="6"
+                :processing="rewriteIndeterminate"
+                :show-indicator="!rewriteIndeterminate"
+              />
+              <div class="stage">
+                {{ rewriteStage }}
+                <span class="elapsed">已用 {{ elapsedText }}</span>
+              </div>
+              <div v-if="rewriteIndeterminate" class="rewrite-hint">
+                推理模型会先想再写，一篇千字稿通常要 1–3 分钟。这段时间没有新进度是正常的，
+                别重复点——重复提交只会在队列里再排一轮。
+              </div>
             </div>
 
             <template v-if="result">
@@ -416,12 +598,34 @@ async function onDownloadReport() {
 .trace {
   padding-bottom: 24px;
 }
+.src-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.src-hint {
+  font-size: 12px;
+  opacity: 0.6;
+  flex: 1;
+  min-width: 180px;
+}
+.src-fallback {
+  margin-bottom: 12px;
+  font-size: 12px;
+  line-height: 1.6;
+}
 .score-row {
   display: flex;
   align-items: center;
   gap: 16px;
 }
 .score-num {
+  /* 绝对不能折行：数字之间是可断行点，窄屏下一被挤就把「86」拆成上下两个数字。
+     flex:none 保住它自己的宽度，nowrap 兜住多位数（100 分时更明显）。 */
+  flex: none;
+  white-space: nowrap;
   font-size: 48px;
   font-weight: 700;
   line-height: 1;
@@ -431,6 +635,9 @@ async function onDownloadReport() {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  /* 允许它收缩换行，但不能把数字挤掉 */
+  flex: 1;
+  min-width: 0;
 }
 .score-title {
   font-weight: 600;
@@ -500,6 +707,14 @@ async function onDownloadReport() {
   margin-top: 6px;
   font-size: 12px;
   opacity: 0.7;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+.elapsed {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.9;
 }
 .cmp {
   display: flex;
@@ -554,6 +769,7 @@ async function onDownloadReport() {
 .zq-hint {
   font-size: 12px;
   opacity: 0.6;
+  line-height: 1.6;
   line-height: 1.5;
 }
 .zq-result {
@@ -631,11 +847,37 @@ async function onDownloadReport() {
   margin-top: 10px;
   font-size: 12px;
 }
+.zq-empty {
+  flex: 1 0 100%;
+  margin-top: 8px;
+}
 .zq-report-row {
   display: flex;
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
   margin-top: 12px;
+}
+
+/* 窄屏（手机）：抽屉只有 92vw，48px 的分数 + 说明挤成两行会把「86」竖着拆开。
+   缩字号、收紧间距，让分数和说明各有各的地方。 */
+@media (max-width: 480px) {
+  .score-row {
+    gap: 12px;
+    align-items: flex-start;
+  }
+  .score-num {
+    font-size: 38px;
+  }
+  .score-title {
+    font-size: 14px;
+    line-height: 1.4;
+  }
+  .score-stats {
+    line-height: 1.5;
+  }
+  .src-hint {
+    flex: 1 0 100%;
+  }
 }
 </style>

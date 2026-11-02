@@ -166,15 +166,20 @@ const platformName: Record<string, string> = {
   xiaohongshu: '📕 小红书',
   douyin: '🎵 抖音',
   zhihu: '✍️ 知乎',
+  toutiao: '📱 今日头条',
+  baijiahao: '🔍 百家号',
 }
 
 /**
- * 子形态展示名（与后端 ZHIHU_SUBTYPE_LABELS / GZH_SUBTYPE_LABELS 同一套口径）。
- * 两种平台的子形态都是「同一平台、不同发布链路」：光写平台名用户不知道该往哪儿发。
+ * 子形态展示名（与后端 ZHIHU_SUBTYPE_LABELS / GZH_SUBTYPE_LABELS /
+ * TOUTIAO_SUBTYPE_LABELS / BAIJIAHAO_SUBTYPE_LABELS 同一套口径）。
+ * 这些平台的子形态都是「同一平台、不同发布链路」：光写平台名用户不知道该往哪儿发。
  */
 const SUB_NAME: Record<string, Record<string, string>> = {
   zhihu: { answer: '回答', article: '文章', idea: '想法' },
   gzh: { article: '图文', tietu: '贴图' },
+  toutiao: { article: '图文', weitoutiao: '微头条' },
+  baijiahao: { article: '图文', dongtai: '动态' },
 }
 
 /** 加工中标记 → 展示文案（'' 表示空闲） */
@@ -271,18 +276,75 @@ const CHECKLISTS: Record<string, { channel: string; path: string; items: { key: 
       { key: 'paste', text: '文案已粘进图片消息的文本区' },
     ],
   },
+  // ---- 今日头条：图文（长文进信息流）与微头条（无标题短内容）链路不同 ----
+  toutiao_article: {
+    channel: '头条号后台（手动发布）',
+    path: '复制纯文本 → 到头条号后台「写文章」→ 粘贴 → 配图设封面 → 勾原创/首发 → 发布',
+    items: [
+      { key: 'title', text: '标题 15-28 字，关键词前置，不是标题党' },
+      { key: 'len', text: '正文 800-1500 字，每段不超过 3 行' },
+      { key: 'case', text: '每个观点后面都有真实案例或场景，不纯说理' },
+      { key: 'cover', text: '封面图已设（建议三图，内容相关）' },
+      { key: 'original', text: '已勾「原创」与「头条首发」' },
+      { key: 'end', text: '结尾是具体问题，没有「点赞关注」话术' },
+      { key: 'paste', text: '粘贴后分段与加粗没乱，图片已插入对应位置' },
+    ],
+  },
+  toutiao_weitoutiao: {
+    channel: '头条 App / 创作者中心（微头条）',
+    path: '复制文案 → 到头条发「微头条」→ 粘贴 → 配 1-3 张图 → 发布',
+    items: [
+      { key: 'hook', text: '第一行（前 30 字）就是钩子，没有铺垫' },
+      { key: 'len', text: '正文 300-800 字，只讲了一个观点' },
+      { key: 'imgs', text: '配图 1-3 张，与内容相关' },
+      { key: 'tags', text: '话题标签 2-3 个，已放最后一行' },
+      { key: 'end', text: '结尾是一个开放问题，不是「点赞关注」' },
+    ],
+  },
+  // ---- 百度百家号：图文（吃百度搜索长尾）与动态（短内容） ----
+  baijiahao_article: {
+    channel: '百家号后台（手动发布）',
+    path: '复制纯文本 → 到百家号「发布图文」→ 粘贴 → 配图 → 勾原创 → 发布',
+    items: [
+      { key: 'title', text: '标题 20-30 字，主关键词前置，禁标题党' },
+      { key: 'kw', text: '首段 200 字内出现核心关键词，密度 2%-5% 不堆砌' },
+      { key: 'len', text: '正文 1200-2000 字，每段不超过 5 行' },
+      { key: 'structure', text: '用多级小标题分节，数据用项目符号罗列' },
+      { key: 'imgs', text: '每 800 字左右配图，共 3-6 张' },
+      { key: 'vertical', text: '整篇只写一个领域，没有跨领域混杂' },
+      { key: 'original', text: '已勾「原创声明」，查重通过' },
+      { key: 'paste', text: '粘贴后小标题层级与列表没乱' },
+    ],
+  },
+  baijiahao_dongtai: {
+    channel: '百家号（动态）',
+    path: '复制文案 → 到百家号发「动态」→ 粘贴 → 配 1-2 张图 → 发布',
+    items: [
+      { key: 'hook', text: '第一行就有信息量：观察 / 判断 / 数据' },
+      { key: 'len', text: '100-300 字，只讲一个观点，没展开成文章' },
+      { key: 'imgs', text: '配图 1-2 张' },
+      { key: 'tags', text: '话题标签 1-3 个' },
+    ],
+  },
 }
 
 /**
- * 检查项配置：知乎 / 公众号按子形态取（各自形态路径不同），其余平台按 platform 取。
+ * 检查项配置：按「平台_子形态」取（各形态发布链路与检查项不同）。
+ * 无子形态的平台（小红书 / 抖音）直接用平台名取。
  */
 function checklistOf(row: QueueItem | null) {
   if (!row) return null
-  if (row.platform === 'zhihu') {
-    return CHECKLISTS[`zhihu_${row.sub_type || 'answer'}`] ?? CHECKLISTS.zhihu_answer
+  const sub = row.sub_type || ''
+  const defaults: Record<string, string> = {
+    zhihu: 'answer',
+    gzh: 'article',
+    toutiao: 'article',
+    baijiahao: 'article',
   }
-  if (row.platform === 'gzh' && (row.sub_type || 'article') === 'tietu') {
-    return CHECKLISTS.gzh_tietu
+  const st = sub || defaults[row.platform]
+  if (st) {
+    const bySub = CHECKLISTS[`${row.platform}_${st}`]
+    if (bySub) return bySub
   }
   return CHECKLISTS[row.platform] ?? null
 }
@@ -454,10 +516,14 @@ const columns = computed<DataTableColumns<QueueItem>>(() => [
         // 知乎：官方没有发布接口，系统给的是「人带着内容去发」的入口。
         // 这个按钮省掉的是「我该去哪个页面发」这一步 —— 三种形态入口各不相同。
         isZhihu && row.publish_url && !isAbandoned
-          ? actionBtn('link', '去知乎发布（打开对应形态的发布页）', () => gotoPublish(row), {
-              type: 'primary',
-              disabled: busy,
-            })
+          ? actionBtn(
+              'link',
+              row.status === 'published'
+                ? '打开问题页（已发布，仅查看）'
+                : '去知乎发布（打开对应形态的发布页）',
+              () => gotoPublish(row),
+              { type: row.status === 'published' ? 'default' : 'primary', disabled: busy },
+            )
           : null,
         // 标记已发：图文必须先推到微信草稿箱（wechat_media_id 非空）才能标记，
         // 否则推完草稿箱前就标记完成，等于绕过合规发布流程。
@@ -833,29 +899,66 @@ async function onPushDraft(row: QueueItem) {
     return
   }
 
-  pushing.value = true
-  try {
-    const res = await confirmTool({
-      // 队列页推送不来自任何对话，不传 conversation_id
-      tool_call_id: `q_${row.id}`,
-      tool_name: 'push_wechat_draft',
-      // 带 content_id：后端会把正文里的本地配图转存到微信，并用首图当封面
-      arguments: { title: row.title, html, content_id: row.content_id },
-    })
-    const result = res.result as { ok?: boolean; error?: string; message?: string }
+  // 真正往微信推之前二次确认：这一步只是进草稿箱（不是已发布），
+  // 还要去微信后台核对并群发；且消耗 1 次推送额度，推错可在行上删草稿重推。
+  dialog.warning({
+    title: '推送到公众号草稿箱？',
+    // 用 VNode 而不是拼字符串：dialog 的 content 不保证按 \n 换行，
+    // 长句挤成一坨就没有「提示」的作用了（与发布检查确认框一致）。
+    content: () =>
+      h('div', { style: 'line-height:1.7' }, [
+        h('p', { style: 'margin:0 0 8px' }, [
+          '「',
+          h('b', null, row.title),
+          '」的排版正文将被推送到公众号草稿箱。',
+        ]),
+        h('p', { style: 'margin:0 0 8px;color:var(--app-text-2)' }, [
+          '这只是进草稿箱，',
+          h('b', null, '还没真正发布'),
+          '——推完要去微信后台核对并手动群发。',
+        ]),
+        h(
+          'p',
+          { style: 'margin:0;color:var(--app-text-2)' },
+          '本次消耗 1 次推送额度；推错了可在该行「删除微信草稿」清掉微信侧草稿后重推。',
+        ),
+      ]),
+    positiveText: '推送到草稿箱',
+    negativeText: '再想想',
+    onPositiveClick: async () => {
+      pushing.value = true
+      try {
+        const res = await confirmTool({
+          // 队列页推送不来自任何对话，不传 conversation_id
+          tool_call_id: `q_${row.id}`,
+          tool_name: 'push_wechat_draft',
+          // 带 content_id：后端会把正文里的本地配图转存到微信，并用首图当封面
+          arguments: { title: row.title, html, content_id: row.content_id },
+        })
+        const result = res.result as {
+      ok?: boolean
+      error?: string
+      message?: string
+      note?: string
+    }
     if (result?.ok) {
       message.success(result.message ?? '已推送到草稿箱')
+      // 二次推送走「原地替换」；仅当原草稿已失效（被群发/删除）退回新建时
+      // 后端会带 note，这里补一句提示，避免用户以为又堆了一条。
+      if (result.note) message.info(result.note)
       auth.markUsed('wechat_push')
       await queue.refresh()
     } else {
-      // 失败不置灰：后端对这一种有 refund（唯一同步可判成败的受控动作）
-      message.error(result?.error ?? '推送失败')
-    }
-  } catch (e) {
-    message.error(`推送失败：${(e as Error).message}`)
-  } finally {
-    pushing.value = false
-  }
+          // 失败不置灰：后端对这一种有 refund（唯一同步可判成败的受控动作）
+          message.error(result?.error ?? '推送失败')
+        }
+      } catch (e) {
+        message.error(`推送失败：${(e as Error).message}`)
+      } finally {
+        pushing.value = false
+      }
+    },
+  })
 }
 
 /**
@@ -938,6 +1041,9 @@ const createPlatformOptions = [
   { label: '公众号', value: 'gzh' },
   { label: '小红书', value: 'xiaohongshu' },
   { label: '抖音', value: 'douyin' },
+  { label: '知乎', value: 'zhihu' },
+  { label: '今日头条', value: 'toutiao' },
+  { label: '百家号', value: 'baijiahao' },
 ]
 
 function openCreate() {

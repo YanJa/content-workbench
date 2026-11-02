@@ -3,7 +3,13 @@
  * 与后端 app/schemas/models.py 一一对应，改后端字段时记得同步这里。
  */
 
-export type Platform = 'gzh' | 'xiaohongshu' | 'douyin' | 'zhihu'
+export type Platform =
+  | 'gzh'
+  | 'xiaohongshu'
+  | 'douyin'
+  | 'zhihu'
+  | 'toutiao'
+  | 'baijiahao'
 
 /**
  * 知乎子形态。一个知乎平台上有三种完全不同的东西，篇幅差一个数量级
@@ -11,6 +17,19 @@ export type Platform = 'gzh' | 'xiaohongshu' | 'douyin' | 'zhihu'
  * 其余平台恒为空串。
  */
 export type ZhihuSubType = 'answer' | 'article' | 'idea'
+
+/**
+ * 有子形态的平台及其形态取值：
+ *   知乎 answer/article/idea｜公众号 article/tietu｜
+ *   头条 article/weitoutiao｜百家号 article/dongtai
+ * 其余平台（小红书、抖音）恒为空串。
+ */
+export type ContentSubType =
+  | ZhihuSubType
+  | 'tietu'
+  | 'weitoutiao'
+  | 'dongtai'
+  | ''
 
 export type QueueStatus = 'draft' | 'ready' | 'published' | 'archived' | 'abandoned'
 

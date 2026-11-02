@@ -19,8 +19,10 @@ from app.schemas.models import (
     ContentCreateRequest,
     ContentOut,
     ContentUpdateRequest,
+    PlaintextUpdateRequest,
     QueueItemOut,
     QueueStatusUpdate,
+    TraceSnapshotIn,
 )
 
 router = APIRouter(prefix="/queue", tags=["发布队列"])
@@ -393,5 +395,81 @@ async def update_content(
     if req.body_html is not None:
         c.body_html = req.body_html
     c.updated_at = int(time.time())
+    await db.flush()
+    return c
+
+
+@content_router.patch("/items/{content_id}/plaintext", response_model=ContentOut)
+async def update_plaintext(
+    content_id: str,
+    req: PlaintextUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+    owner: str = Depends(current_owner_id),
+):
+    """改排版产物里的纯文本（头条号 / 百家号 / 贴图文案）。
+
+    纯文本平台的产物就是一段字，用户排版完总要顺手改两句 —— 标题党一点、
+    语气软一点。这段字只存在 `layouts[platform].text` 里，和富文本的
+    `body_html` 是两条线，所以单独给一个只动这一个键的入口。
+
+    只覆盖目标平台的 `text`，其余字段（`updated_at` 之外的产物元数据）保留：
+    排版任务可能往同一个 entry 里写过别的东西，整包替换会连它们一起抹掉。
+    """
+    c = await db.get(Content, content_id)
+    if not c or (c.owner or "default") != owner:
+        raise HTTPException(404, "内容不存在")
+
+    layouts = dict(c.layouts or {})
+    entry = dict(layouts.get(req.platform) or {})
+    entry["text"] = req.text
+    entry["updated_at"] = int(time.time())
+    layouts[req.platform] = entry
+    # 必须整体换新对象：SQLAlchemy 的 JSON 列按对象身份判脏，原地改键不会触发 UPDATE
+    c.layouts = layouts
+    c.updated_at = int(time.time())
+    await db.flush()
+    return c
+
+
+@content_router.put("/items/{content_id}/trace-snapshot", response_model=ContentOut)
+async def save_trace_snapshot(
+    content_id: str,
+    req: TraceSnapshotIn,
+    db: AsyncSession = Depends(get_db),
+    owner: str = Depends(current_owner_id),
+):
+    """把一次 AI 痕迹检测的结果存成快照，挂到 Content.meta['aigc_trace']。
+
+    已发布内容在只读排版查看态要回看「发布当时」的检测数据，而报告单本来是
+    一次性、不落库的，所以检测（体检 / 朱雀）完成后由前端把结果推回来存一份。
+    按检测对象（layout / body）各存一份：发布看的是排版产物那份。
+
+    只动 meta['aigc_trace'] 这一个键，整包替换 JSON 对象（SQLAlchemy 按对象
+    身份判脏）；其余 meta（msg_id / zhihu_question 等）原样保留。
+    """
+    c = await db.get(Content, content_id)
+    if not c or (c.owner or "default") != owner:
+        raise HTTPException(404, "内容不存在")
+
+    now = int(time.time())
+    meta = dict(c.meta or {})
+    snap = dict(meta.get("aigc_trace") or {})
+    snap["saved_at"] = now
+    if req.platform:
+        snap["platform"] = req.platform
+    if req.sub_type:
+        snap["sub_type"] = req.sub_type
+    # 该检测对象那一份：体检/朱雀分别更新，互不打断
+    slot = dict(snap.get(req.source) or {})
+    slot["source"] = req.source
+    if req.scan is not None:
+        slot["scan"] = req.scan
+    if req.zhuque is not None:
+        slot["zhuque"] = req.zhuque
+    snap[req.source] = slot
+    meta["aigc_trace"] = snap
+    # 整体换新对象，确保 JSON 列判脏触发 UPDATE
+    c.meta = meta
+    c.updated_at = now
     await db.flush()
     return c

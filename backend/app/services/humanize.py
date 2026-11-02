@@ -27,6 +27,8 @@ import time
 import uuid
 from typing import Any
 
+from app.core.config import settings
+
 # ------------------------------------------------------------------ 规则表
 # 中文的 AI 味在**句式与连接词**，不在词频。英文那套（delve / tapestry / em dash）
 # 搬到中文不成立，所以规则表全部是中文语料重写过的。
@@ -539,6 +541,12 @@ def _tips(platform: str, sub_type: str = "") -> list[str]:
 _HUMANIZE_JOBS: dict[str, dict[str, Any]] = {}
 _HUMANIZE_LOCK: Any = None  # 惰性创建：asyncio.Lock() 必须在有事件循环时建
 
+# 任务句柄强引用。
+# `asyncio.create_task()` 的返回值**必须有人拿着**：事件循环只对 task 持弱引用，
+# 一旦这个 task 被 GC 掉，协程就在下一个 await 点悄悄消失 —— 任务表里永远停在
+# 「running / 55%」，既不报错也不结束。这是「卡在 55%」最难查的一类原因。
+_HUMANIZE_TASKS: dict[str, Any] = {}
+
 
 def _lock() -> Any:
     global _HUMANIZE_LOCK
@@ -630,7 +638,11 @@ async def humanize_text(
 
 
 async def submit_humanize_job(
-    content_id: str, platform: str = "gzh", level: str = "", sub_type: str = ""
+    content_id: str,
+    platform: str = "gzh",
+    level: str = "",
+    sub_type: str = "",
+    owner: str = "default",
 ) -> dict[str, Any]:
     """登记改写任务并立即返回 task_id。"""
     from app.prompts.platforms import normalize_sub_type
@@ -641,31 +653,45 @@ async def submit_humanize_job(
     _HUMANIZE_JOBS[task_id] = {
         "task_id": task_id,
         "content_id": content_id,
+        "owner": owner,
         "platform": platform,
         "sub_type": st,
         "level": level or _pick(PLATFORM_DEFAULT_LEVEL, platform, st, "medium"),
         "status": "queued",
         "progress": 0,
         "stage": "排队中…",
+        # indeterminate=True 表示「当前阶段没有可信的百分比」：进度条该停在原地，
+        # 由前端用已用时长告诉用户它还活着。见 _run_humanize_job 的注释。
+        "indeterminate": False,
         "result": None,
         "error": "",
         "started_at": time.time(),
         "finished_at": None,
     }
     import asyncio
-    asyncio.create_task(_run_humanize_job(task_id, content_id, platform, level, st))
+
+    task = asyncio.create_task(_run_humanize_job(task_id, content_id, platform, level, st))
+    _HUMANIZE_TASKS[task_id] = task
+    task.add_done_callback(lambda _t, k=task_id: _HUMANIZE_TASKS.pop(k, None))
     return {"ok": True, "task_id": task_id, "status": "queued", "poll": task_id}
 
 
 async def _run_humanize_job(task_id: str, content_id: str, platform: str, level: str,
                             sub_type: str = "") -> None:
     """后台 worker：自建 Session（请求已返回，不能复用请求期的 db）。"""
+    import asyncio
+
     from app.db.session import SessionLocal
     from app.models.content import Content
     from app.prompts.platforms import normalize_sub_type
 
     _set_hjob(task_id, status="running", progress=10, stage="正在读原文…")
     try:
+        # 全局串行锁：两个改写同时跑，各自 2 分钟以上，还都算不上错峰。
+        # 但排队必须说出来 —— 否则第二个人看到的是「正在读原文…」一动不动，
+        # 以为是卡死，其实连模型都还没调。
+        if _lock().locked():
+            _set_hjob(task_id, progress=5, stage="排队中：前面还有一个改写任务在跑…")
         async with _lock():
             async with SessionLocal() as db:
                 c = await db.get(Content, content_id)
@@ -680,12 +706,33 @@ async def _run_humanize_job(task_id: str, content_id: str, platform: str, level:
                 # 前端没传子形态时，从内容本身兜底（队列里存的就是权威值）
                 st = sub_type or normalize_sub_type(platform, c.sub_type)
                 _set_hjob(task_id, progress=30, stage="AI 正在注入人的痕迹…")
-                _set_hjob(task_id, progress=55, stage="AI 正在重写（保留所有数字与事实）…")
-                res = await humanize_text(
-                    src, platform, level or _pick(PLATFORM_DEFAULT_LEVEL, platform, st, "medium"),
-                    owner=c.owner or "default", db=db, sub_type=st,
-                )
-                _set_hjob(task_id, progress=90, stage="正在校验事实是否被改坏…")
+                # 从这里开始进入模型调用：没有可信百分比，只能给时长。
+                # 秒数由 get_humanize_job 按 started_at 现算，不在 stage 里拼 ——
+                # 前端自己也有一份本地计时器，塞进文案会重复成「已用 5 秒 已用 7 秒」。
+                _set_hjob(task_id, progress=55, indeterminate=True,
+                          stage="AI 正在重写（保留所有数字与事实）…")
+                try:
+                    res = await asyncio.wait_for(
+                        humanize_text(
+                            src, platform,
+                            level or _pick(PLATFORM_DEFAULT_LEVEL, platform, st, "medium"),
+                            owner=c.owner or "default", db=db, sub_type=st,
+                        ),
+                        timeout=settings.HUMANIZE_TIMEOUT,
+                    )
+                except (asyncio.TimeoutError, TimeoutError):
+                    # 没有这道闸，请求会一直挂着：openai 的 timeout 管的是单次读写，
+                    # 推理模型慢慢吐 token 时永远不会触发，只能等到进程重启。
+                    _set_hjob(
+                        task_id, status="error", indeterminate=False, finished_at=time.time(),
+                        error=(
+                            f"模型 {settings.HUMANIZE_TIMEOUT} 秒内没有返回，已中止本次改写。"
+                            "长稿建议拆成两段分别改，或把强度调到「轻度」。"
+                        ),
+                    )
+                    return
+                _set_hjob(task_id, progress=90, indeterminate=False,
+                          stage="正在校验事实是否被改坏…")
                 if not res.get("ok"):
                     _set_hjob(task_id, status="error", error=res.get("error", "改写失败"),
                               finished_at=time.time())
@@ -696,8 +743,18 @@ async def _run_humanize_job(task_id: str, content_id: str, platform: str, level:
         _set_hjob(task_id, status="error", error=f"改写失败：{exc}", finished_at=time.time())
 
 
-def get_humanize_job(task_id: str) -> dict[str, Any] | None:
-    return _HUMANIZE_JOBS.get(task_id)
+def get_humanize_job(task_id: str, owner: str = "default") -> dict[str, Any] | None:
+    job = _HUMANIZE_JOBS.get(task_id)
+    if job is None:
+        return None
+    # 归属校验：任务归属发起者，防登录用户轮询他人 task_id 探进度（task_id
+    # 本身是随机 UUID 不易枚举，但写上这层不影响正常流程、彻底闭合越权读数）。
+    if job.get("owner") not in (None, owner):
+        return None
+    # elapsed 由服务端算：前端计时器只负责让秒数一直跳，真值以这里为准
+    base = job.get("finished_at") or time.time()
+    job["elapsed"] = max(0, int(base - (job.get("started_at") or base)))
+    return job
 
 
 async def apply_humanized(db: Any, content_id: str, text: str, owner: str = "default") -> dict[str, Any]:

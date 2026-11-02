@@ -331,6 +331,41 @@ def test_backfill_marks_old_free_calls(tmp_path):
     _run(_case())
 
 
+def test_backfill_consults_pricing_and_fixes_unknown(tmp_path):
+    """免费模型只在 PRICING 登记（没进池）、且历史行存成 unknown 时：
+    仍要被认成免费并订正 —— 否则 warning 一直挂着、费用被兜底价估成钱。
+    """
+    pricing.register_model(
+        "@cf/zai-org/glm-4.7-flash",
+        {"label": "GLM-4.7-Flash", "vendor": "cloudflare", "in": 0, "out": 0, "free": True},
+    )
+
+    async def _case():
+        engine, Session = _mk(tmp_path, "backfill2.db")
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        async with Session() as db:
+            await usage.record(
+                db, model="@cf/zai-org/glm-4.7-flash",
+                prompt_tokens=100, completion_tokens=100, owner="u1",
+            )
+            # 模拟历史：当初没登记单价，落成了 unknown
+            row = (await db.execute(usage._base_query(owner="u1"))).scalars().first()
+            row.billing = "unknown"
+            await db.commit()
+
+            n = await usage.backfill_free_billing(db)
+            await db.commit()
+            assert n == 1
+
+            rows = (await db.execute(usage._base_query(owner="u1"))).scalars().all()
+            assert rows[0].billing == "free"
+            assert usage.cost_of(rows[0]) == 0.0
+        await engine.dispose()
+
+    _run(_case())
+
+
 def test_sink_payload_billing_reaches_row(tmp_path):
     """走埋点回调（真实链路）时，billing 也要落到行上。"""
     async def _case():

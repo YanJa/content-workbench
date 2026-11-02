@@ -37,6 +37,7 @@ from app.services import knowledge as kb
 from app.services import skill as skill_svc
 from app.services.agent import execute_confirmed_tool, run_chat
 from app.services.llm import get_llm
+from app.services.model_pool import resolve_for
 from app.tools.registry import registry
 
 router = APIRouter(prefix="/chat", tags=["对话"])
@@ -109,11 +110,22 @@ async def chat_stream(
 
         # 构造上下文
         provider, cf_model = await _load_chat_provider(db, owner)
+        # 真实模型能力：以模型池解析出的实际模型为准，而不是旧的 chat_provider
+        # 字符串。否则 owner 切到 zhipu/glm-4-flash 但 chat_provider 仍残留
+        # cloudflare 时，会被误判成「CF 阉割模型」，工具引导/技能全被关掉。
+        # 池里没绑定（走 legacy 通道）时回落旧的 provider 口径，保持兼容。
+        _spec = await resolve_for("chat", owner, db)
+        _supports_tools = (
+            _spec.supports_tools if _spec is not None else provider != "cloudflare"
+        )
+        _is_cf = (
+            _spec.provider_key == "cloudflare" if _spec is not None else provider == "cloudflare"
+        )
         system_prompt = build_system_prompt(
             req.platform, topic=req.topic, audience=req.audience, sub_type=req.sub_type
         )
-        if provider == "cloudflare":
-            # CF 模型没有工具可用：system 里的「工具使用纪律」段只会干扰它
+        if not _supports_tools:
+            # 实际模型不支持 function calling：system 里的「工具使用纪律」段只会干扰它
             system_prompt = strip_tool_discipline(system_prompt)
 
         # 知乎回答：动笔前先拉一次同问题下的头部回答，把「别人已经写到哪了」
@@ -128,7 +140,7 @@ async def chat_stream(
             req.platform == "zhihu"
             and normalize_sub_type("zhihu", req.sub_type) == "answer"
             and (req.zhihu_question or "").strip()
-            and provider != "cloudflare"
+            and _supports_tools
         ):
             try:
                 from app.services import zhihu as zhihu_svc
@@ -149,7 +161,7 @@ async def chat_stream(
         kb_hits: list[dict] = []
         if req.use_knowledge is not False:
             budget = (
-                settings.KB_MAX_CHARS_CF if provider == "cloudflare" else settings.KB_MAX_CHARS
+                settings.KB_MAX_CHARS_CF if _is_cf else settings.KB_MAX_CHARS
             )
             t0 = time.time()
             try:
@@ -173,7 +185,7 @@ async def chat_stream(
         # use_skills=False 时本轮连工具都不提供，前后端一致。
         skill_catalog = ""
         use_skills = req.use_skills is not False
-        if use_skills and provider != "cloudflare":
+        if use_skills and _supports_tools:
             skill_catalog = await skill_svc.build_catalog_for_owner(db, owner)
 
         messages = await conv_svc.build_context(

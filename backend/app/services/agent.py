@@ -124,16 +124,25 @@ async def run_chat(
     # schemas_for(ctx)：动态工具（activate_skill）的 enum 要按本次 owner 算，
     # 静态的 schemas() 只会给出一个 enum 为空的空壳。
     tools = await registry.schemas_for(ctx)
-    # 对话供应商：deepseek（默认，全功能）/ cloudflare（Workers AI，见下）
+    # 对话供应商：deepseek（默认，全功能）/ cloudflare（Workers AI）
     provider = ctx.get("provider") or "deepseek"
     model_override = ctx.get("model_override") or None
     convo = list(messages)
-    if spec is not None and not spec.supports_tools or provider == "cloudflare":
-        # CF 的 llama 系模型不支持 function calling：① 不带 tools（工具循环
-        # 自然不会触发，pending_tools 恒为空）；② 历史消息里的工具痕迹必须剥掉
-        # —— build_context 会把带 tool_calls 的 assistant 行展开成
-        # 「assistant(tool_calls) + role:tool」消息对，llama 收到会 400。
-        # 有正文的工具轮次保留正文（那是有效对话内容），纯工具轮次整条丢弃。
+    # 是否带工具，统一由「实际解析出来的模型」的 supports_tools 决定——
+    # 之前这里还加了 `or provider == "cloudflare"` 的硬判断，等于只要供应商
+    # 被切成 cloudflare 就一刀切禁用全部工具。但 Cloudflare 的 glm-4.x 实测
+    # 已支持 function calling，这个假设过时了，反而误伤了「模型池绑的是
+    # deepseek、只是 provider 设置残留 cloudflare」的情况，导致 query_queue
+    # 等工具整组失效。现在只认 spec.supports_tools：各模型按真实能力在
+    # catalog / _legacy_spec 里标注（llama-3.x 等流式不支持的保持 False），
+    # llm 层还有 `if tools and not spec.supports_tools` 兜底，真不支持的模型
+    # 也不会带 tools 去撞 400。
+    if spec is not None and not spec.supports_tools:
+        # 实际模型不支持 function calling：① 不带 tools（工具循环自然不触发）；
+        # ② 历史消息里的工具痕迹必须剥掉 —— build_context 会把带 tool_calls
+        # 的 assistant 行展开成「assistant(tool_calls) + role:tool」消息对，
+        # 不支持工具的模型收到 role:tool 会直接 400。有正文的工具轮次保留
+        # 正文（那是有效对话内容），纯工具轮次整条丢弃。
         tools = None
         convo = _strip_tool_traces(convo)
     sink = make_sink(

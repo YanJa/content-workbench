@@ -944,3 +944,86 @@ def test_delete_user_rejects_admin_and_self(env):
     ).json()
     r2 = client.delete(f"/api/admin/users/{other_admin['id']}", headers=_auth(admin_token))
     assert r2.status_code == 400 and "管理员" in r2.json()["detail"]
+
+
+# ---------------------------------------------------------------- 素材直链跨用户越权（P1）
+def test_asset_file_cross_user(env, monkeypatch):
+    """素材直链走 link_auth：HMAC 分支安全，但 Bearer 分支只认身份不认资源，
+    必须由路由补一道 owner 归属校验。漏掉会让任意登录用户读他人素材。"""
+    client = TestClient(app)
+    alice = _register(client).json()
+    bob = _register(client, "bob", invite="test-invite").json()
+    aid, bid = alice["user"]["id"], bob["user"]["id"]
+
+    class _FakeStorage:
+        async def get(self, key):
+            return b"fake-asset-bytes"
+
+    monkeypatch.setattr("app.routers.assets.get_storage", lambda: _FakeStorage())
+
+    key = f"assets/{aid}/202601/x.png"
+
+    # 匿名 → link_auth 无凭证 → 404（不泄露存在性）
+    assert client.get(f"/api/assets/file/{key}").status_code == 404
+    # alice 持自己身份访问自己的素材 → 200
+    assert client.get(f"/api/assets/file/{key}", headers=_auth(alice["token"])).status_code == 200
+    # bob 持自己身份访问 alice 的素材 → 归属校验拦下 → 404
+    assert client.get(f"/api/assets/file/{key}", headers=_auth(bob["token"])).status_code == 404
+
+
+# ---------------------------------------------------------------- 头像直链跨用户越权（P1）
+def test_avatar_cross_user(env):
+    """头像文件名即 uid：漏掉 user_id==owner 校验会让任意登录用户读他人头像。"""
+    client = TestClient(app)
+    alice = _register(client).json()
+    bob = _register(client, "bob", invite="test-invite").json()
+    aid, bid = alice["user"]["id"], bob["user"]["id"]
+
+    avatars_dir = env.tmp / "uploads" / "avatars"
+    avatars_dir.mkdir(parents=True, exist_ok=True)
+    (avatars_dir / f"{aid}.jpg").write_bytes(b"fake-avatar")
+
+    # 匿名 → 404
+    assert client.get(f"/api/auth/avatar/{aid}.jpg").status_code == 404
+    # alice 自己 → 200
+    assert client.get(f"/api/auth/avatar/{aid}.jpg", headers=_auth(alice["token"])).status_code == 200
+    # bob 访问 alice 头像 → 归属校验拦下 → 404
+    assert client.get(f"/api/auth/avatar/{aid}.jpg", headers=_auth(bob["token"])).status_code == 404
+
+
+# ---------------------------------------------------------------- humanize 任务轮询跨用户越权（P2）
+def test_humanize_job_owner(env):
+    """改写任务轮询：task_id 是随机 UUID，但应校验发起者归属，彻底闭合越权读数。"""
+    from app.services import humanize as humanize_svc
+
+    client = TestClient(app)
+    alice = _register(client).json()
+    bob = _register(client, "bob", invite="test-invite").json()
+    aid = alice["user"]["id"]
+
+    humanize_svc._HUMANIZE_JOBS.pop("iso_t1", None)
+    humanize_svc._HUMANIZE_JOBS["iso_t1"] = {
+        "task_id": "iso_t1",
+        "content_id": "c1",
+        "owner": aid,
+        "platform": "gzh",
+        "sub_type": "",
+        "level": "medium",
+        "status": "done",
+        "progress": 100,
+        "stage": "完成",
+        "indeterminate": False,
+        "result": None,
+        "error": "",
+        "started_at": 0,
+        "finished_at": 0,
+    }
+    try:
+        # 匿名 → 401（current_owner_id 要求登录）
+        assert client.get("/api/humanize/job/iso_t1").status_code == 401
+        # alice 自己轮询 → 200
+        assert client.get("/api/humanize/job/iso_t1", headers=_auth(alice["token"])).status_code == 200
+        # bob 轮询 alice 的任务 → owner 校验 → 404
+        assert client.get("/api/humanize/job/iso_t1", headers=_auth(bob["token"])).status_code == 404
+    finally:
+        humanize_svc._HUMANIZE_JOBS.pop("iso_t1", None)

@@ -94,10 +94,29 @@ if [ "$HAS_SUPERVISOR" = "1" ]; then
     echo "[2/3] 安装/刷新 supervisord 配置..."
     bash "$ROOT/deploy/install-autostart.sh"
 
-    echo "[3/3] 健康检查..."
-    sleep 2
-    curl -s -o /dev/null -m 5 -w "      前端 :5173  HTTP %{http_code}\n" http://127.0.0.1:5173/ || true
-    curl -s -m 5 http://127.0.0.1:8000/api/health -w "\n" | sed 's/^/      后端 :8000  /' || true
+    echo "[3/3] 健康检查（真正轮询等到端口监听，避免瞬时假象）..."
+    # 注意：supervisord 托管模式下 reload 后要等进程真正 bind 端口，
+    # 旧逻辑只 sleep 2 探一次，探到的是「刚拉起」的瞬间 200，配置一丢就退，造成假象。
+    # 这里改为轮询 LISTEN + HTTP 200，最长 60s，失败明确报错（退出码非 0）。
+    b_ok=0; f_ok=0
+    for _ in $(seq 1 20); do
+        b_listen=$(ss -ltn 2>/dev/null | grep -qE ":8000\b" && echo 1 || echo 0)
+        f_listen=$(ss -ltn 2>/dev/null | grep -qE ":5173\b" && echo 1 || echo 0)
+        b_code=$(curl -s -o /dev/null -w "%{http_code}" -m 3 http://127.0.0.1:8000/health 2>/dev/null)
+        f_code=$(curl -s -o /dev/null -w "%{http_code}" -m 3 http://127.0.0.1:5173/ 2>/dev/null)
+        echo "      探测 -> backend:8000(${b_listen}/$b_code) frontend:5173(${f_listen}/$f_code)"
+        if [ "$b_listen" = "1" ] && [ "$b_code" = "200" ] && [ "$f_listen" = "1" ] && [ "$f_code" = "200" ]; then
+            b_ok=1; f_ok=1; break
+        fi
+        sleep 3
+    done
+    if [ "$b_ok" = "1" ] && [ "$f_ok" = "1" ]; then
+        echo "      ✅ 后端 :8000 与 前端 :5173 均已真正监听并响应"
+    else
+        echo "      ❌ 服务未真正就绪（后端=$b_ok 前端=$f_ok），请查看日志："
+        echo "         tail -f /tmp/cwb-backend.log /tmp/cwb-frontend.log"
+        exit 1
+    fi
 
     echo
     echo "============================================================"

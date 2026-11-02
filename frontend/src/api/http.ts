@@ -131,9 +131,51 @@ http.interceptors.response.use(
  * stale_chunks 做二次确认了。这里 message 用人类可读文案，原始对象挂在
  * `err.detail` 上给需要细粒度处理的调用方。
  */
+/** 422 校验错误里高频字段的中文名（其余字段用原文包「」展示） */
+const FIELD_LABELS: Record<string, string> = {
+  username: '用户名',
+  password: '密码',
+  invite_code: '邀请码',
+  old_password: '原密码',
+  new_password: '新密码',
+  email: '邮箱',
+}
+
+function fieldLabel(loc: unknown[]): string {
+  // loc 形如 ['body', 'password']，取最后一段字符串（跳过数组下标这类数字段）
+  for (let i = loc.length - 1; i >= 0; i--) {
+    const seg = loc[i]
+    if (typeof seg === 'string') return FIELD_LABELS[seg] ?? `「${seg}」`
+  }
+  return '字段'
+}
+
+/** FastAPI 422 的 detail 是 pydantic 错误数组，直接 stringify 会糊一脸天书
+ *  （如 string_too_short / min_length=1）。翻成「密码不能为空」这种人话；
+ *  只展示前 3 条，多余的说个总数。 */
+function humanizeValidation(items: unknown[]): string {
+  const parts = items.slice(0, 3).map((raw) => {
+    const it = (raw ?? {}) as Record<string, unknown>
+    const loc = Array.isArray(it.loc) ? (it.loc as unknown[]) : []
+    const label = fieldLabel(loc)
+    const type = String(it.type ?? '')
+    const ctx = (it.ctx ?? {}) as Record<string, unknown>
+    if (type === 'string_too_short') {
+      const min = typeof ctx.min_length === 'number' ? ctx.min_length : 0
+      return min > 1 ? `${label}至少 ${min} 个字符` : `${label}不能为空`
+    }
+    if (type === 'string_too_long') return `${label}过长`
+    if (type === 'missing') return `缺少${label}`
+    return `${label}填写有误`
+  })
+  const more = items.length > 3 ? ` 等 ${items.length} 处问题` : ''
+  return `${parts.join('；')}${more}`
+}
+
 function toApiError(detail: unknown, status?: number): Error {
   let msg = '请求失败'
   if (typeof detail === 'string') msg = detail
+  else if (Array.isArray(detail)) msg = humanizeValidation(detail)
   else if (detail && typeof detail === 'object') {
     const d = detail as Record<string, unknown>
     msg = typeof d.message === 'string' ? d.message : JSON.stringify(detail)

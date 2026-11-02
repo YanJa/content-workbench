@@ -5,7 +5,7 @@
  * 这是整个工作台的核心页面，也是「AI Agent 嵌入」的落地形态：
  * 用户用自然语言提需求 → AI 生成内容 → 按需调用工具落库/推送。
  */
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onActivated, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   NButton,
@@ -47,6 +47,7 @@ import {
   type ZhihuQuestion,
 } from '@/api/zhihu'
 import { fetchWeiboHot } from '@/api/weibo'
+import { resolveModel, type ResolvedModel } from '@/api/modelPool'
 import type { UsageBreakdown } from '@/api/usage'
 import type { Platform } from '@/types'
 import MarkdownView from '@/components/MarkdownView.vue'
@@ -95,6 +96,36 @@ async function loadCost(
   }
 }
 
+/**
+ * 当前对话实际会用到哪个模型（解析自模型池「对话」绑定，与 llm._pick 同口径）。
+ * 仅在「模型发生过更换」时才提示「下一条消息将用谁」；从未更换则不显示，
+ * 避免一进对话页就常驻一条对用户无用的提示。
+ */
+const chatResolved = ref<ResolvedModel | null>(null)
+const baselineKey = ref<string | null>(null) // 首次进入本页时的模型基线
+const modelChanged = ref(false) // 相比基线是否更换过
+
+function resolvedKey(r: ResolvedModel): string {
+  return `${r.resolved}|${r.fell_back}`
+}
+
+async function loadChatResolved() {
+  try {
+    const r = await resolveModel('chat')
+    if (baselineKey.value === null) {
+      // 只在首次进入时记基线；之后只做对比，绝不回写基线，
+      // 否则「回到本页」会拿已更换的模型覆盖基线，导致提示永不出现。
+      baselineKey.value = resolvedKey(r)
+      modelChanged.value = false
+    } else {
+      modelChanged.value = resolvedKey(r) !== baselineKey.value
+    }
+    chatResolved.value = r
+  } catch {
+    // 解析失败不影响对话本身，静默忽略
+  }
+}
+
 watch(
   () => chat.messages.filter((m) => m.usage && !m.streaming && !costCache.value[m.id]).length,
   () => {
@@ -120,6 +151,8 @@ const platformOptions = [
   { label: '📕 小红书', value: 'xiaohongshu' },
   { label: '🎵 抖音', value: 'douyin' },
   { label: '✍️ 知乎', value: 'zhihu' },
+  { label: '📱 今日头条', value: 'toutiao' },
+  { label: '🔍 百家号', value: 'baijiahao' },
 ]
 
 const scene = ref<string>('')
@@ -137,9 +170,9 @@ const ZHIHU_SUB_OPTIONS = [
 ]
 /** 一句话说明这个形态是干嘛的 —— 光看「回答/文章/想法」看不出该选哪个 */
 const ZHIHU_HINT: Record<string, string> = {
-  answer: '回答 600-2000 字，结论先行，要写出比高赞回答多的那部分',
-  article: '专栏长文 1500-6000 字，结构化写透一个话题',
-  idea: '想法 50-300 字，只讲一个观点 + 话题标签',
+  answer: '像被人认真问到时答一句——先给结论，再讲你真经历过的事，别复述谁都懂的常识',
+  article: '当成能收藏的长文来写，把一个话题讲透，有自己的判断和可照着做的步骤',
+  idea: '随手一条短想法，只说一个你刚冒出来的观察，带上话题标签就行',
 }
 const zhihuSub = ref<string>('answer')
 
@@ -155,10 +188,110 @@ const GZH_SUB_OPTIONS = [
   { label: '贴图', value: 'tietu' },
 ]
 const GZH_HINT: Record<string, string> = {
-  article: '图文文章 1200-3500 字，可排版富文本，走草稿箱',
-  tietu: '贴图 100-400 字短文案 + 3-9 张图，纯文本直接粘',
+  article: '写给订阅你的读者看的长文，能排版，适合慢慢读、能收藏',
+  tietu: '九宫格图文，字不用多，配图要有画面感，像给朋友发的一组图',
 }
 const gzhSub = ref<string>('article')
+
+/**
+ * 今日头条子形态。头条「图文文章」与「微头条」是两种东西：
+ *   - 图文（article）：有标题、800-1500 字长文，靠标题+封面进信息流，生命周期长；
+ *   - 微头条（weitoutiao）：没有独立标题，信息流只露前三行，300-800 字，
+ *     生命周期 1-7 天。篇幅和写法完全不同，必须显式选。
+ */
+const TOUTIAO_SUB_OPTIONS = [
+  { label: '图文', value: 'article' },
+  { label: '微头条', value: 'weitoutiao' },
+]
+const TOUTIAO_HINT: Record<string, string> = {
+  article: '有标题的长文，混在信息流里靠标题和开头留人，写点实在的',
+  weitoutiao: '没标题，前三行决定人家划不划走，像在头条上跟陌生人唠一句',
+}
+const toutiaoSub = ref<string>('article')
+
+/**
+ * 百家号子形态：图文（吃百度搜索长尾的 SEO 长文）与动态（短内容，走信息流）。
+ * 与头条同理，篇幅差一个量级，分开选。
+ */
+const BAIJIAHAO_SUB_OPTIONS = [
+  { label: '图文', value: 'article' },
+  { label: '动态', value: 'dongtai' },
+]
+const BAIJIAHAO_HINT: Record<string, string> = {
+  article: '偏搜索的长文，关键词往前放，让人搜得到、读得完',
+  dongtai: '短动态，一个观点配张图，随手发，重在快和真实',
+}
+const baijiahaoSub = ref<string>('article')
+
+/**
+ * 当前场景的子形态（无子形态的平台返回空串）。
+ *
+ * 抽成 computed 而不是在发送/模板里各写一遍三元嵌套：平台从 4 个涨到 6 个
+ * 之后，嵌套三元已经难读，再复制一份到模板必然埋 bug。
+ */
+const currentSubOptions = computed(() => {
+  switch (scene.value) {
+    case 'zhihu':
+      return ZHIHU_SUB_OPTIONS
+    case 'gzh':
+      return GZH_SUB_OPTIONS
+    case 'toutiao':
+      return TOUTIAO_SUB_OPTIONS
+    case 'baijiahao':
+      return BAIJIAHAO_SUB_OPTIONS
+    default:
+      return []
+  }
+})
+
+const currentSubHint = computed(() => {
+  switch (scene.value) {
+    case 'zhihu':
+      return ZHIHU_HINT
+    case 'gzh':
+      return GZH_HINT
+    case 'toutiao':
+      return TOUTIAO_HINT
+    case 'baijiahao':
+      return BAIJIAHAO_HINT
+    default:
+      return {}
+  }
+})
+
+/** 当前场景选中的子形态（供 v-model 双向绑定） */
+const currentSub = computed({
+  get(): string {
+    switch (scene.value) {
+      case 'zhihu':
+        return zhihuSub.value
+      case 'gzh':
+        return gzhSub.value
+      case 'toutiao':
+        return toutiaoSub.value
+      case 'baijiahao':
+        return baijiahaoSub.value
+      default:
+        return ''
+    }
+  },
+  set(v: string) {
+    switch (scene.value) {
+      case 'zhihu':
+        zhihuSub.value = v
+        break
+      case 'gzh':
+        gzhSub.value = v
+        break
+      case 'toutiao':
+        toutiaoSub.value = v
+        break
+      case 'baijiahao':
+        baijiahaoSub.value = v
+        break
+    }
+  },
+})
 
 // ---- 会话重命名 / 删除（列表 UI 在 ConvList 里，这里只处理数据动作）----
 async function onRename(id: string, title: string) {
@@ -356,9 +489,35 @@ const quickPrompts = computed(() => {
         '围绕「选题枯竭」写一条带个人观察的知乎想法',
       ]
     return [
-      '回答「新人怎么开始做内容运营」，要写出跟高赞回答不一样的东西',
+      '回答「新人怎么开始做内容运营」，就当自己真被问到了，说点你当年的真实体会',
       '写一个关于「内容运营每天该干什么」的知乎回答，结论放在开头',
       '回答「做内容运营需要什么能力」，给出可复现的操作步骤',
+    ]
+  }
+  if (scene.value === 'toutiao') {
+    if (toutiaoSub.value === 'weitoutiao')
+      return [
+        '写一条微头条，讲一个普通人对「内容运营」的观察，300 字左右',
+        '围绕「做内容为什么越做越累」写一条微头条，第一行就要抓人',
+        '写一条微头条，分享一个今天刚踩的运营小坑',
+      ]
+    return [
+      '写一篇头条文章，讲新手怎么做内容运营，要有真实案例',
+      '把「选题比产量重要」写成一篇文章，道理后面跟一个具体例子',
+      '写一篇头条图文，主题是上班族如何用碎片时间做内容',
+    ]
+  }
+  if (scene.value === 'baijiahao') {
+    if (baijiahaoSub.value === 'dongtai')
+      return [
+        '写一条百家号动态，点评一个内容运营的小趋势，150 字左右',
+        '写一条动态，分享一个提高选题效率的小方法',
+        '写一条百家号动态，讲一个刚发现的数据现象',
+      ]
+    return [
+      '写一篇百家号图文，主题是「内容运营入门」，关键词前置',
+      '写一篇百家号 SEO 长文，讲职场人如何做自媒体，1500 字左右',
+      '写一篇百家号文章，主题是内容选题方法，要有可复现的步骤',
     ]
   }
   return ['帮我写一篇公众号文章', '队列里现在有什么？', '这个月的内容选题有什么建议？']
@@ -369,12 +528,7 @@ async function onSend() {
   if (!text || chat.streaming || sendGate.blocked.value) return
   input.value = ''
   chat.platform = (scene.value || null) as Platform | null
-  chat.subType =
-    scene.value === 'zhihu'
-      ? zhihuSub.value
-      : scene.value === 'gzh'
-        ? gzhSub.value
-        : ''
+  chat.subType = currentSub.value
   // 只有「知乎 + 回答」才带归属问题：文章/想法挂在自己专栏/动态下，没有归属问题
   if (!(scene.value === 'zhihu' && zhihuSub.value === 'answer')) {
     chat.zhihuQuestion = ''
@@ -494,7 +648,7 @@ function useRecommendedQuestion(q: ZhihuQuestion) {
     zhihuSub.value = 'answer'
   }
   chat.zhihuQuestion = q.url
-  input.value = `回答知乎问题「${q.title}」：结论放在开头，并写出比现有高赞回答多的那部分`
+  input.value = `回答知乎问题「${q.title}」：就当自己真被问到了，用平时聊天的口气说实话。从你自己的经历和感受聊起——当时怎么选的、踩过什么坑、现在回头看值不值，别端着也别跟谁比优劣。结论可以放开头，300 字左右，像写给一个正纠结的朋友，别写成标准答案。`
   inspireShow.value = false
   void nextTick(() => {
     document.querySelector<HTMLTextAreaElement>('.composer textarea')?.focus()
@@ -550,21 +704,31 @@ function topicPrompt(title: string, source: 'zhihu' | 'weibo' = 'zhihu'): string
   const srcWord = source === 'weibo' ? '微博热搜话题' : '知乎热榜话题'
   if (scene.value === 'gzh') {
     if (gzhSub.value === 'tietu')
-      return `${srcWord}${t}很适合贴图，帮我写一条 100 字左右的短文案，再想 3 个首图标题`
-    return `围绕${srcWord}${t}写一篇公众号文章，先给我 3 个不同的切入角度`
+      return `${srcWord}${t}适合做成贴图，帮我写一条 100 字左右的短文案，再配 3 个有画面感的首图标题`
+    return `围绕${srcWord}${t}写一篇公众号文章，先给我 3 个不一样的切入角度，挑一个你最想写的`
   }
   if (scene.value === 'xiaohongshu')
-    return `${srcWord}${t}很适合小红书，帮我写一篇观点笔记，标题要有点击欲`
+    return `${srcWord}${t}很适合发小红书，帮我写一篇像真人分享的观点笔记，标题要让人想点进来`
   if (scene.value === 'douyin')
-    return `把${srcWord}${t}拆成一条 60 秒口播脚本，前 3 秒要有钩子`
+    return `把${srcWord}${t}做成一条 60 秒口播，开头 3 秒就得把人留住，说话像平时聊天别念稿`
   if (scene.value === 'zhihu') {
     if (zhihuSub.value === 'article')
-      return `就${srcWord}${t}写一篇专栏文章，要有自己的判断和可复现的方法`
+      return `就${srcWord}${t}写一篇知乎专栏，得是你自己真的想通的，最好还能给别人一套能照做的法子`
     if (zhihuSub.value === 'idea')
-      return `就${srcWord}${t}写一条想法，只讲一个观察，100 字左右`
-    return `以${srcWord}${t}为背景，写一个回答：结论放在开头，并写出比现有高赞回答多的那部分`
+      return `就${srcWord}${t}写一条知乎想法，只说一个你刚注意到的细节，100 字上下就行`
+    return `以${srcWord}${t}为背景，写个回答：就当自己真被问到了，用聊天的口气说实话，从你自己的经历和感受聊起，别端着也别比优劣，300 字左右，像写给一个正纠结的朋友。`
   }
-  return `我想写${srcWord}${t}，帮我分析有哪些切入角度，各自适合什么平台`
+  if (scene.value === 'toutiao') {
+    if (toutiaoSub.value === 'weitoutiao')
+      return `就${srcWord}${t}写一条微头条，没标题，前三行就把话说到位，像跟陌生人唠一句`
+    return `就${srcWord}${t}写一篇头条图文，得有个能留住人的标题和开头，写点实在的，别空谈`
+  }
+  if (scene.value === 'baijiahao') {
+    if (baijiahaoSub.value === 'dongtai')
+      return `就${srcWord}${t}写一条百家号动态，一个观点配张图，随手发，重在真实`
+    return `就${srcWord}${t}写一篇百家号长文，关键词往前放，让人搜得到、读得完`
+  }
+  return `我想拿${srcWord}${t}写点东西，先帮我想几个能写的切入角度，再说说各自更适合发哪个平台`
 }
 
 function useHotTopic(t: InspireItem, source: 'zhihu' | 'weibo' = 'zhihu') {
@@ -613,6 +777,60 @@ const savePlatform = ref<Platform>('gzh')
 const saveZhihuSub = ref<string>('answer')
 /** 保存弹窗里的公众号子形态（article 图文 / tietu 贴图，同上各自独立） */
 const saveGzhSub = ref<string>('article')
+/** 保存弹窗里的头条子形态（article 图文 / weitoutiao 微头条） */
+const saveToutiaoSub = ref<string>('article')
+/** 保存弹窗里的百家号子形态（article 图文 / dongtai 动态） */
+const saveBaijiahaoSub = ref<string>('article')
+
+/** 保存弹窗里当前平台可选的子形态（无子形态的平台返回空数组） */
+const saveSubOptions = computed(() => {
+  switch (savePlatform.value) {
+    case 'zhihu':
+      return ZHIHU_SUB_OPTIONS
+    case 'gzh':
+      return GZH_SUB_OPTIONS
+    case 'toutiao':
+      return TOUTIAO_SUB_OPTIONS
+    case 'baijiahao':
+      return BAIJIAHAO_SUB_OPTIONS
+    default:
+      return []
+  }
+})
+
+/** 保存弹窗里当前平台选中的子形态（v-model 双向绑定） */
+const saveSub = computed({
+  get(): string {
+    switch (savePlatform.value) {
+      case 'zhihu':
+        return saveZhihuSub.value
+      case 'gzh':
+        return saveGzhSub.value
+      case 'toutiao':
+        return saveToutiaoSub.value
+      case 'baijiahao':
+        return saveBaijiahaoSub.value
+      default:
+        return ''
+    }
+  },
+  set(v: string) {
+    switch (savePlatform.value) {
+      case 'zhihu':
+        saveZhihuSub.value = v
+        break
+      case 'gzh':
+        saveGzhSub.value = v
+        break
+      case 'toutiao':
+        saveToutiaoSub.value = v
+        break
+      case 'baijiahao':
+        saveBaijiahaoSub.value = v
+        break
+    }
+  },
+})
 /** 知乎回答挂在哪个问题下（传 URL 或纯 ID，后端归一）。留空不影响保存 */
 const saveZhihuQuestion = ref('')
 const saveTitle = ref('')
@@ -665,6 +883,8 @@ function openSaveModal(msg: { id: string; content: string }) {
   savePlatform.value = (scene.value || 'gzh') as Platform
   saveZhihuSub.value = zhihuSub.value || 'answer'
   saveGzhSub.value = gzhSub.value || 'article'
+  saveToutiaoSub.value = toutiaoSub.value || 'article'
+  saveBaijiahaoSub.value = baijiahaoSub.value || 'article'
   // 已选定了待答问题（chat.zhihuQuestion 存的是问题直链）就预填进去，
   // 这样保存队列时会带上归属问题，队列页「去知乎发布」能直接定位到该问题下。
   // 没选则留空（用户仍可手填），articles/idea 不需要归属问题，填了也不会用。
@@ -697,7 +917,11 @@ async function doSaveToQueue() {
           }
         : savePlatform.value === 'gzh'
           ? { sub_type: saveGzhSub.value }
-          : {}),
+          : savePlatform.value === 'toutiao'
+            ? { sub_type: saveToutiaoSub.value }
+            : savePlatform.value === 'baijiahao'
+              ? { sub_type: saveBaijiahaoSub.value }
+              : {}),
     })
     if (res.ok) {
       savedMap.value[msg.id] = res.content_id
@@ -789,6 +1013,12 @@ onMounted(async () => {
   // 只在从队列带 ?conversation_id 跳回时才进。两条路径都不覆盖普通菜单切换，导致回到
   // 对话页后 savedMap 仍是空，所有 AI 回复都错误地显示「保存到队列」。这里挂载即拉一次。
   void refreshSavedMap()
+  void loadChatResolved()
+})
+onActivated(() => {
+  // 从模型池等其它页切回对话时，模型池可能已改动 —— 立刻刷新「当前模型」指示，
+  // 让用户马上看到切换是否生效，不必发一条消息来验证。
+  void loadChatResolved()
 })
 onBeforeUnmount(() => {
   window.removeEventListener('resize', syncViewport)
@@ -870,31 +1100,21 @@ async function restoreFromQueue() {
               style="width: 150px"
               :disabled="chat.streaming"
             />
-            <!-- 子形态：知乎三种（回答/文章/想法）、公众号两种（图文/贴图），
-                 篇幅差一个数量级，只在选了这两个平台时出现 -->
+            <!-- 子形态：知乎三形态、公众号两形态、头条两形态、百家号两形态。
+                 篇幅差一个数量级，只在有子形态的平台出现——多一个永远空着的
+                 下拉，只会让人怀疑自己漏填了什么。 -->
             <NSelect
-              v-if="scene === 'zhihu'"
-              v-model:value="zhihuSub"
-              :options="ZHIHU_SUB_OPTIONS"
+              v-if="currentSubOptions.length"
+              v-model:value="currentSub"
+              :options="currentSubOptions"
               size="small"
               style="width: 96px"
               :disabled="chat.streaming"
             />
-            <NSelect
-              v-else-if="scene === 'gzh'"
-              v-model:value="gzhSub"
-              :options="GZH_SUB_OPTIONS"
-              size="small"
-              style="width: 88px"
-              :disabled="chat.streaming"
-            />
             <span v-if="scene !== 'zhihu' || !chat.zhihuQuestion" class="toolbar-hint">
               {{
-                scene === 'zhihu'
-                  ? ZHIHU_HINT[zhihuSub]
-                  : scene === 'gzh'
-                    ? GZH_HINT[gzhSub]
-                    : '平台会决定 AI 的写作规则与格式；留空则为通用对话'
+                currentSubHint[currentSub] ||
+                '平台会决定 AI 的写作规则与格式；留空则为通用对话'
               }}
             </span>
             <!-- 归属问题：显示出来而不是默默生效 —— 用户得知道这一轮会先去看
@@ -1100,6 +1320,10 @@ async function restoreFromQueue() {
                 （入 {{ m.usage.prompt_tokens }} / 出 {{ m.usage.completion_tokens }}<template
                   v-if="m.usage.reasoning_tokens"
                 > · 思维链 {{ m.usage.reasoning_tokens }}</template>）
+                · <span
+                  class="model-tag"
+                  :title="'本次回复实际使用的模型（可能已被自动切换到备选链）'"
+                  >{{ costCache[m.id]?.label || m.usage.model || '未知模型' }}</span>
                 <template v-if="costCache[m.id]">
                   ·
                   <span
@@ -1117,7 +1341,7 @@ async function restoreFromQueue() {
                     <template
                       v-if="costCache[m.id].billing !== 'free' && costCache[m.id].is_peak"
                     >· 高峰</template>
-                    <template v-if="!costCache[m.id].known">· 按 {{ costCache[m.id].model }} 估价</template>
+                    <template v-if="!costCache[m.id].known">· 单价未登记，按兜底价估算</template>
                   </span>
                 </template>
               </div>
@@ -1152,6 +1376,29 @@ async function restoreFromQueue() {
             </div>
           </div>
         </NScrollbar>
+
+        <!-- 当前对话模型：解析自模型池「对话」绑定，与 llm._pick 同口径。
+             仅在模型发生过更换时才提示，避免一进对话页就常驻无用提示。 -->
+        <div v-if="chatResolved && modelChanged" class="current-model">
+          <span class="cm-label">下一条消息将用</span>
+          <NTag
+            :type="chatResolved.fell_back ? 'warning' : (chatResolved.billing === 'free' ? 'success' : 'default')"
+            :bordered="false"
+            size="small"
+          >
+            {{ chatResolved.label }}
+          </NTag>
+          <NTooltip v-if="chatResolved.fell_back" placement="top">
+            <template #trigger>
+              <span class="cm-fallback">模型池未配置，已回落对话设置</span>
+            </template>
+            <span style="font-size: 12px">
+              模型池「对话」槽没有可用模型（可能主模型被禁用 / 额度耗尽 / 缺密钥），
+              所以这条消息实际走「系统设置 → AI 对话」里的通道：
+              {{ chatResolved.legacy_provider }}<template v-if="chatResolved.legacy_model"> · {{ chatResolved.legacy_model }}</template>。
+            </span>
+          </NTooltip>
+        </div>
 
         <!-- 知识库素材 / 技能包开关：都默认开，都只作用于「这一句」。
              关素材 → 本轮不召回；
@@ -1236,13 +1483,15 @@ async function restoreFromQueue() {
               { label: '📕 小红书', value: 'xiaohongshu' },
               { label: '🎵 抖音', value: 'douyin' },
               { label: '✍️ 知乎', value: 'zhihu' },
+              { label: '📱 今日头条', value: 'toutiao' },
+              { label: '🔍 百家号', value: 'baijiahao' },
             ]"
           />
         </NFormItem>
         <!-- 知乎专属：形态 + 归属问题（回答要挂在具体问题下，填了队列页直接给深链） -->
         <template v-if="savePlatform === 'zhihu'">
           <NFormItem label="形态">
-            <NSelect v-model:value="saveZhihuSub" :options="ZHIHU_SUB_OPTIONS" />
+            <NSelect v-model:value="saveSub" :options="saveSubOptions" />
           </NFormItem>
           <NFormItem v-if="saveZhihuSub === 'answer'" label="问题链接">
             <NInput
@@ -1251,9 +1500,9 @@ async function restoreFromQueue() {
             />
           </NFormItem>
         </template>
-        <!-- 公众号子形态：图文走富文本排版，贴图只做文本规整 -->
-        <NFormItem v-else-if="savePlatform === 'gzh'" label="形态">
-          <NSelect v-model:value="saveGzhSub" :options="GZH_SUB_OPTIONS" />
+        <!-- 其余平台（公众号 / 头条 / 百家号）统一走通用子形态下拉 -->
+        <NFormItem v-else-if="saveSubOptions.length" label="形态">
+          <NSelect v-model:value="saveSub" :options="saveSubOptions" />
         </NFormItem>
         <NFormItem label="标题">
           <NInput v-model:value="saveTitle" placeholder="给这份内容起个标题" />
@@ -1265,7 +1514,11 @@ async function restoreFromQueue() {
             ? '知乎没有开放发布接口：保存后去队列页排版，再复制富文本到知乎编辑器手动发布（队列页会给出对应入口）。'
             : savePlatform === 'gzh' && saveGzhSub === 'tietu'
               ? '贴图保存后进入队列（待加工），去队列页规整文案、配 3-9 张图，再复制纯文本发布图片消息。'
-              : '保存后进入发布队列（状态：待加工），去队列页做排版、配图，再推公众号草稿箱。'
+              : savePlatform === 'toutiao'
+                ? '头条保存后进入队列（待加工），去队列页规整为纯文本、配图，再复制到头条号后台发布。'
+                : savePlatform === 'baijiahao'
+                  ? '百家号保存后进入队列（待加工），去队列页规整为纯文本、配图，再复制到百家号后台发布。'
+                  : '保存后进入发布队列（状态：待加工），去队列页做排版、配图，再推公众号草稿箱。'
         }}
       </div>
       <template #footer>
@@ -1765,6 +2018,11 @@ async function restoreFromQueue() {
   cursor: help;
 }
 
+.usage-line .model-tag {
+  color: var(--app-text-2);
+  cursor: help;
+}
+
 .cursor {
   color: var(--app-primary);
   animation: blink 1s step-end infinite;
@@ -1857,6 +2115,25 @@ async function restoreFromQueue() {
   display: flex;
   gap: 16px;
   flex-wrap: wrap;
+}
+
+/* 当前对话模型指示：输入框上方，实时反映模型池「对话」绑定解析结果 */
+.current-model {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--app-text-2);
+  padding-bottom: 2px;
+}
+.cm-label {
+  opacity: 0.75;
+}
+.cm-fallback {
+  color: var(--app-amber, #f0a020);
+  cursor: help;
+  text-decoration: underline dotted;
 }
 
 .kb-toggle {

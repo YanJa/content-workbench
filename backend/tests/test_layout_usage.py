@@ -164,7 +164,9 @@ def test_xiaohongshu_layout_records_usage(db_env, monkeypatch):
             )
             db.add(content)
             await db.commit()
-            return await layout_mod._layout_xiaohongshu(db, content)
+            # 小红书走纯文本规整分支（与头条/百家号共用 _layout_plaintext）。
+            # 早前那个 _layout_xiaohongshu 已在「纯文本分支统一」时合并进来。
+            return await layout_mod._layout_plaintext(db, content, "xiaohongshu")
 
     asyncio.run(_body())
 

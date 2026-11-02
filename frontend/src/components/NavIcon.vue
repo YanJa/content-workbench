@@ -17,6 +17,12 @@ type Node = [string, Record<string, string | number>]
 const NODES: Record<string, Node[]> = {
   // 对话气泡
   chat: [['path', { d: 'M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z' }]],
+  // 素材库：相框 + 山 + 太阳（图片的通用图形）
+  assets: [
+    ['rect', { x: '3', y: '3', width: '18', height: '18', rx: '2', ry: '2' }],
+    ['circle', { cx: '8.5', cy: '8.5', r: '1.5' }],
+    ['polyline', { points: '21 15 16 10 5 21' }],
+  ],
   // 队列列表（三条横线 + 左侧节点）
   queue: [
     ['line', { x1: '8', y1: '6', x2: '21', y2: '6' }],

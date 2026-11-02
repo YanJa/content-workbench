@@ -170,7 +170,11 @@ const bindingDraft = ref<Record<string, { primary: string; fallbacks: string[] }
 
 function draftOf(b: ModelBinding) {
   if (!bindingDraft.value[b.feature]) {
-    bindingDraft.value[b.feature] = { primary: b.primary, fallbacks: [...b.fallbacks] }
+    // 兜底剔除历史脏数据：主模型若曾被存进备选链，取草稿时先清掉
+    bindingDraft.value[b.feature] = {
+      primary: b.primary,
+      fallbacks: (b.fallbacks || []).filter((f) => f !== b.primary),
+    }
   }
   return bindingDraft.value[b.feature]
 }
@@ -243,7 +247,11 @@ const bindingColumns = computed<DataTableColumns<ModelBinding>>(() => [
             clearable: true,
             filterable: true,
             onUpdateValue: (v: string) => {
-              draftOf(r).primary = v ?? ''
+              const p = v ?? ''
+              draftOf(r).primary = p
+              // 主模型若原本在备选链里，从备选链移除：主模型优先级最高，
+              // 留着只会在界面上显示成裸 id（选项已被过滤掉，标签拿不到 label）
+              if (p) draftOf(r).fallbacks = draftOf(r).fallbacks.filter((f) => f !== p)
             },
           })
         : h('span', r.primary_label || r.primary || '未绑定'),

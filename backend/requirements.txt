@@ -5,6 +5,12 @@ uvicorn[standard]==0.34.0
 # ---- 配置与校验 ----
 pydantic==2.10.4
 pydantic-settings==2.7.0
+# 认证原语：bcrypt 直接哈希密码（不用 passlib，避免与 bcrypt 5.x 的兼容坑），
+# PyJWT 签发/校验 JWT。两者此前漏声明，导致全新 venv 启动报 ModuleNotFoundError。
+bcrypt==5.0.0
+PyJWT==2.15.1
+# 表单/文件上传（FastAPI 的 UploadFile/Form 必需，否则启动报 RuntimeError）
+python-multipart==0.0.33
 
 # ---- 数据库（异步） ----
 sqlalchemy==2.0.36
@@ -22,6 +28,10 @@ openai==1.59.6
 httpx==0.28.1
 # SOCKS5 支持：微信请求走固定出口代理时必需（httpx[socks]，见 deploy/proxy-guard.sh）
 socksio==1.0.0
+
+# ---- 对象存储（火山 TOS，STORAGE_BACKEND=s3 时启用） ----
+# S3 兼容 SDK，同步客户端 + 线程池异步包装（见 services/storage.py）。
+boto3==1.43.123
 
 # ---- 视频渲染（真实管线，必需） ----
 # 配音走 edge-tts（免费），字幕轴直接用它的 SentenceBoundary（不再装 faster-whisper），

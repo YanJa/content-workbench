@@ -690,6 +690,62 @@ async def list_bindings(
     return {"items": out}
 
 
+@router.get("/resolve/{feature}")
+async def resolve_feature(
+    feature: str,
+    db: AsyncSession = Depends(get_db),
+    owner: str = Depends(current_owner_id),
+    _user: User = Depends(current_user),
+):
+    """解析某功能槽「实际会用到哪个模型」，与对话/排版等真实调用同口径
+    （owner 感知，含个人 Key 覆盖；走的就是 llm._pick 同一条 resolve_for）。
+
+    前端据此在对话页实时显示「下一条消息将用哪个模型」，模型池切换后不必
+    再发一条消息来确认是否生效；池里为空时如实报告「回落到对话设置」。
+    """
+    if feature not in pool.FEATURES:
+        raise HTTPException(400, f"未知功能槽：{feature}")
+    spec = await pool.resolve_for(feature, owner, db)
+    if spec is not None:
+        return {
+            "feature": feature,
+            "resolved": spec.model,
+            "label": spec.display or spec.model,
+            "provider_key": spec.provider_key,
+            "billing": spec.billing,
+            "fell_back": False,
+            "legacy_provider": "",
+            "legacy_model": "",
+        }
+    # 池里没有可用条目 → 与 llm._pick 一样回落老路径（目前只有 chat 有老路径）。
+    legacy_provider = ""
+    legacy_model = ""
+    if feature == "chat":
+        from app.models.settings import AppSetting
+
+        rows = (
+            await db.execute(
+                select(AppSetting).where(
+                    AppSetting.owner == owner,
+                    AppSetting.key.in_(("chat_provider", "cloudflare_chat_model")),
+                )
+            )
+        ).scalars().all()
+        kv = {r.key: (r.value or "") for r in rows}
+        legacy_provider = kv.get("chat_provider") or "deepseek"
+        legacy_model = kv.get("cloudflare_chat_model") or ""
+    return {
+        "feature": feature,
+        "resolved": "",
+        "label": "未配置（回落对话设置）",
+        "provider_key": legacy_provider,
+        "billing": "",
+        "fell_back": True,
+        "legacy_provider": legacy_provider,
+        "legacy_model": legacy_model,
+    }
+
+
 @router.put("/bindings/{feature}")
 async def save_binding(
     feature: str,
@@ -709,6 +765,11 @@ async def save_binding(
     primary = str(payload.get("primary") or "").strip()
     fallbacks = [str(x) for x in (payload.get("fallbacks") or []) if str(x).strip()]
     force = bool(payload.get("force"))
+
+    # 主模型不允许同时落在备选链里：主模型优先级最高，留着既冗余又会让界面
+    # 把它显示成裸 id。前端在切换主模型时已即时剔除，这里再兜底一次保证落库干净。
+    if primary and primary in fallbacks:
+        fallbacks = [f for f in fallbacks if f != primary]
 
     snap = pool.snapshot()
     main = snap.catalog.get(primary) if primary else None

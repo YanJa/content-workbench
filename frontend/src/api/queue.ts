@@ -86,6 +86,21 @@ export async function updateContent(
   return data
 }
 
+/**
+ * 改排版产物里的纯文本（头条号 / 百家号 / 贴图文案）。
+ *
+ * 只动 `layouts[platform].text` 这一个键 —— 纯文本平台的产物就是这一段字，
+ * 用户排版完手改两句是常态，但没必要为此整包覆盖 `layouts`。
+ */
+export async function updatePlaintext(
+  contentId: string,
+  platform: 'gzh' | 'xiaohongshu' | 'zhihu' | 'toutiao' | 'baijiahao',
+  text: string,
+): Promise<ContentItem> {
+  const { data } = await http.patch(`/content/items/${contentId}/plaintext`, { platform, text })
+  return data
+}
+
 export interface SaveToQueuePayload {
   platform: string
   title: string

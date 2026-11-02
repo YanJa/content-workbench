@@ -20,6 +20,15 @@ const loading = ref(false)
 
 async function onSubmit() {
   err.value = ''
+  // 空值前置校验：浏览器自动填充可能只填了用户名，空密码不打接口
+  if (!username.value.trim()) {
+    err.value = '请输入用户名'
+    return
+  }
+  if (!password.value) {
+    err.value = '请输入密码'
+    return
+  }
   loading.value = true
   try {
     await auth.login(username.value.trim(), password.value)

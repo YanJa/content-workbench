@@ -21,6 +21,9 @@ import time
 from app.services import zhuque as zhuque_svc
 
 _BAND_COLORS = {"human": "#7bd88f", "suspect": "#f6c15a", "ai": "#f27b8e"}
+
+#: 报告单抬头里「检测对象」的写法。默认检排版产物 —— 真正发出去的是它。
+_SOURCE_LABELS = {"layout": "排版产物（待发布的那一份）", "body": "源文（未排版 Markdown）"}
 _LABEL_COLORS = {"人工特征": "#7bd88f", "疑似AI": "#f6c15a", "AI特征": "#f27b8e"}
 
 # 报告单头部「平台：公众号 · 贴图」用的展示名（与前端 SUB_NAME 同口径）
@@ -218,12 +221,15 @@ def render_report(
     zhuque_result: dict | None,
     platform: str = "",
     sub_type: str = "",
+    source: str = "layout",
     generated_at: int | None = None,
 ) -> str:
     """生成完整报告单 HTML。
 
     scan: humanize.scan() 的结果（可 None）
     zhuque_result: zhuque.classify() 的结果（可 None 或 ok=False——降级为纯本地报告）
+    source: 检的是哪一份（layout=排版产物 / body=源文）。必须写进报告单——
+    两张单子长得一模一样却口径不同，拿错分数去决策就是事故。
     """
     total_chars = len("".join((text or "").split()))
     zq_ok = bool(zhuque_result and zhuque_result.get("ok"))
@@ -276,6 +282,7 @@ def render_report(
 
     title = "AI 生成检测报告单"
     platform_text = f"　平台：{_e(_platform_label(platform, sub_type))}" if platform else ""
+    source_text = f"　检测对象：{_SOURCE_LABELS.get(source, _SOURCE_LABELS['layout'])}"
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -286,7 +293,7 @@ def render_report(
 </head>
 <body>
 <h1>{_e(title)}</h1>
-<div class="meta">检测时间：{_fmt_dt(generated_at)}{platform_text}　|　正文 {total_chars} 字　|　content-workbench 人工痕迹工作台</div>
+<div class="meta">检测时间：{_fmt_dt(generated_at)}{platform_text}{source_text}　|　正文 {total_chars} 字　|　content-workbench 人工痕迹工作台</div>
 {result_html}
 {band_html}
 {seg_table_html}

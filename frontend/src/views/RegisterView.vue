@@ -29,6 +29,15 @@ function enter() {
 
 async function onSubmit() {
   err.value = ''
+  // 空值前置校验：与后端口径一致（用户名非空、密码至少 8 位）
+  if (!username.value.trim()) {
+    err.value = '请输入用户名'
+    return
+  }
+  if (password.value.length < 8) {
+    err.value = '密码至少 8 位'
+    return
+  }
   if (password.value !== confirmPassword.value) {
     err.value = '两次输入的密码不一致'
     return

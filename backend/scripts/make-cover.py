@@ -346,15 +346,29 @@ if __name__ == "__main__":
         help='排版主题调色板 JSON，如 \'{"gradient":"...","main":"#059669","warm":"#34D399"}\'；'
              "不传则用默认品牌色（向后兼容）。",
     )
+    ap.add_argument(
+        "--name", default="",
+        help="右下角品牌名（公众号名），覆盖默认「码上聊聊」；"
+             "用于多公众号场景，让封面品牌跟随实际选用的账号。",
+    )
+    ap.add_argument(
+        "--slogan", default="",
+        help="品牌口号，覆盖默认口号；留空则用默认。",
+    )
     a = ap.parse_args()
-    brand_arg = None
+    import json as _json
+
+    brand_arg: dict = {}
     if a.palette:
         try:
-            import json as _json
-            brand_arg = _json.loads(a.palette)
+            brand_arg.update(_json.loads(a.palette))
         except Exception as exc:  # noqa: BLE001
             raise SystemExit(f"--palette 不是合法 JSON：{exc}")
+    if a.name.strip():
+        brand_arg["name"] = a.name.strip()
+    if a.slogan.strip():
+        brand_arg["slogan"] = a.slogan.strip()
     make_cover(
         a.title.replace("\\n", "\n"), a.sub, a.tag, a.date,
-        a.style, a.size, a.out, a.scale, brand=brand_arg,
+        a.style, a.size, a.out, a.scale, brand=(brand_arg or None),
     )

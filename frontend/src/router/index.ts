@@ -45,6 +45,17 @@ const router = createRouter({
           meta: { title: '视频生产', desc: '脚本转视频，异步渲染', icon: '🎬', perm: 'menu.video' },
         },
         {
+          path: 'assets',
+          name: 'assets',
+          component: () => import('@/views/AssetsView.vue'),
+          meta: {
+            title: '素材库',
+            desc: '图片素材集中管理，写文章时直接取用',
+            icon: '🖼',
+            perm: 'menu.assets',
+          },
+        },
+        {
           path: 'knowledge',
           name: 'knowledge',
           component: () => import('@/views/KnowledgeView.vue'),
@@ -155,6 +166,7 @@ declare module 'vue-router' {
 const MENU_PERM: Record<string, string> = {
   chat: 'menu.chat',
   queue: 'menu.queue',
+  assets: 'menu.assets',
   knowledge: 'menu.knowledge',
   skills: 'menu.skills',
   video: 'menu.video',

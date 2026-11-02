@@ -9,7 +9,9 @@ from pydantic import BaseModel, Field
 # ---------------------------------------------------------------- 会话
 class ConversationCreate(BaseModel):
     title: str = Field(default="新对话", max_length=200)
-    scene: Literal["chat", "gzh", "xiaohongshu", "douyin", "zhihu"] = "chat"
+    scene: Literal[
+        "chat", "gzh", "xiaohongshu", "douyin", "zhihu", "toutiao", "baijiahao"
+    ] = "chat"
 
 
 class ConversationOut(BaseModel):
@@ -57,9 +59,12 @@ class ConversationDetail(ConversationOut):
 class ChatRequest(BaseModel):
     conversation_id: str | None = None
     message: str
-    platform: Literal["gzh", "xiaohongshu", "douyin", "zhihu"] | None = None
-    # 平台内子形态（目前只有知乎用：answer / article / idea）。
-    # 传了非知乎平台会被后端归一成空串，不报错 —— 前端多带一个字段不该炸。
+    platform: Literal[
+        "gzh", "xiaohongshu", "douyin", "zhihu", "toutiao", "baijiahao"
+    ] | None = None
+    # 平台内子形态：知乎 answer/article/idea；公众号 article/tietu；
+    # 头条 article/weitoutiao；百家号 article/dongtai。
+    # 传了无子形态的平台会被后端归一成空串，不报错 —— 前端多带一个字段不该炸。
     sub_type: str = ""
     # 知乎回答归属的问题（URL 或纯 ID）。非空时后端拉一次同问题头部回答，
     # 作为「已有答案边界」注入 —— 这是「必须写出增量」能落地的前提。
@@ -149,14 +154,17 @@ class ContentOut(BaseModel):
 class ContentCreateRequest(BaseModel):
     """用户点「保存到队列」时提交（对话产出的显式入库动作）。"""
 
-    platform: Literal["gzh", "xiaohongshu", "douyin", "zhihu"]
+    platform: Literal[
+        "gzh", "xiaohongshu", "douyin", "zhihu", "toutiao", "baijiahao"
+    ]
     title: str
     body: str
     summary: str = ""
     kind: Literal["text", "video"] = "text"
-    # 子形态：知乎 answer/article/idea，公众号 article/tietu。后端用
-    # normalize_sub_type 收敛：非知乎/公众号归空，知乎传错回落 answer，
-    # 公众号传错回落 article —— 不让老客户端/漏传直接 400。
+    # 子形态：知乎 answer/article/idea，公众号 article/tietu，
+    # 头条 article/weitoutiao，百家号 article/dongtai。后端用
+    # normalize_sub_type 收敛：无子形态的平台归空，传错回落该平台默认形态
+    # —— 不让老客户端/漏传直接 400。
     sub_type: str = ""
     conversation_id: str | None = None
     # 前端消息 id，便于回溯是哪条 AI 回复存下来的
@@ -179,9 +187,41 @@ class ContentUpdateRequest(BaseModel):
     body_html: str | None = None
 
 
+class PlaintextUpdateRequest(BaseModel):
+    """改「排版产物里的那段纯文本」（头条号 / 百家号 / 贴图文案）。
+
+    单独开一个接口而不是复用 `ContentUpdateRequest.layouts`：`layouts` 是个
+    多平台字典，整包覆盖等于把别的平台的排版结果也一起押上去，只为了改一个
+    `text` 字段不划算，也容易因为前端持有的副本过旧把别人的产物冲掉。
+    """
+
+    platform: Literal["gzh", "xiaohongshu", "zhihu", "toutiao", "baijiahao"]
+    text: str = Field(default="", max_length=50000)
+
+
+class TraceSnapshotIn(BaseModel):
+    """把某次 AI 痕迹检测的结果落库为快照，挂到 Content.meta['aigc_trace'] 下。
+
+    为什么要落库：报告单本来是「一次性快照、不存储」，但已发布内容在只读排版
+    查看态需要回看「发布当时」的检测数据。所以检测（体检 / 朱雀）完成后由前端
+    把结果推回来存一份，按检测对象（layout / body）各存一份。
+    """
+
+    platform: str = ""
+    sub_type: str = ""
+    # 检测对象：layout=排版产物（待发布的那一份，默认）/ body=源文
+    source: Literal["layout", "body"] = "layout"
+    # 本地人工痕迹体检报告（humanize.scan 的完整返回），可空
+    scan: dict[str, Any] | None = None
+    # 朱雀 AI 检测结果（zhuque.classify 的完整返回），可空
+    zhuque: dict[str, Any] | None = None
+
+
 class LayoutRequest(BaseModel):
     theme: str = "moyu-green"
-    platform: Literal["gzh", "xiaohongshu", "zhihu"] = "gzh"
+    platform: Literal[
+        "gzh", "xiaohongshu", "zhihu", "toutiao", "baijiahao"
+    ] = "gzh"
     # 排版前是否自动按正文生成一张封面（默认开）。cover 通道不可用时静默跳过。
     auto_cover: bool = True
     # 公众号排版完成后是否自动在文末补 2-3 个精准 #话题#（默认开）。

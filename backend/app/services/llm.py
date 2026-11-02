@@ -29,6 +29,7 @@ from app.services.model_pool import (
     mark_success,
     resolve_candidates,
     resolve_model,
+    quota_block_message,
     take_warnings,
 )
 
@@ -168,6 +169,14 @@ def _legacy_spec(provider: str, model_override: str | None) -> ModelSpec:
     `provider == "cloudflare"` 这个字符串上的；新接一家厂商就得再写一遍
     if 判断，漏一次就是一个 400。翻译成 flags 之后，新厂商只要在池里把
     supports_tools / supports_stream_usage 勾对就行。
+
+    关于 Cloudflare 的 supports_tools：早期 CF 的 llama 系模型确实不支持
+    function calling（会把 tool_calls 当普通文本吐出来），所以这里曾硬编码
+    False。但实测 @cf/zai-org/glm-4.x 已支持 tool_calls，且很多 owner 直接把
+    glm 配成 CLOUDFLARE_CHAT_MODEL、没进模型池，继续默认 False 会让这类对话
+    整组丢失工具能力。因此这里改回 True；llama-3.x 等流式真不支持的模型，
+    走 catalog 时保持 supports_tools=False（llm 层 `if tools and not
+    spec.supports_tools` 兜底忽略），不会把 JSON 当文本吐出来。
     """
     if provider == "cloudflare":
         return ModelSpec(
@@ -175,7 +184,7 @@ def _legacy_spec(provider: str, model_override: str | None) -> ModelSpec:
             provider_key="cloudflare",
             temperature=_CF_TEMPERATURE,
             max_tokens=_CF_MAX_TOKENS,
-            supports_tools=False,
+            supports_tools=True,
             supports_stream_usage=False,
         )
     return ModelSpec(model=model_override or "", provider_key="deepseek")
@@ -464,6 +473,13 @@ class LLMClient:
 
         if settings.ENABLE_PEAK_GUARD and is_peak_hour():
             logger.warning("当前为高峰计费时段，成本翻倍。建议把批量任务移到低谷。")
+
+        # 账号级护栏提示：免费模型额度/RPM 在开流前就被过滤掉了，用户无感知。
+        # 这里只发一条非阻塞提示，告诉用户去哪把上限调大（不打断正文）。
+        if feature:
+            block = quota_block_message(feature)
+            if block:
+                yield block
 
         for idx, spec in enumerate(candidates):
             is_last = idx == len(candidates) - 1

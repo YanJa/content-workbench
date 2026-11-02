@@ -52,8 +52,13 @@ const fetchedLabel = computed(() => {
 /** 没配凭证且没有历史数据：对普通用户也没有存在意义，给一句弱提示就够 */
 const unavailable = computed(() => props.configured === false && !props.items.length)
 
-/** 在榜时长取整显示；后端给的是小数小时（如 3.5） */
-function stayingLabel(hours: number): string {
+/**
+ * 在榜时长取整显示；后端给的是小数小时（如 3.5）。
+ * 知乎/微博共用同一个条目形状，微博没有趋势信号（staying_hours 缺省），
+ * 所以这里收可选值——调用方用 v-if 挡掉缺省情况，函数本身再兜一层。
+ */
+function stayingLabel(hours?: number): string {
+  if (hours === undefined || hours === null) return ''
   return `在榜 ${Math.round(hours)} 小时`
 }
 
@@ -97,8 +102,13 @@ function formatHot(hot: number): string {
     <div v-else-if="!items.length" class="hot-state">热点准备中，每 30 分钟自动更新</div>
 
     <ul v-else class="hot-list">
-      <li v-for="t in items" :key="t.question_id" class="hot-row">
-        <span class="hot-rank" :class="{ 'hot-rank-top': t.rank <= 3 }">{{ t.rank }}</span>
+      <!-- key 用 url：知乎/微博两个源的条目形状不同（只有知乎有 question_id），
+           url 是两边都必填且唯一，不会出现「微博条目不参与 diff」的问题 -->
+      <li v-for="(t, idx) in items" :key="t.url" class="hot-row">
+        <!-- rank 缺省（微博偶有空值）时按列表顺序兜底，保证名次列不空着 -->
+        <span class="hot-rank" :class="{ 'hot-rank-top': (t.rank ?? idx + 1) <= 3 }">{{
+          t.rank ?? idx + 1
+        }}</span>
         <div class="hot-body">
           <div class="hot-row-title">
             <a class="hot-link" :href="t.url" target="_blank" rel="noopener noreferrer">{{
@@ -110,11 +120,13 @@ function formatHot(hot: number): string {
               🔥 {{ formatHot(t.hot) }}
             </NTag>
             <template v-else>
-              <NTag v-if="t.climb > 0" size="tiny" :bordered="false" type="success">
+              <!-- 以下三个趋势信号只有知乎有，微博缺省；`?? 0` 是为了让
+                   「没这个信号」等价于「信号为 0」，而不是让比较结果变成 undefined -->
+              <NTag v-if="(t.climb ?? 0) > 0" size="tiny" :bordered="false" type="success">
                 ↑ {{ t.climb }} 位
               </NTag>
               <NTag v-if="t.is_new" size="tiny" :bordered="false" type="warning">🆕 新上榜</NTag>
-              <NTag v-if="t.staying_hours >= 2" size="tiny" :bordered="false">
+              <NTag v-if="(t.staying_hours ?? 0) >= 2" size="tiny" :bordered="false">
                 {{ stayingLabel(t.staying_hours) }}
               </NTag>
             </template>

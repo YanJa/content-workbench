@@ -46,7 +46,7 @@ import {
   getImageProviders,
   type ThemeOption,
 } from '@/api/layout'
-import { updateContent } from '@/api/queue'
+import { updateContent, updatePlaintext } from '@/api/queue'
 import { confirmTool } from '@/api/tools'
 import { getAuthorInfo, listWeChatAccounts, updateAuthorInfo } from '@/api/settings'
 import { useAuthStore } from '@/stores/auth'
@@ -105,6 +105,8 @@ const authorTouched = ref(false)
 const previewRef = ref<HTMLIFrameElement | null>(null)
 const initialDoc = ref('')
 const editedHtml = ref('')
+/** 纯文本预览的 textarea 引用（autosize 用） */
+const plainEl = ref<HTMLTextAreaElement | null>(null)
 let inputTimer: ReturnType<typeof setTimeout> | null = null
 
 // 占位符字面量（放常量里，避免在模板里写 `{{...}}` 被 Vue 当成插值解析）
@@ -156,10 +158,95 @@ const isZhihu = computed(() => local.value?.platform === 'zhihu')
 const isTietu = computed(
   () => local.value?.platform === 'gzh' && (local.value?.sub_type ?? 'article') === 'tietu',
 )
-/** 贴图规整后的纯文本（排版后才有；没有则退回空串，界面提示去排版） */
-const tietuText = computed(
-  () => (local.value?.layouts as Record<string, { text?: string }> | null)?.gzh?.text || '',
+/**
+ * 纯文本平台：今日头条、百家号。
+ *
+ * 与「贴图」同一个道理 —— 发布端粘贴的是纯文本，没有富文本、没有主题、
+ * 没有草稿箱接口。素材直接存在 layouts[platform].text。
+ */
+const PLAINTEXT_PLATFORMS = ['toutiao', 'baijiahao'] as const
+/** 有 `layouts[platform].text` 这条产物的平台集合 */
+type PlainPlatform = 'gzh' | 'xiaohongshu' | 'zhihu' | 'toutiao' | 'baijiahao'
+const isPlaintextPlatform = computed(() =>
+  (PLAINTEXT_PLATFORMS as readonly string[]).includes(local.value?.platform ?? ''),
 )
+/** 当前平台规整后的纯文本（贴图 / 头条 / 百家号共用这个读取口径） */
+const plaintextText = computed(() => {
+  const layouts = (local.value?.layouts ?? {}) as Record<string, { text?: string }>
+  if (isTietu.value) return layouts.gzh?.text || ''
+  return layouts[local.value?.platform ?? '']?.text || ''
+})
+/** 这段文本存在 layouts 的哪个键下：贴图复用 gzh，其余平台用自己的 key */
+const plainKey = computed<PlainPlatform>(() =>
+  isTietu.value ? 'gzh' : ((local.value?.platform ?? 'gzh') as PlainPlatform),
+)
+
+/**
+ * 手改后的纯文本。`null` = 没动过，此时一律读排版产物。
+ *
+ * 用 null 而不是空串当「未编辑」：用户可能真的要把文案清空重写，
+ * 空串是合法内容，不能和「没改」共用同一个值。
+ */
+const editedPlain = ref<string | null>(null)
+const plainDirty = ref(false)
+/** 正在展示/编辑的文本：改过用改过的，没改就用排版产物 */
+const plainDraft = computed({
+  get: () => editedPlain.value ?? plaintextText.value,
+  set: (v: string) => {
+    editedPlain.value = v
+    plainDirty.value = v !== plaintextText.value
+  },
+})
+/** 手改过且内容确实和产物不同 —— 用来显示「已手动编辑」和重置按钮 */
+const hasPlainEdit = computed(
+  () => editedPlain.value !== null && editedPlain.value !== plaintextText.value,
+)
+/** 任何一处（正文 / 富文本预览 / 纯文本预览）有未保存改动 */
+const hasChanges = computed(() => dirty.value || plainDirty.value)
+/**
+ * 「不适用公众号那套富文本链路」的总开关：贴图 / 头条 / 百家号都算。
+ * 下面所有主题、封面、作者、草稿箱、话题标签的渲染条件统一用它，
+ * 免得每加一个纯文本平台就要去改十处 v-if。
+ */
+const isPlaintext = computed(() => isTietu.value || isPlaintextPlatform.value)
+
+/**
+ * 已发布回看用的 AI 痕迹检测快照：落库在 Content.meta['aigc_trace']，按检测对象
+ * 各存一份（layout=排版产物 / body=源文）。发布看的是排版产物那份，所以优先取
+ * layout，没有再回落 body。没有快照（发布前没做过检测）就返回 null —— 对应
+ * 「如果有当时的检测数据」里的「如果没有」分支。
+ *
+ * 注意这是**历史快照**，只读展示、不重新检测：朱雀那份若当时没测就是空。
+ */
+const traceSnapshot = computed(() => {
+  const meta = local.value?.meta as Record<string, any> | null | undefined
+  const snap = meta?.aigc_trace as Record<string, any> | undefined
+  if (!snap) return null
+  const slot = (snap.layout || snap.body) as Record<string, any> | undefined
+  if (!slot || (!slot.scan && !slot.zhuque)) return null
+  return {
+    savedAt: (snap.saved_at as number) || undefined,
+    platform: (snap.platform as string) || local.value?.platform || '',
+    subType: (snap.sub_type as string) || local.value?.sub_type || '',
+    source: (slot.source as string) || 'layout',
+    scan: (slot.scan as Record<string, any>) || null,
+    zhuque: (slot.zhuque as Record<string, any>) || null,
+  }
+})
+
+/** 检测对象中文名（排版产物 / 源文）。 */
+const srcLabel = (s: string) => (s === 'body' ? '源文' : '排版产物')
+const scoreColor = (s: number) =>
+  s >= 80 ? 'var(--app-success, #18a058)' : s >= 60 ? 'var(--app-warning, #f0a020)' : 'var(--app-error, #d03050)'
+const severityType = (s: string) => (s === 'high' ? 'error' : s === 'mid' ? 'warning' : 'default')
+const severityLabel = (s: string) => (s === 'high' ? '明显' : s === 'mid' ? '中等' : '轻微')
+const pct = (x: number) => `${(x * 100).toFixed(2)}%`
+function fmtTime(ts?: number): string {
+  if (!ts) return ''
+  const d = new Date(ts * 1000)
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}/${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
 
 // 排版任务进度
 const progress = ref(0)
@@ -232,6 +319,7 @@ watch(
       return
     }
     if (!props.content) return
+    markBodySync()
     local.value = { ...props.content }
     errors.value = []
     warnings.value = []
@@ -239,10 +327,13 @@ watch(
     stage.value = ''
     dirty.value = false
     editedHtml.value = ''
+    editedPlain.value = null
+    plainDirty.value = false
     authorTouched.value = false
     theme.value = props.content.theme || 'moyu-green'
     // 右栏初始文档只在打开/排版完成时设一次（编辑期不动，避免光标丢失）
     rebuildPreview()
+    nextTick(autosizePlain)
     try {
       const r = await getThemeOptions(props.content.id)
       themes.value = r.themes
@@ -282,12 +373,28 @@ watch(
 )
 
 // 左栏 Markdown 被编辑 → 置脏（NInput 只回写 local.body，不会自己标脏）
+// 程序化替换 local（打开另一条内容 / 排版完成刷新 / 痕迹写回）也会触发本 watch，
+// 但那不是用户编辑：先 markBodySync() 打标记，让下一次触发被吞掉，
+// 否则「打开第二条内容」会被误判成「改了正文」，关面板时误弹「有未保存的修改」。
+let swallowBodyWatch = false
+function markBodySync() {
+  swallowBodyWatch = true
+  nextTick(() => {
+    swallowBodyWatch = false
+  })
+}
 watch(
   () => local.value?.body,
   (nv, ov) => {
+    if (swallowBodyWatch) return
+    // 只读态（已发布）没有「保存」这回事，永远不置脏
+    if (isReadonly.value) return
     if (nv !== undefined && ov !== undefined && nv !== ov) dirty.value = true
   },
 )
+
+// 纯文本改过 → 重算高度（textarea 不会像 pre 那样随内容自己长）
+watch(plainDraft, () => nextTick(autosizePlain))
 
 function stopPoll() {
   if (pollTimer) {
@@ -321,12 +428,12 @@ async function onLayout() {
       return
     }
   }
-  // 右栏手改过 HTML 的话，提醒会被排版结果覆盖
-  if (editedHtml.value) {
+  // 右栏手改过（富文本或纯文本）的话，提醒会被排版结果覆盖
+  if (editedHtml.value || hasPlainEdit.value) {
     const go = await new Promise<boolean>((resolve) => {
       dialog.warning({
         title: '重新排版会覆盖手动修改',
-        content: '你会丢失在右侧「排版预览」里的手动编辑，确定继续吗？',
+        content: '你会丢失在右侧预览里的手动编辑，确定继续吗？',
         positiveText: '继续排版',
         negativeText: '取消',
         onPositiveClick: () => resolve(true),
@@ -351,7 +458,9 @@ async function onLayout() {
     task = await layoutContent(
       local.value.id,
       theme.value,
-      isZhihu.value ? 'zhihu' : 'gzh',
+      // 按内容自己的平台传：知乎走语义 HTML，头条/百家号走纯文本规整，
+      // 其余（含公众号图文）走富文本排版。传错会把头条当公众号排一版 HTML。
+      (local.value.platform as 'gzh' | 'xiaohongshu' | 'zhihu' | 'toutiao' | 'baijiahao') || 'gzh',
       autoCover.value,
       authorName.value.trim(),
       authorIntro.value.trim(),
@@ -389,10 +498,14 @@ async function poll(taskId: string) {
         errors.value = res.errors || []
         warnings.value = res.warnings || []
         local.value = await refreshContent(local.value.id)
-        // 排版产出了新的 body_html → 丢开编辑态，重建预览
+        markBodySync()
+        // 排版产出了新的 body_html / 新的纯文本 → 丢开编辑态，重建预览
         editedHtml.value = ''
+        editedPlain.value = null
+        plainDirty.value = false
         dirty.value = false
         rebuildPreview()
+        nextTick(autosizePlain)
         if (res.ok) message.success(`排版完成（${res.theme_name}）`)
         else message.warning(`排版有 ${res.errors.length} 处合规问题，可重试`)
       }
@@ -420,17 +533,35 @@ function onImagesChanged(images: ContentImage[]) {
   emit('done')
 }
 
+/** 复制左栏 Markdown 源文（就是正文本身，不带标题）。 */
+async function onCopyMarkdown() {
+  const body = local.value?.body || ''
+  if (!body.trim()) {
+    message.warning('正文还是空的，没东西可复制')
+    return
+  }
+  const ok = await copyText(body)
+  message[ok ? 'success' : 'warning'](ok ? 'Markdown 源文已复制' : '复制失败，请手动选择文本复制')
+}
+
 /** 复制排版结果（富文本，粘到公众号/知乎编辑器保留格式）。 */
 async function onCopyRich() {
-  // 贴图：产物是纯文本（图片消息的文案），复制的就是这段文本本身
-  if (isTietu.value) {
-    if (!tietuText.value) {
-      message.warning('先点「一键排版」规整贴图文案')
+  // 纯文本平台（贴图 / 头条 / 百家号）：产物就是这段纯文本本身
+  if (isPlaintext.value) {
+    // 复制当前看到的内容：手改过就是改过的那版，别把旧产物复制走
+    if (!plainDraft.value) {
+      message.warning(
+        isTietu.value ? '先点「一键排版」规整贴图文案' : '先点「一键排版」规整正文为纯文本',
+      )
       return
     }
-    const ok = await copyText(tietuText.value)
+    const ok = await copyText(plainDraft.value)
     message[ok ? 'success' : 'warning'](
-      ok ? '贴图文案已复制，配好图后去公众号后台发「图片」' : '复制失败，请手动选择文本复制',
+      ok
+        ? isTietu.value
+          ? '贴图文案已复制，配好图后去公众号后台发「图片」'
+          : '正文已复制，粘贴到对应平台后台即可发布'
+        : '复制失败，请手动选择文本复制',
     )
     return
   }
@@ -701,6 +832,23 @@ function resetPreview() {
   message.success('已重置为排版结果')
 }
 
+/** 纯文本预览的输入框：跟着内容长高，不然框里自己再滚一层，读起来很难受。 */
+function autosizePlain() {
+  const el = plainEl.value
+  if (!el) return
+  el.style.height = 'auto'
+  el.style.height = `${el.scrollHeight}px`
+}
+
+/** 丢弃纯文本的手改，回到排版产物。 */
+function resetPlain() {
+  if (!hasPlainEdit.value) return
+  editedPlain.value = null
+  plainDirty.value = false
+  nextTick(autosizePlain)
+  message.success('已重置为排版结果')
+}
+
 /** 保存：把左栏 Markdown + 右栏 HTML 落库。 */
 /**
  * 痕迹改写写回源文后：刷新本地内容 + 清掉编辑态。
@@ -711,10 +859,14 @@ async function onTraceApplied(text: string) {
   if (!local.value) return
   try {
     local.value = await refreshContent(local.value.id)
+    markBodySync()
   } catch {
     local.value = { ...local.value, body: text, body_html: '' }
+    markBodySync()
   }
   editedHtml.value = ''
+  editedPlain.value = null
+  plainDirty.value = false
   dirty.value = false
   emit('done')
 }
@@ -728,6 +880,20 @@ async function onSave() {
     const updated = await updateContent(local.value.id, patch)
     local.value = { ...local.value, ...updated }
     editedHtml.value = ''
+
+    // 纯文本走单独的接口：那边只认 layouts[platform].text，不碰 body_html
+    if (plainDirty.value) {
+      const saved = await updatePlaintext(
+        local.value.id,
+        plainKey.value,
+        editedPlain.value ?? plaintextText.value,
+      )
+      local.value = { ...local.value, ...saved }
+      editedPlain.value = null
+      plainDirty.value = false
+      nextTick(autosizePlain)
+    }
+
     dirty.value = false
     message.success('已保存')
     emit('done')
@@ -758,14 +924,22 @@ function handleShowUpdate(v: boolean) {
     emit('update:show', true)
     return
   }
-  if (dirty.value) {
+  // 只读态（已发布）没有任何能保存的东西：直接关，别拿「未保存」吓人
+  if (isReadonly.value) {
+    dirty.value = false
+    plainDirty.value = false
+    emit('update:show', false)
+    return
+  }
+  if (hasChanges.value) {
     dialog.warning({
       title: '有未保存的修改',
-      content: '左侧正文或右侧排版有改动尚未保存，确定直接关闭吗？',
+      content: '正文或右侧预览有改动尚未保存，确定直接关闭吗？',
       positiveText: '放弃修改',
       negativeText: '继续编辑',
       onPositiveClick: () => {
         dirty.value = false
+        plainDirty.value = false
         emit('update:show', false)
       },
     })
@@ -822,13 +996,13 @@ onBeforeUnmount(() => {
     </template>
 
     <div v-if="local" class="panel">
-      <!-- 顶部：主题选择 + 排版（只读态改为纯操作栏：只留复制/预览宽度） -->
+      <!-- 顶部：主题选择 + 排版操作。只读态（已发布）下这些都不显示，面板只展示内容与各栏标题旁的复制 -->
       <div class="toolbar">
         <template v-if="!isReadonly">
           <!-- 知乎不选主题：主题是公众号内联样式那套，知乎编辑器会把 style 剥掉。
                贴图也不选：图片消息没有富文本，主题概念不适用。 -->
           <NSelect
-            v-if="!isZhihu && !isTietu"
+            v-if="!isZhihu && !isPlaintext"
             v-model:value="theme"
             :options="themeOptions"
             size="small"
@@ -853,7 +1027,7 @@ onBeforeUnmount(() => {
           </IconTextBtn>
           <div v-if="layoutGate.reason.value" class="gate-tip">⚠ {{ layoutGate.reason.value }}</div>
           <NCheckbox
-            v-if="coverReady && !isZhihu && !isTietu"
+            v-if="coverReady && !isZhihu && !isPlaintext"
             v-model:checked="autoCover"
             size="small"
             :disabled="layouting"
@@ -861,7 +1035,7 @@ onBeforeUnmount(() => {
             排版时自动生成封面
           </NCheckbox>
           <NCheckbox
-            v-if="!isZhihu && !isTietu"
+            v-if="!isZhihu && !isPlaintext"
             v-model:checked="autoTags"
             size="small"
             :disabled="layouting"
@@ -873,15 +1047,7 @@ onBeforeUnmount(() => {
             痕迹体检
           </IconTextBtn>
         </template>
-        <IconTextBtn
-          name="copy"
-          size="small"
-          :disabled="isTietu ? !tietuText : !hasHtml"
-          @click="onCopyRich"
-        >
-          {{ isTietu ? '复制文案' : '复制富文本' }}
-        </IconTextBtn>
-        <template v-if="!isReadonly && !isZhihu && !isTietu">
+        <template v-if="!isReadonly && !isZhihu && !isPlaintext">
           <NSelect
             v-if="wechatAccounts.length > 1"
             v-model:value="accountId"
@@ -915,12 +1081,12 @@ onBeforeUnmount(() => {
         <template v-if="!isReadonly">
           <IconTextBtn
             name="save"
-            :type="dirty ? 'warning' : 'default'"
-            :ghost="dirty"
+            :type="hasChanges ? 'warning' : 'default'"
+            :ghost="hasChanges"
             :loading="saving"
             @click="onSave"
           >
-            {{ dirty ? '保存修改' : '保存' }}
+            {{ hasChanges ? '保存修改' : '保存' }}
           </IconTextBtn>
           <NTag v-if="currentThemeInfo && !isZhihu" size="small" :bordered="false">
             {{ currentThemeInfo.desc }}
@@ -933,7 +1099,7 @@ onBeforeUnmount(() => {
 
       <!-- 作者信息：排版时替换正文里的 {{作者名}} / {{一句话简介}}（只读态隐藏）。
            贴图不适用：图片消息是短文案，没有作者卡的位置。 -->
-      <div v-if="!isReadonly && !isTietu" class="author-row">
+      <div v-if="!isReadonly && !isPlaintext" class="author-row">
         <span class="author-label">作者</span>
         <NInput
           v-model:value="authorName"
@@ -987,7 +1153,16 @@ onBeforeUnmount(() => {
         <div class="col">
           <div class="col-title">
             <span>纯内容（Markdown）</span>
-            <NTag v-if="dirty" size="tiny" type="warning" :bordered="false">未保存</NTag>
+            <NTag v-if="isReadonly" size="tiny" type="info" :bordered="false">已发布</NTag>
+            <NTag v-else-if="dirty" size="tiny" type="warning" :bordered="false">未保存</NTag>
+            <IconTextBtn
+              name="copy"
+              size="tiny"
+              quaternary
+              @click="onCopyMarkdown"
+            >
+              复制
+            </IconTextBtn>
           </div>
           <div class="scroll scroll-edit">
             <MarkdownEditor
@@ -999,28 +1174,87 @@ onBeforeUnmount(() => {
             <MarkdownView v-else :content="local.body || ''" />
           </div>
         </div>
-        <!-- 右：贴图文案（纯文本预览；图片消息没有富文本，不存在可编辑 HTML） -->
-        <div v-if="isTietu" class="col">
+        <!-- 右：纯文本预览（贴图 / 头条 / 百家号；这些平台没有可编辑 HTML） -->
+        <div v-if="isPlaintext" class="col">
           <div class="col-title">
-            <span>贴图文案（纯文本）</span>
-            <NTag v-if="tietuText" size="tiny" type="success" :bordered="false">已规整</NTag>
-            <NTag v-else size="tiny" :bordered="false">未规整</NTag>
+            <span>{{ isTietu ? '贴图文案（纯文本）' : '正文（纯文本）' }}</span>
+            <NTag v-if="isReadonly" size="tiny" type="info" :bordered="false">已发布</NTag>
+            <template v-else>
+              <NTag v-if="plaintextText" size="tiny" type="success" :bordered="false">已规整</NTag>
+              <NTag v-else size="tiny" :bordered="false">未规整</NTag>
+            </template>
+            <span v-if="hasPlainEdit" class="edit-flag">已手动编辑</span>
+            <IconTextBtn
+              name="copy"
+              size="tiny"
+              quaternary
+              @click="onCopyRich"
+            >
+              复制
+            </IconTextBtn>
+            <IconTextBtn
+              v-if="hasPlainEdit && !isReadonly"
+              name="reset"
+              size="tiny"
+              quaternary
+              style="margin-left: 6px"
+              @click="resetPlain"
+            >
+              重置
+            </IconTextBtn>
           </div>
-          <div class="scroll preview-wrap">
-            <pre v-if="tietuText" class="tietu-text">{{ tietuText }}</pre>
-            <div v-else class="tietu-empty">
-              点「一键排版」规整文案：首图标题 ≤20 字（前 8 个字出钩子）+ 3-5 个 emoji
-              短点，出来即可直接粘进公众号图片消息。配图在下边「配图」区准备 3-9 张。
-            </div>
+          <div class="scroll preview-wrap" :class="{ 'plain-wrap': !isTietu }">
+            <!-- 只读态（已发布）：纯展示，别让人以为还能改 -->
+            <template v-if="isReadonly">
+              <pre v-if="plainDraft" class="plain-text" :class="{ 'is-card': isTietu }">{{
+                plainDraft
+              }}</pre>
+              <div v-else class="plain-empty">
+                <template v-if="isTietu">
+                  这条内容还没规整过贴图文案。点「一键排版」生成首图标题 + emoji 短点，
+                  出来即可直接粘进公众号图片消息。
+                </template>
+                <template v-else>
+                  这条内容还没规整过纯文本正文。排版会把 Markdown 语法符号去掉、收拾分段，
+                  出来就是发布端能直接粘贴的稿子。
+                </template>
+              </div>
+            </template>
+            <!-- 可编辑：排版产物就是一段字，改起来也该像改字，不该只给看 -->
+            <textarea
+              v-else
+              ref="plainEl"
+              v-model="plainDraft"
+              class="plain-text plain-editor"
+              :class="{ 'is-card': isTietu }"
+              spellcheck="false"
+              :placeholder="
+                isTietu
+                  ? '点「一键排版」规整贴图文案，也可以直接在这儿写'
+                  : '点「一键排版」规整成纯文本，也可以直接在这儿写'
+              "
+              @input="autosizePlain"
+            ></textarea>
           </div>
         </div>
         <!-- 右：排版预览（所见即所得，可直接编辑；只读态不可编辑） -->
         <div v-else class="col">
           <div class="col-title">
             <span>排版预览</span>
-            <NTag v-if="hasHtml" size="tiny" type="success" :bordered="false">已排版</NTag>
-            <NTag v-else size="tiny" :bordered="false">未排版</NTag>
+            <NTag v-if="isReadonly" size="tiny" type="info" :bordered="false">已发布</NTag>
+            <template v-else>
+              <NTag v-if="hasHtml" size="tiny" type="success" :bordered="false">已排版</NTag>
+              <NTag v-else size="tiny" :bordered="false">未排版</NTag>
+            </template>
             <span v-if="editedHtml" class="edit-flag">已手动编辑</span>
+            <IconTextBtn
+              name="copy"
+              size="tiny"
+              quaternary
+              @click="onCopyRich"
+            >
+              复制
+            </IconTextBtn>
             <IconTextBtn
               v-if="editedHtml && !isReadonly"
               name="reset"
@@ -1059,6 +1293,63 @@ onBeforeUnmount(() => {
                 @load="onPreviewLoad"
               />
             </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 已发布回看：发布当时的 AI 痕迹检测快照（落库在 meta，只读展示，不重新检测） -->
+      <div v-if="isReadonly && traceSnapshot" class="trace-snap">
+        <div class="col-title">
+          <span>AI 痕迹检测（发布当时）</span>
+          <NTag size="tiny" type="info" :bordered="false">{{ srcLabel(traceSnapshot.source) }}</NTag>
+          <span class="snap-time" v-if="traceSnapshot.savedAt">{{ fmtTime(traceSnapshot.savedAt) }}</span>
+          <span class="snap-hint">历史快照，非实时</span>
+        </div>
+
+        <!-- 本地人工痕迹体检：分数 + 档位 + 命中特征 -->
+        <div v-if="traceSnapshot.scan" class="snap-card">
+          <div class="snap-score-row">
+            <div class="snap-score" :style="{ color: scoreColor(traceSnapshot.scan.score) }">
+              {{ traceSnapshot.scan.score }}
+            </div>
+            <div class="snap-score-meta">
+              <div class="snap-score-title">人工痕迹指数（越高越像人写的）</div>
+              <NTag
+                size="small"
+                :bordered="false"
+                :type="severityType(traceSnapshot.scan.level === 'natural' ? 'low' : 'mid')"
+              >
+                {{ traceSnapshot.scan.level_label }}
+              </NTag>
+            </div>
+          </div>
+          <NAlert type="info" :bordered="false" class="snap-note">{{ traceSnapshot.scan.note }}</NAlert>
+          <template v-if="traceSnapshot.scan.hits && traceSnapshot.scan.hits.length">
+            <NDivider title-placement="left" class="snap-divider">
+              命中的特征（{{ traceSnapshot.scan.hits.length }}）
+            </NDivider>
+            <ul class="snap-hits">
+              <li v-for="h in traceSnapshot.scan.hits" :key="h.key">
+                <NTag size="small" :bordered="false" :type="severityType(h.severity)">
+                  {{ severityLabel(h.severity) }}
+                </NTag>
+                <span class="snap-hit-label">{{ h.label }}</span>
+                <span class="snap-hit-count">×{{ h.count }}</span>
+              </li>
+            </ul>
+          </template>
+        </div>
+
+        <!-- 朱雀 AI 检测：三分类占比（当时若没测则为空，不强行显示） -->
+        <div v-if="traceSnapshot.zhuque" class="snap-card">
+          <NDivider title-placement="left" class="snap-divider">朱雀 AI 检测（腾讯云）</NDivider>
+          <div class="snap-zq">
+            <span><i class="dot" style="background: #7bd88f" />人工特征 {{ pct(traceSnapshot.zhuque.human_ratio) }}</span>
+            <span><i class="dot" style="background: #f6c15a" />疑似AI {{ pct(traceSnapshot.zhuque.suspect_ratio) }}</span>
+            <span><i class="dot" style="background: #f27b8e" />AI特征 {{ pct(traceSnapshot.zhuque.ai_ratio) }}</span>
+          </div>
+          <div class="snap-zq-meta">
+            整体置信度 {{ (traceSnapshot.zhuque.softmax_confidence || 0).toFixed(4) }}
           </div>
         </div>
       </div>
@@ -1329,25 +1620,57 @@ onBeforeUnmount(() => {
   background: var(--app-bg);
   padding: 12px 8px;
 }
-/* 贴图文案预览：白底卡片 + 等宽行高，模拟手机里图片消息文案的观感 */
-.tietu-text {
+/* 头条/百家号的预览区去掉外层框：要的是纯文本本身，不是「一个装文本的框」。
+   `.scroll` 默认带 1px 边框 + 圆角 + 表面色，对编辑器合适，对一段待复制的
+   文案就是多余的边界 —— 复制出去的字本来就没有框。 */
+.preview-wrap.plain-wrap {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 10px 0;
+}
+/* 纯文本预览：预览的就是「粘贴出去的那段字」本身，所以不给卡片、不给底色。
+   文字颜色跟主题走，否则浅色主题下白底黑字、深色主题下就成了黑底黑字。 */
+.plain-text {
   width: 100%;
-  max-width: 420px;
   margin: 0;
-  padding: 18px 20px;
-  background: #fff;
-  border-radius: 10px;
-  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.08);
+  padding: 0;
   font-size: 15px;
   line-height: 1.9;
   white-space: pre-wrap;
   word-break: break-word;
   font-family: inherit;
+  color: var(--app-text);
+}
+/* 贴图文案是「图片消息」成品，保留白底卡片来模拟手机里的观感 */
+.plain-text.is-card {
+  max-width: 420px;
+  padding: 18px 20px;
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.08);
   color: #333;
 }
-.tietu-empty {
+/* 可编辑态：外观和上面的纯文本完全一致，只是把「字」换成能敲进去的框。
+   border/outline 全部去掉，否则又变回一个输入框；高度由 autosizePlain 接管。 */
+.plain-editor {
+  display: block;
+  box-sizing: border-box;
+  min-height: 160px;
+  border: none;
+  outline: none;
+  resize: none;
+  overflow: hidden;
+  background: transparent;
+}
+.plain-editor::placeholder {
+  color: var(--app-text-3, #999);
+}
+.plain-editor.is-card {
+  background: #fff;
+}
+.plain-empty {
   width: 100%;
-  max-width: 420px;
   align-self: flex-start;
   color: var(--app-text-3, #999);
   font-size: 13px;
@@ -1366,6 +1689,99 @@ onBeforeUnmount(() => {
   width: 100%;
   height: 100%;
   border: none;
+}
+/* ---------- 已发布回看：AI 痕迹检测快照 ---------- */
+.trace-snap {
+  margin-top: 6px;
+}
+.snap-time {
+  font-size: 11.5px;
+  color: var(--app-text-3);
+  font-variant-numeric: tabular-nums;
+}
+.snap-hint {
+  font-size: 11.5px;
+  color: var(--app-text-3);
+  margin-left: auto;
+}
+.snap-card {
+  border: 1px solid var(--app-border, #e0e0e6);
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-top: 10px;
+  background: var(--app-surface);
+}
+.snap-score-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.snap-score {
+  flex: none;
+  white-space: nowrap;
+  font-size: 44px;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.snap-score-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.snap-score-title {
+  font-weight: 600;
+  font-size: 13px;
+}
+.snap-note {
+  margin-top: 10px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.snap-divider {
+  margin: 14px 0 8px;
+}
+.snap-hits {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.snap-hits li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.snap-hit-label {
+  font-weight: 600;
+}
+.snap-hit-count {
+  font-size: 12px;
+  opacity: 0.6;
+  font-variant-numeric: tabular-nums;
+}
+.snap-zq {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+.snap-zq .dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  margin-right: 4px;
+}
+.snap-zq-meta {
+  margin-top: 6px;
+  font-size: 12px;
+  opacity: 0.55;
+  font-variant-numeric: tabular-nums;
 }
 @media (max-width: 768px) {
   .split {

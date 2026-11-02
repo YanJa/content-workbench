@@ -116,8 +116,14 @@ def _replace_src_by_filename(
         return html, 0
     import re
 
-    # 兼容单/双引号；属性值内不会出现裸引号，[^"'] 不会跨属性边界
-    pat = re.compile(r"src=([\"'])/[^\"']*" + re.escape(fname) + r"[^\"']*\1")
+    # 兼容单/双引号；属性值内不会出现裸引号，[^"'] 不会跨属性边界。
+    # 既匹配本地签名直链（/api/content/images/...），也匹配 TOS 公网直链
+    # （https://<bucket>.tos-.../gen/...），后者在 STORAGE_BACKEND=s3 时出现。
+    pat = re.compile(
+        r"src=([\"'])(?:/api/content/images/|https?://[^\"']*?/gen/)[^\"']*"
+        + re.escape(fname)
+        + r"[^\"']*\1"
+    )
     matches = list(pat.finditer(html))
     if new_url is None or not matches:
         return html, len(matches)
@@ -276,13 +282,16 @@ class WeChatClient:
 
         out = html
 
-        # 1) 扫正文：/api/content/images/{cid}/{fname}（容忍签名查询串与 &amp;）
+        # 1) 扫正文：/api/content/images/{cid}/{fname}（本地直链）或
+        #    https://<bucket>.tos-.../gen/{cid}/{fname}（TOS 公网直链，s3 后端）。
+        #    两种都提取出 (cid, fname)，字节仍从本地盘读（云端后端也保留了本地落盘）。
         scan = re.compile(
-            r"src=([\"'])(/api/content/images/([^/\"'?]+)/([^\"'?]+))[^\"']*\1"
+            r"src=[\"'](?:/api/content/images/|https?://[^\"']*?/gen/)"
+            r"([^/\"'?]+)/([^\"'?]+)[^\"']*[\"']"
         )
         seen: dict[str, str] = {}  # fname -> 磁盘绝对路径
         for m in scan.finditer(out):
-            cid, fname = m.group(3), m.group(4)
+            cid, fname = m.group(1), m.group(2)
             if fname in seen:
                 continue
             full = Path(settings.UPLOAD_DIR) / "gen" / cid / fname
@@ -420,6 +429,107 @@ class WeChatClient:
             "ok": True,
             "media_id": data.get("media_id"),
             "message": "已推送到公众号草稿箱，请到后台核对后手动群发",
+            "pushed_at": int(time.time()),
+        }
+
+    async def update_draft(
+        self,
+        media_id: str,
+        title: str,
+        html: str,
+        digest: str = "",
+        thumb_media_id: str = "",
+        author: str = "",
+        need_open_comment: bool = True,
+    ) -> dict[str, Any]:
+        """原地更新草稿箱里已有的一篇（cgi-bin/draft/update）。
+
+        用于「同一任务多次推送」：复用上一次推送得到的 media_id 替换内容，
+        而不是再 add 一条，避免草稿箱堆积重复草稿。
+
+        index=0 表示更新该草稿内的第 1 篇图文（本平台一篇草稿就是一篇图文）。
+        若 media_id 已失效（被群发 / 后台删除 / 过期清理）→ 微信返回 40007，
+        上层应 fallback 到 add_draft 新建一篇。
+        """
+        if not self.configured:
+            return {"ok": False, "error": "未配置 WECHAT_APPID / WECHAT_SECRET"}
+        if not media_id:
+            return {"ok": False, "error": "缺少 media_id，无法原地更新"}
+        if not thumb_media_id:
+            return {
+                "ok": False,
+                "error": "缺少封面图：微信要求每篇草稿必须有封面",
+                "hint": "先在队列里点「加工排版」生成配图（首图会自动用作封面）后再推送",
+            }
+
+        try:
+            token = await self._access_token()
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc)}
+
+        payload = {
+            "media_id": media_id,
+            "index": 0,
+            "articles": [
+                {
+                    "title": title,
+                    "author": author or "",
+                    "digest": digest,
+                    "content": html,
+                    "content_source_url": "",
+                    "thumb_media_id": thumb_media_id,  # 封面（永久素材 id），可为空
+                    "need_open_comment": 1 if need_open_comment else 0,
+                    "only_fans_can_comment": 0,
+                }
+            ],
+        }
+        url = f"{WECHAT_API}/cgi-bin/draft/update?access_token={token}"
+
+        # 微信要求 body 用 UTF-8 编码，且不转义中文
+        import json as _json
+
+        body = _json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        total = _PROXY_RETRY if settings.WECHAT_PROXY else 1
+        data = None
+        try:
+            for i in range(total):
+                try:
+                    async with httpx.AsyncClient(**_client_kwargs(30)) as client:
+                        resp = await client.post(
+                            url,
+                            content=body,
+                            headers={"Content-Type": "application/json"},
+                        )
+                        data = resp.json()
+                    break
+                except httpx.TransportError as exc:
+                    if i < total - 1:
+                        logger.warning("更新草稿经代理瞬断，重试 %d/%d：%s", i + 1, total - 1, exc)
+                        await asyncio.sleep(0.8 * (i + 1))
+                    else:
+                        raise
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("更新草稿箱失败")
+            return {"ok": False, "error": str(exc)}
+
+        if not data or data.get("errcode", 0) != 0:
+            errcode = data.get("errcode")
+            errmsg = data.get("errmsg", "未知错误")
+            hint = ""
+            if errcode == 40007:
+                hint = "media_id 无效或草稿已不存在（可能已被群发 / 删除）"
+            return {
+                "ok": False,
+                "error": errmsg,
+                "errcode": errcode,
+                "hint": hint or "常见原因：IP 不在白名单 / 凭证错误 / 接口权限未开通",
+            }
+
+        logger.info("更新草稿成功: media_id=%s", media_id)
+        return {
+            "ok": True,
+            "media_id": media_id,
+            "message": "已更新草稿箱里的这篇草稿（原地替换，不新增记录）",
             "pushed_at": int(time.time()),
         }
 

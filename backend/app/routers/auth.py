@@ -543,6 +543,12 @@ async def serve_avatar(user_id: str, owner: str = Depends(link_auth)):
     """
     if not re.fullmatch(r"[0-9a-f]{32}", user_id):
         raise HTTPException(404, "头像不存在")
+    # 归属二次校验：link_auth 的 Bearer 分支只认「你是谁」，不确认「你能否
+    # 访问这个 user_id」—— 漏掉这道会允许登录用户拿自己 token 读他人头像
+    # （文件名即 uid，易从分享链接/响应里拿到或枚举）。HMAC 分支的 owner 即
+    # 签名者，user_id 与其一致时本校验无副作用。
+    if user_id != owner:
+        raise HTTPException(404, "头像不存在")
     f = Path(settings.UPLOAD_DIR) / "avatars" / f"{user_id}.jpg"
     if not f.exists() or not f.is_file():
         raise HTTPException(404, "头像不存在")

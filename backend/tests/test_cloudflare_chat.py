@@ -2,11 +2,12 @@
 
 覆盖计划里的验证点：
   1. CF client 构造（凭证有无两态）
-  2. CF 分支特例：忽略 tools、不传 stream_options、max_tokens 收紧、模型取 override
+  2. CF 分支特例：带 tools（对话模型已支持 function calling）、不传 stream_options、
+     max_tokens 收紧、模型取 override
   3. CF 失败不静默 fallback
   4. 流式异常 → {"type": "error"} 事件（SSE 已 200 的唯一告知途径）
   5. CF 流式 usage 缺失 → estimated 估价路径
-  6. 历史工具痕迹剥离（llama 收到 role:tool 会 400）
+  6. 历史工具痕迹剥离（仅当实际模型不支持 tools 时；不支持的 CF 模型由 llm 层兜底）
   7. system prompt 工具纪律段剥离
   8. 模型清单：成功过滤 / 失败不进缓存 / 凭证缺 400 / TTL 缓存命中
   9. chat-provider PUT 的模型校验与清空
@@ -159,7 +160,9 @@ def test_chat_cf_ignores_tools_and_tightens_budget(monkeypatch):
             model_override="@cf/meta/llama-3.1-8b-instruct",
         )
         kw = fake.completions.last_kwargs
-        assert "tools" not in kw and "tool_choice" not in kw, "CF 分支必须剥掉 tools"
+        # 2026-10-30 修正：CF 对话模型（llama-3.x / glm-4.x）实测支持 function
+        # calling，现在会带 tools + tool_choice；仍不传 stream_options、仍收紧 max_tokens。
+        assert "tools" in kw and "tool_choice" in kw, "CF 现支持 tool_calls，应带上 tools"
         assert kw["model"] == "@cf/meta/llama-3.1-8b-instruct"
         assert kw["max_tokens"] == 4096, "CF 模型输出上限低，不能用 DeepSeek 的 16384"
         assert result.content == "你好"

@@ -70,6 +70,12 @@ THEMES: dict[str, dict[str, str]] = {
         "scenes": "工具推荐、AI 资讯、教程实操、品牌号日常更新",
         "desc": "暖橙品牌风，气泡分隔+引导卡自成体系",
     },
+    "plain": {
+        "name": "普通排版",
+        "color": "#5B6B7B",
+        "scenes": "无主题、最朴素的正文呈现",
+        "desc": "只保留段落结构，无配色无装饰",
+    },
 }
 
 DEFAULT_THEME = "moyu-green"
@@ -117,6 +123,11 @@ COVER_PALETTES: dict[str, dict[str, str]] = {
         "gradient": "linear-gradient(135deg, #FF8A3D 0%, #FF3B30 100%)",
         "main": "#FF3B30",
         "warm": "#FF8A3D",
+    },
+    "plain": {  # 普通排版（中性灰，不引入品牌配色）
+        "gradient": "linear-gradient(135deg, #B0B7C0 0%, #6B7280 100%)",
+        "main": "#6B7280",
+        "warm": "#D1D5DB",
     },
 }
 

@@ -34,6 +34,7 @@ from app.services.layout import (
     list_themes,
     submit_layout_job,
 )
+from app.services.storage import get_storage, put_gen
 
 router = APIRouter(prefix="/content", tags=["内容加工"])
 
@@ -52,8 +53,11 @@ def _image_dir(content_id: str) -> Path:
 
 
 def _image_url(content_id: str, filename: str, owner: str = "default") -> str:
-    # 浏览器 <img src> 带不了请求头，用 HMAC 签名直链（见 core/security.link_url）
-    return link_url(f"{settings.API_PREFIX}/content/images/{content_id}/{filename}", owner)
+    # 走存储抽象：本地后端 = HMAC 签名直链；TOS 后端 = 公网永久直链。
+    # 浏览器 <img src> 直连，无需请求头。
+    from app.services.storage import gen_key
+
+    return get_storage().url(gen_key(content_id, filename), owner)
 
 
 # ---------------------------------------------------------------- 排版
@@ -193,6 +197,8 @@ async def generate_images(
 
     imgs = list(c.images or [])
     for f in files:
+        # 云端后端时把字节再镜像到 TOS（本地后端 put_gen 直接跳过，文件已落盘）
+        await put_gen(content_id, f.name, f.read_bytes())
         imgs.append(
             {
                 "id": uuid.uuid4().hex[:12],
@@ -226,6 +232,8 @@ async def upload_image(
     fname = f"{uuid.uuid4().hex[:12]}{suffix}"
     dest = out_dir / fname
     dest.write_bytes(await file.read())
+    # 云端后端时把字节镜像到 TOS（本地后端直接跳过）
+    await put_gen(content_id, fname, dest.read_bytes())
 
     imgs = list(c.images or [])
     imgs.append(
@@ -357,6 +365,9 @@ async def generate_cover(
     finally:
         c.processing = ""
         await db.commit()
+
+    # 云端后端时把封面字节镜像到 TOS（本地后端直接跳过，文件已落盘）
+    await put_gen(content_id, path.name, path.read_bytes())
 
     # 已有封面 → 换掉（保留它在队首的位置）；没有 → 插到首位
     imgs = list(c.images or [])

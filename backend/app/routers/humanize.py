@@ -14,6 +14,8 @@
 """
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
@@ -29,11 +31,33 @@ router = APIRouter(prefix="/humanize", tags=["人工痕迹"])
 TEXT_MAX = 100_000
 
 
+def _pick_source(c: Any, source: str, platform: str) -> tuple[str, str]:
+    """按「检测对象」取出要检的正文，返回 (正文, 实际检的口径)。
+
+    - `layout`（排版产物，默认）：`layouts[platform].text`。发布出去的就是这一份
+      （小红书/头条/百家号/公众号贴图粘的全是它），体检它才有意义。
+    - `body`（源文 Markdown）：改写和写回都以它为准，想看「改写前后差在哪」时才用。
+
+    排版产物不存在时**降级到源文**并把口径如实返回 —— 前端据此提示「还没排版，
+    这次检的是源文」，不能默默检了源文却让用户以为是排版产物。
+    """
+    if source == "body":
+        return c.body or "", "body"
+    platform = platform or (c.platform or "gzh")
+    lay = (c.layouts or {}).get(platform) or {}
+    text = (lay.get("text") or "").strip()
+    if text:
+        return text, "layout"
+    return c.body or "", "body"
+
+
 class ScanRequest(BaseModel):
     content_id: str = ""
     text: str = ""
     platform: str = "gzh"
     sub_type: str = ""
+    # 检测对象：layout=排版产物（默认），body=源文 Markdown
+    source: str = "layout"
 
 
 class RewriteRequest(BaseModel):
@@ -56,8 +80,9 @@ async def scan(
 ):
     """体检一段文案的人工痕迹（零 LLM、零成本）。
 
-    content_id 与 text 至少给一个：给了 content_id 就取其**源文**（content.body，
-    Markdown），给了 text 就用传入的文本（前端传正在编辑的内容时用这个）。
+    正文来源优先级：传了 text 就用 text（前端正在编辑、未落库的内容）；
+    否则按 `source` 取库里的排版产物或源文，见 `_pick_source`。
+    返回里的 `source` 是**实际**检的口径，请求了排版产物但还没排版时会变回 body。
     """
     from app.models.content import Content
     from app.prompts.platforms import normalize_sub_type
@@ -65,13 +90,14 @@ async def scan(
     text = req.text
     platform = req.platform
     sub_type = req.sub_type
+    source = req.source or "layout"
     if not text and req.content_id:
         c = await db.get(Content, req.content_id)
         if c is None:
             raise HTTPException(status_code=404, detail="内容不存在")
         if (c.owner or "default") != owner:
             raise HTTPException(status_code=404, detail="内容不存在")
-        text = c.body or ""
+        text, source = _pick_source(c, source, platform)
         platform = platform or (c.platform or "gzh")
         # 前端没传子形态时从内容兜底（队列里存的是权威值）
         sub_type = sub_type or normalize_sub_type(platform, c.sub_type)
@@ -80,7 +106,7 @@ async def scan(
     if len(text) > TEXT_MAX:
         raise HTTPException(status_code=413, detail=f"正文超过 {TEXT_MAX} 字上限")
 
-    return humanize_svc.scan(text, platform, sub_type)
+    return {**humanize_svc.scan(text, platform, sub_type), "source": source}
 
 
 @router.post("/rewrite")
@@ -103,16 +129,23 @@ async def rewrite(
 
     platform = req.platform or (c.platform or "gzh")
     return await humanize_svc.submit_humanize_job(
-        req.content_id, platform, req.level, req.sub_type
+        req.content_id, platform, req.level, req.sub_type, owner
     )
 
 
 @router.get("/job/{task_id}")
 async def get_job(task_id: str, owner: str = Depends(current_owner_id)):
-    """轮询改写任务。result = {text, before_score, after_score, warnings, level}。"""
-    job = humanize_svc.get_humanize_job(task_id)
+    """轮询改写任务。result = {text, before_score, after_score, warnings, level}。
+
+    - `indeterminate`：当前阶段的百分比不可信（模型调用中），前端该展示已用时长
+      而不是死盯进度条；
+    - `elapsed`：服务端算出的已用秒数（含排队）；
+    - 任务只在内存里，**服务重启就没了** —— 前端收到 404 必须提示重试，
+      不能静默重试到天荒地老。
+    """
+    job = humanize_svc.get_humanize_job(task_id, owner)
     if job is None:
-        raise HTTPException(status_code=404, detail="任务不存在或已过期")
+        raise HTTPException(status_code=404, detail="任务不存在或已失效（服务重启会清空任务）")
     return {
         "task_id": job["task_id"],
         "content_id": job["content_id"],
@@ -122,6 +155,8 @@ async def get_job(task_id: str, owner: str = Depends(current_owner_id)):
         "status": job["status"],
         "progress": job["progress"],
         "stage": job["stage"],
+        "indeterminate": bool(job.get("indeterminate")),
+        "elapsed": job.get("elapsed", 0),
         "result": job["result"],
         "error": job["error"],
     }
@@ -149,6 +184,8 @@ async def apply(
 class ZhuqueRequest(BaseModel):
     content_id: str = ""
     text: str = ""
+    platform: str = ""
+    source: str = "layout"
 
 
 class ReportRequest(BaseModel):
@@ -156,6 +193,7 @@ class ReportRequest(BaseModel):
     text: str = ""
     platform: str = ""
     sub_type: str = ""
+    source: str = "layout"
 
 
 @router.post("/zhuque")
@@ -168,18 +206,23 @@ async def zhuque_detect(
 
     is_merge=false：每段独立置信度，供面板的占比条与报告单的片段解析用。
     同步返回——单次调用通常几秒，不值得套异步 job 的外壳。
+
+    检哪一份跟本地体检走同一个开关（`source`）：默认检排版产物，因为发出去的是它。
     """
     from app.models.content import Content
 
     text = req.text
+    actual = req.source or "layout"
     if not text and req.content_id:
         c = await db.get(Content, req.content_id)
         if c is None or (c.owner or "default") != owner:
             raise HTTPException(status_code=404, detail="内容不存在")
-        text = c.body or ""
+        text, actual = _pick_source(c, req.source or "layout", req.platform)
     if not (text or "").strip():
         raise HTTPException(status_code=400, detail="没有可检测的正文")
-    return await zhuque_svc.classify(text)
+    # 把实际检的口径带回去：前端要按它归档结果，避免「检的是源文、标的是排版产物」
+    res = await zhuque_svc.classify(text)
+    return {**res, "source": actual}
 
 
 @router.post("/report", response_class=HTMLResponse)
@@ -191,17 +234,20 @@ async def detect_report_page(
     """生成「AI 生成检测报告单」HTML（朱雀同款版式 + 本地体检，可直接打印成 PDF）。
 
     朱雀未配置或调用失败时自动降级为纯本地体检报告，不会整个 500。
+    报告标题会写明检的是**排版产物还是源文**——两张报告单长得一样却口径不同，
+    分不清就会拿错分数去决策。
     """
     from app.models.content import Content
 
     text = req.text
     platform = req.platform
     sub_type = req.sub_type
+    source = req.source or "layout"
     if not text and req.content_id:
         c = await db.get(Content, req.content_id)
         if c is None or (c.owner or "default") != owner:
             raise HTTPException(status_code=404, detail="内容不存在")
-        text = c.body or ""
+        text, source = _pick_source(c, source, platform)
         platform = platform or (c.platform or "")
         sub_type = sub_type or (c.sub_type or "")
     if not (text or "").strip():
@@ -217,6 +263,7 @@ async def detect_report_page(
         zhuque_result=zhuque_result,
         platform=platform,
         sub_type=sub_type,
+        source=source,
     )
     return HTMLResponse(content=html_text)
 

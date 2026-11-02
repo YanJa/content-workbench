@@ -69,6 +69,7 @@ PERMISSIONS: list[tuple[str, str, str]] = [
     ("menu", "menu.settings", "系统状态"),
     ("menu", "menu.knowledge", "知识库"),
     ("menu", "menu.skills", "技能包"),
+    ("menu", "menu.assets", "素材库"),
     # 按钮级：控制具体动作
     ("chat", "chat.send", "发送消息"),
     ("queue", "queue.create", "新建内容"),
@@ -85,6 +86,10 @@ PERMISSIONS: list[tuple[str, str, str]] = [
     ("voice", "voice.clone", "声音复刻"),
     ("wechat", "wechat.push", "推送公众号草稿"),
     ("settings", "settings.wechat_edit", "公众号增删改"),
+    # 素材库：上传不设权限点（跟「新建内容」一个量级），只有「从在线图源导入」
+    # 和「删除」值得单独管 —— 前者受图源条款限速，后者不可逆。
+    ("assets", "assets.import", "从在线图源导入素材"),
+    ("assets", "assets.delete", "删除素材"),
 ]
 
 PERMISSION_KEYS = tuple(k for _, k, _ in PERMISSIONS)

@@ -126,11 +126,16 @@ def test_resolve_returns_bound_model(tmp_path):
 # ---------------------------------------------------------------- 3. 旧 CF 行为不变
 
 def test_legacy_spec_keeps_cloudflare_flags():
-    """CF 的两个特例必须从字符串判断变成 flag，且值一字不变。"""
+    """CF 的特例从字符串判断变成 flag；stream_usage 仍 False，但 supports_tools 已放开。
+
+    2026-10-30 修正：CF 对话模型（@cf/meta/llama-3.x、@cf/zai-org/glm-4.x）实测
+    已支持 function calling，不再默认 False —— 否则直接配 CLOUDFLARE_CHAT_MODEL、
+    没进模型池的对话会整组丢失工具能力。不支持的个别 CF 模型由 llm 层兜底忽略。
+    """
     from app.services.llm import _legacy_spec
 
     cf = _legacy_spec("cloudflare", None)
-    assert cf.supports_tools is False, "CF 不支持 function calling"
+    assert cf.supports_tools is True, "CF 对话模型实测支持 function calling"
     assert cf.supports_stream_usage is False, "CF 的 /ai/v1 不认 stream_options（带了 400）"
     assert cf.max_tokens == 4096 and cf.temperature == 0.7
     assert cf.provider_key == "cloudflare"

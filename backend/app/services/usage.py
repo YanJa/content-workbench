@@ -119,12 +119,21 @@ async def record(
 
 
 async def backfill_free_billing(db: AsyncSession, limit: int = 20_000) -> int:
-    """给加 billing 列**之前**的老行补上「这笔是免费的」。
+    """给老行补上「这笔是免费的」。
 
-    只补能证明的那部分：这个模型现在在池里明确标着 billing=free。
-    补不了的（模型没进池、或者本来就是付费）保持空串 —— 空串 = 按兜底价估，
-    也就是维持加列之前的口径。**不回溯改任何金额**，只是把「免费」这个事实
-    补记上去，免得同一行既标着免费又显示一笔钱。
+    只补能证明的那部分：这个模型现在明确标着 billing=free。判定来源有两处
+    （任一说 free 就算）：
+      1. 模型池 catalog 的 billing 字段
+      2. 单价表 PRICING 里登记的免费模型（v1.9.9 起免费模型直接登记在 PRICING，
+         不一定进池；glm-4-flash / glm-4.7-flash / 各 CF 免费模型都在这）
+
+    补不了的（模型没进池也没登记、或者本来就是付费）保持空串 / unknown ——
+    空串 = 按兜底价估，也就是维持加列之前的口径；unknown = 仍按兜底价估并
+    继续在前端标 ⚠。**不回溯改任何金额**，只是把「免费」这个事实补记上去，
+    免得同一行既标着免费又显示一笔钱。
+
+    历史里存成 `unknown` 的行一并订正：那是「当初没登记」时落的，现在既然
+    证明是免费，就该改判 free（否则 warning 一直挂着、费用也一直被估成钱）。
     """
     from sqlalchemy import select as _select
 
@@ -138,14 +147,19 @@ async def backfill_free_billing(db: AsyncSession, limit: int = 20_000) -> int:
             if e.get("billing") == "free"
         }
     except Exception:  # noqa: BLE001
-        return 0
+        free_models = set()
+    # 单价表也认免费：免费模型不一定进池，但登记在 PRICING 里就是免费。
+    free_models |= {m for m in pricing.PRICING if pricing.is_free(m)}
     if not free_models:
         return 0
 
     rows = (
         await db.execute(
             _select(LlmUsage)
-            .where(LlmUsage.billing == "", LlmUsage.model.in_(list(free_models)))
+            .where(
+                LlmUsage.billing.in_(["", "unknown"]),
+                LlmUsage.model.in_(list(free_models)),
+            )
             .limit(limit)
         )
     ).scalars().all()

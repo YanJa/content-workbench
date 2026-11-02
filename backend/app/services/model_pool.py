@@ -381,6 +381,63 @@ def take_warnings(spec: ModelSpec, feature: str) -> list[dict[str, Any]]:
     ]
 
 
+def quota_block_message(feature: str) -> dict[str, Any] | None:
+    """诊断某功能槽是否因「免费账号护栏」被静默过滤掉了。
+
+    `resolve_candidates` 在开流前就把额度/RPM 耗尽的候选 `continue` 掉，
+    于是它们既不会被选中，也不会触发 `take_warnings`（那只对「已选中」的模型弹）。
+    这正是用户无感知、也无「去哪改」指引的缺口。本函数补上：
+
+    - 该功能槽至少绑了一个 free 候选；
+    - 且其中**确有被护栏挡住**（日调用/RPM 用尽）的 free 候选；
+    就返回一条 `quota_warning`（level='exhausted'），文案明确指去哪调大。
+
+    不命中（无任何 free 候选 / free 候选都健康 / 压根没绑）返回 None。
+    纯内存、绝不抛异常 —— 它只是个锦上添花的提示，挂了也不能影响主流程。
+    """
+    try:
+        snap = snapshot()
+        binding = snap.bindings.get(feature)
+        if not binding:
+            return None
+        now = _now()
+        seen_free = False
+        any_blocked = False
+        for cid in [binding.get("primary")] + list(binding.get("fallbacks") or []):
+            if not cid:
+                continue
+            entry = snap.catalog.get(cid)
+            if not entry or not entry.get("enabled"):
+                continue
+            prov = snap.providers.get(entry.get("provider_key") or "")
+            if not prov or not prov.get("enabled"):
+                continue
+            billing = entry.get("billing") or prov.get("billing_default") or ""
+            if billing != "free":
+                # 这个候选不是免费通道，不归本护栏管，直接跳过（不阻断判断）
+                continue
+            seen_free = True
+            if not _quota_ok(entry, prov, SYSTEM_OWNER, snap, now) or not _rpm_ok(
+                entry, prov, SYSTEM_OWNER, now
+            ):
+                any_blocked = True
+        if not seen_free or not any_blocked:
+            return None
+        return {
+            "type": "quota_warning",
+            "level": "exhausted",
+            "feature": feature,
+            "message": (
+                "当前对话使用的免费模型（Cloudflare 账号级额度）已触发调用上限，"
+                "系统已自动回落到备用通道。如需继续使用免费模型并提高额度，请到 "
+                "「模型池 → 服务商 → Cloudflare」把「日调用上限(daily_calls_limit)」"
+                "和「分钟调用上限(rpm_limit)」调大后重试。"
+            ),
+        }
+    except Exception:  # noqa: BLE001
+        return None
+
+
 # ---------------------------------------------------------------- 解析
 
 def _spec_of(entry: dict[str, Any], prov: dict[str, Any], api_key: str, cred_owner: str) -> ModelSpec:
@@ -763,17 +820,27 @@ async def seed_model_pool(db: Any) -> dict[str, int]:
                 # 整个账号是免费档：即使某个模型没进池（设置页下拉可以直接选），
                 # 记账也应该算 0 元，而不是按兜底价记成钱。
                 billing_default="free",
+                # 免费档账号级护栏：预置「日调用上限 / 分钟调用上限」两个阀。
+                # 默认宽松但不失控（用户可在「模型池→服务商→Cloudflare」调大）。
+                # RPM 对齐 CF 免费档约 30 QPS；日调用对应免费计划的体量留足余量。
+                daily_calls_limit=3000, rpm_limit=30,
                 note="由 .env 的 CLOUDFLARE_* 自动播种；免费额度账号级共享（10k Neurons/天）",
                 created_at=now, updated_at=now,
             )
         )
         if settings.CLOUDFLARE_CHAT_MODEL:
+            # 默认 CLOUDFLARE_CHAT_MODEL 通常是 llama-3.x 这类**流式不支持**
+            # function calling 的模型（会把 tool_calls 当普通文本吐出），所以
+            # catalog 里保持 supports_tools=False；真不支持的模型由 llm 层兜底
+            # 忽略 tools，不会把 JSON 当文本吐出来。glm-4.x 等支持的模型由
+            # _legacy_spec 直接放开（见 llm._legacy_spec），或在此处手动改为 True。
             row = ModelCatalog(
                 provider_key="cloudflare", model_id=settings.CLOUDFLARE_CHAT_MODEL,
                 label="Cloudflare 对话（免费）", capabilities=["chat"], protocol="openai_chat",
                 supports_tools=False, supports_stream_usage=False, max_tokens=4096,
                 temperature=0.7, billing="free", quota_scope="provider", enabled=True,
-                sort=20, note="CF 不支持 function calling，也不认 stream_options",
+                sort=20, note="CF 默认模型（llama-3.x）流式不支持 function calling，"
+                            "也不认 stream_options；支持的模型请手动勾 supports_tools",
                 created_at=now, updated_at=now,
             )
             catalog.append(row)
@@ -858,6 +925,41 @@ async def migrate_free_providers(db: Any) -> int:
     return n
 
 
+# 免费档账号级护栏的预置默认值（只补不设，绝不动用户已改过的值）。
+_FREE_DAILY_CALLS_CAP = 3000
+_FREE_RPM_CAP = 30
+
+
+async def migrate_free_quota_caps(db: Any) -> int:
+    """给已有的「免费档」服务商补上账号级护栏默认值。
+
+    早期播种的 Cloudflare 服务商没带 daily_calls_limit / rpm_limit（默认 0=不限），
+    于是免费模型没有任何护栏。这里只补不设：已显式配置过（>0）的保持不动。
+    """
+    from sqlalchemy import select as _select
+
+    rows = (
+        await db.execute(
+            _select(ModelProvider).where(ModelProvider.billing_default == "free")
+        )
+    ).scalars().all()
+    n = 0
+    for p in rows:
+        changed = False
+        if not isinstance(p.daily_calls_limit, int) or p.daily_calls_limit <= 0:
+            p.daily_calls_limit = _FREE_DAILY_CALLS_CAP
+            changed = True
+        if not isinstance(p.rpm_limit, int) or p.rpm_limit <= 0:
+            p.rpm_limit = _FREE_RPM_CAP
+            changed = True
+        if changed:
+            n += 1
+    if n:
+        await db.flush()
+        logger.info("已为 %d 个免费通道服务商补上账号级护栏（日调用≤%d / 分钟≤%d）", n, _FREE_DAILY_CALLS_CAP, _FREE_RPM_CAP)
+    return n
+
+
 async def migrate_legacy_chat_provider(db: Any) -> bool:
     """把老口径的 app_settings（chat_provider / cloudflare_chat_model）迁到绑定。
 
@@ -923,6 +1025,7 @@ async def bootstrap_pool(db: Any) -> None:
     try:
         await seed_model_pool(db)
         await migrate_free_providers(db)
+        await migrate_free_quota_caps(db)
         await migrate_legacy_chat_provider(db)
         await db.commit()
     except Exception as exc:  # noqa: BLE001

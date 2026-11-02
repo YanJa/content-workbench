@@ -171,6 +171,22 @@ export async function saveBinding(
   return data
 }
 
+/** 解析某功能槽「实际会用到哪个模型」（与对话真实调用同口径，owner 感知）。 */
+export interface ResolvedModel {
+  feature: string
+  resolved: string
+  label: string
+  provider_key: string
+  billing: string
+  fell_back: boolean
+  legacy_provider: string
+  legacy_model: string
+}
+export async function resolveModel(feature: string): Promise<ResolvedModel> {
+  const { data } = await http.get(`/model-pool/resolve/${feature}`)
+  return data
+}
+
 // ---------------------------------------------------------------- 额度
 
 export async function poolQuota(): Promise<QuotaRow[]> {
