@@ -55,7 +55,8 @@ async def list_assets(
     tag: str | None = Query(default=None),
     folder_id: str | None = Query(
         default=None,
-        description="目录过滤。空=不按目录过滤；'none'=未归类（folder_id 为 NULL）",
+        description="目录过滤。空=不按目录过滤；'none'=未归类（folder_id 为 NULL）；"
+        "传目录 id 则含该目录及其所有子孙目录（与目录角标计数口径一致）",
     ),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=30, ge=1, le=100),
@@ -77,7 +78,10 @@ async def list_assets(
     if folder_id == "none":
         cond.append(Asset.folder_id.is_(None))
     elif folder_id:
-        cond.append(Asset.folder_id == folder_id)
+        # 含子孙目录：过滤口径与左侧树角标（递归计数）一致，
+        # 否则父目录角标显示 12、点进去只看到 3 张直属图，像筛选坏了
+        ids = await svc.descendant_folder_ids(db, owner, folder_id)
+        cond.append(Asset.folder_id.in_(ids))
 
     total = int(
         (await db.execute(select(func.count(Asset.id)).where(*cond))).scalar() or 0

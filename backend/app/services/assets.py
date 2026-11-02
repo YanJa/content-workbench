@@ -531,6 +531,30 @@ async def delete_folder(
     return {"ok": True, "deleted_assets": deleted_assets, "moved_assets": False}
 
 
+async def descendant_folder_ids(db: AsyncSession, owner: str, root_id: str) -> set[str]:
+    """某个目录及其所有子孙目录的 id 集合。
+
+    目录树角标（folder_asset_counts）显示的是「含子目录」的递归计数，
+    但 /assets 的 folder_id 过滤以前只匹配直属目录 —— 于是父目录角标
+    显示 12、点进去却只看到 3 张直属图，看起来像筛选坏了。这里算出
+    完整子树 id，让过滤口径与角标一致：点哪个目录就看它（含嵌套）全部图。
+    """
+    folders = await list_folders(db, owner)
+    children: dict[str | None, list[str]] = {}
+    for f in folders:
+        children.setdefault(f.parent_id, []).append(f.id)
+
+    out: set[str] = set()
+
+    def _walk(fid: str) -> None:
+        out.add(fid)
+        for c in children.get(fid, []):
+            _walk(c)
+
+    _walk(root_id)
+    return out
+
+
 async def folder_asset_counts(db: AsyncSession, owner: str) -> dict[str, int]:
     """每个目录（含间接）下的素材数。树形视图角标用。"""
     folders = await list_folders(db, owner)
