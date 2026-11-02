@@ -371,9 +371,9 @@ const columns = computed<DataTableColumns<QueueItem>>(() => [
           ? h(NButton, {
               size: 'tiny',
               quaternary: true,
-              title: '改标题（排版之后就不能改了）',
+              title: '重命名标题（排版之后就不能改了）',
               onClick: () => openRename(row),
-            }, { default: () => '改' })
+            }, { default: () => '重命名' })
           : null,
       ]),
   },
@@ -802,7 +802,7 @@ async function onSaveRename() {
     await queue.refresh()
   } catch (e) {
     // 409 = 这一刻刚好排版完成/推了草稿箱，不是 bug，刷新即可
-    message.error((e as Error)?.message || '改标题失败')
+    message.error((e as Error)?.message || '重命名失败')
     await queue.refresh()
   } finally {
     renameSaving.value = false
