@@ -22,6 +22,15 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '1.10.1',
+    date: '2026-11-02',
+    title: '设置页减噪：「后端地址」卡片改为按需显示',
+    highlights: [
+      '系统设置的「后端地址」卡片不再常驻显示：仅当后端连接失败、或已设过自定义地址时才出现，日常同源部署（nginx 代理）下隐藏，避免误以为需要配置。',
+      '底层地址覆盖机制保留不变，静态文件通道打开前端、后端迁移应急切换等场景仍可手动指定。',
+    ],
+  },
+  {
     version: '1.10.0',
     date: '2026-11-02',
     title: '素材库升级：目录树 / 批量上传下载 / 三视图 + 火山 TOS 对象存储',

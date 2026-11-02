@@ -732,8 +732,10 @@ const envColumns: DataTableColumns<EnvRow> = [
         ><template v-if="showApiBase">，可在下方「后端地址」里改成实际运行的后端</template>。
       </NAlert>
 
-      <!-- 后端地址：仅静态部署 / 跨域访问时才需要改（dev server 有 proxy，不显示） -->
-      <NCard v-if="showApiBase" size="small" title="后端地址" style="margin-bottom: 16px">
+      <!-- 后端地址：仅静态部署 / 跨域访问时才需要改（dev server 有 proxy，不显示）。
+           同源部署（nginx 代理 /api）下用不上 —— 2026-11-02 起不再常驻，仅当连接失败
+           或已设过自定义地址时才露出，避免普通用户误以为需要配置。 -->
+      <NCard v-if="showApiBase && (err || usingCustom)" size="small" title="后端地址" style="margin-bottom: 16px">
         <div class="api-base-row">
           <NInput
             v-model:value="apiBaseInput"
