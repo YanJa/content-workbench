@@ -68,6 +68,12 @@ export const useChatStore = defineStore('chat', () => {
   async function openConversation(id: string) {
     const detail = await convApi.getConversation(id)
     currentId.value = detail.id
+    // 恢复顶部「平台-子形态」选择器（2026-11 修复）。会话级只存平台与最后
+    // 使用的子形态：scene 为 chat/空串时回落「通用对话」（platform=null）；
+    // 其余平台回填，子形态按该平台各自的默认值归位（见 ChatView 的
+    // syncSceneFromStore）。这样切走再切回 / 切换会话，选择器都不再回落默认。
+    platform.value = detail.scene && detail.scene !== 'chat' ? (detail.scene as Platform) : null
+    subType.value = detail.sub_type || ''
     messages.value = detail.messages
       // system 是提示词不是对话内容；tool 行是历史遗留形态（工具痕迹已并入
       // assistant 行的 tool_calls.calls），单独渲染会变成一串没头没尾的 JSON

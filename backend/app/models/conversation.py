@@ -27,6 +27,11 @@ class Conversation(Base):
     owner: Mapped[str] = mapped_column(String(64), default="default", index=True)
     # 业务场景：chat / gzh / xiaohongshu / douyin / zhihu
     scene: Mapped[str] = mapped_column(String(32), default="chat", index=True)
+    # 平台内子形态（知乎 answer/article/idea；公众号 article/tietu；
+    # 头条 article/weitoutiao；百家号 article/dongtai）。随每次发送更新，
+    # 前端打开会话时据此恢复顶部「平台-子形态」选择器 —— 修复「切走再切回会话，
+    # 选择器回落通用对话」（2026-11 修复）。无子形态的平台恒为空串。
+    sub_type: Mapped[str] = mapped_column(String(32), default="")
     # 更早消息的摘要（用于长会话上下文压缩）
     summary: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[int] = mapped_column(default=_now)

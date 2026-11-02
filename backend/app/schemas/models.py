@@ -12,12 +12,20 @@ class ConversationCreate(BaseModel):
     scene: Literal[
         "chat", "gzh", "xiaohongshu", "douyin", "zhihu", "toutiao", "baijiahao"
     ] = "chat"
+    # 平台内子形态（随创建请求带上；不传则空串，由首条消息的发送补全）。
+    # 仅用于显式建会话（/chat/conversations）；对话流里的隐式建会话在首条
+    # 发送时按 ChatRequest.sub_type 写，二者口径一致。
+    sub_type: str = ""
 
 
 class ConversationOut(BaseModel):
     id: str
     title: str
     scene: str
+    # 平台内子形态（知乎 answer/article/idea；公众号 article/tietu；
+    # 头条 article/weitoutiao；百家号 article/dongtai）。前端据此恢复
+    # 顶部选择器，无子形态平台恒为空串。
+    sub_type: str = ""
     summary: str = ""
     created_at: int
     updated_at: int

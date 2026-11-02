@@ -325,6 +325,7 @@ function syncViewport() {
 /** 选中会话：加载后自动收起抽屉（用户确认的交互）。 */
 async function onPickConversation(id: string) {
   await chat.openConversation(id)
+  syncSceneFromStore()
   initReasoningFolded()
   drawerShow.value = false
 }
@@ -332,6 +333,24 @@ async function onPickConversation(id: string) {
 function onNewConversation() {
   chat.newConversation()
   drawerShow.value = false
+}
+
+/**
+ * 把顶部「平台-子形态」选择器同步成当前会话在后端记下的选择。
+ *
+ * 为什么需要：scene 与各子形态是 ChatView 的**局部 ref**，路由切走再切回时
+ * 组件整体卸载重建，这些 ref 会重置成默认值（通用对话 + 各平台默认子形态），
+ * 于是「之前选的今日头条-图文」就丢了。store 是全局的、跨路由存活，
+ * openConversation 已把会话的平台/子形态回填到 chat.platform / chat.subType，
+ * 这里只做映射。新建会话（currentId 为空）时保持局部 ref 原样，不动它。
+ */
+function syncSceneFromStore() {
+  if (!chat.currentId) return
+  scene.value = chat.platform ?? ''
+  if (chat.platform === 'zhihu') zhihuSub.value = chat.subType || 'answer'
+  else if (chat.platform === 'gzh') gzhSub.value = chat.subType || 'article'
+  else if (chat.platform === 'toutiao') toutiaoSub.value = chat.subType || 'article'
+  else if (chat.platform === 'baijiahao') baijiahaoSub.value = chat.subType || 'article'
 }
 
 /**
@@ -1008,6 +1027,10 @@ onMounted(async () => {
     chat.newConversation()
   }
   await restoreFromQueue()
+  // 路由切走再切回（无 keep-alive，组件整体重建）时，顶部平台-子形态选择器
+  // 随局部 ref 重置成默认值。store 跨路由存活、已记下当前会话的平台/子形态
+  // （openConversation 内部回填 chat.platform / chat.subType），这里据此恢复。
+  syncSceneFromStore()
   // 兜底恢复「已保存到队列」状态。chat 是全局 store，从别的菜单页（设置 / 用户管理
   // 等）切回对话创作时 currentId 往往不变，watch(currentId) 不触发；而 restoreFromQueue
   // 只在从队列带 ?conversation_id 跳回时才进。两条路径都不覆盖普通菜单切换，导致回到
@@ -1037,6 +1060,7 @@ async function restoreFromQueue() {
   returnContentId.value = (route.query.content_id as string | undefined) ?? ''
   try {
     await chat.openConversation(convId)
+    syncSceneFromStore()
     initReasoningFolded()
   } catch {
     chat.newConversation()

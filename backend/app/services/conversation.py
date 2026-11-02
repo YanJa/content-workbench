@@ -27,9 +27,19 @@ KNOWLEDGE_HEADER = (
 
 
 async def create_conversation(
-    db: AsyncSession, owner: str, title: str = "新对话", scene: str = "chat"
+    db: AsyncSession,
+    owner: str,
+    title: str = "新对话",
+    scene: str = "chat",
+    sub_type: str = "",
 ) -> Conversation:
-    conv = Conversation(id=str(uuid.uuid4()), owner=owner, title=title[:200], scene=scene)
+    conv = Conversation(
+        id=str(uuid.uuid4()),
+        owner=owner,
+        title=title[:200],
+        scene=scene,
+        sub_type=sub_type,
+    )
     db.add(conv)
     await db.flush()
     return conv

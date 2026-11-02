@@ -93,8 +93,18 @@ async def chat_stream(
             raise HTTPException(404, "会话不存在")
     else:
         conv = await conv_svc.create_conversation(
-            db, owner=owner, title=req.message[:30] or "新对话", scene=req.platform or "chat"
+            db,
+            owner=owner,
+            title=req.message[:30] or "新对话",
+            scene=req.platform or "chat",
+            sub_type=req.sub_type,
         )
+
+    # 用户消息落库前，先把「最后使用的平台-子形态」写回会话 —— 前端切走再
+    # 切回时据此恢复顶部选择器（2026-11 修复）。scene 取发送平台，sub_type
+    # 经 normalize_sub_type 收敛成合法值（无子形态平台归空串）。
+    conv.scene = req.platform or "chat"
+    conv.sub_type = normalize_sub_type(req.platform, req.sub_type)
 
     # 用户消息落库
     await conv_svc.add_message(db, conv.id, "user", req.message)
@@ -418,7 +428,7 @@ async def create_conversation(
     db: AsyncSession = Depends(get_db),
     owner: str = Depends(current_owner_id),
 ):
-    conv = await conv_svc.create_conversation(db, owner, req.title, req.scene)
+    conv = await conv_svc.create_conversation(db, owner, req.title, req.scene, req.sub_type)
     await db.commit()
     return conv
 

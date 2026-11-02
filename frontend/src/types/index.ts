@@ -40,6 +40,10 @@ export interface Conversation {
   id: string
   title: string
   scene: string
+  /** 平台内子形态（知乎 answer/article/idea；公众号 article/tietu；
+   *  头条 article/weitoutiao；百家号 article/dongtai）。前端打开会话时
+   *  据此恢复顶部「平台-子形态」选择器，无子形态平台恒为空串。 */
+  sub_type?: string
   summary: string
   created_at: number
   updated_at: number
