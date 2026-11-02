@@ -368,12 +368,7 @@ const columns = computed<DataTableColumns<QueueItem>>(() => [
         // 未排版之前标题还能改 —— 能不能改由后端说了算（title_editable），
         // 前端不自己推断，免得按钮在、点下去 409。
         row.title_editable
-          ? h(NButton, {
-              size: 'tiny',
-              quaternary: true,
-              title: '重命名标题（排版之后就不能改了）',
-              onClick: () => openRename(row),
-            }, { default: () => '重命名' })
+          ? actionBtn('edit', '重命名标题（排版之后就不能改了）', () => openRename(row))
           : null,
       ]),
   },

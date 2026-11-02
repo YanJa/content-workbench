@@ -22,6 +22,15 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '1.10.5',
+    date: '2026-11-02',
+    title: '修正：发布队列改标题按钮应为图标而非汉字',
+    highlights: [
+      '1.10.4 把改标题按钮从单字「改」改成汉字「重命名」，仍不符合系统按钮规范——规范要求这类「记录行操作」用统一图标按钮（圆形图标 + hover tooltip）。',
+      '改为 `ActionBtn`（edit 图标 + 「重命名标题（排版之后就不能改了）」tooltip），与发布队列其余操作（置顶/发布检查/删除等）及会话、知识库、素材目录的改名按钮完全同形态。',
+    ],
+  },
+  {
     version: '1.10.4',
     date: '2026-11-02',
     title: '修复：发布队列标题栏「改标题」按钮文案不符合按钮规范',
