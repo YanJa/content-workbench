@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     APP_NAME: str = "内容运营工作台"
     # 版本号：全系统唯一来源。前端从 /health 读它展示，并据它判断「是否升过级」
     # 来弹「新功能」提醒。改版本请同步 frontend/package.json（仅作人工对照）。
-    APP_VERSION: str = "1.10.6"
+    APP_VERSION: str = "1.10.7"
     APP_ENV: Literal["dev", "prod"] = "dev"
     DEBUG: bool = True
     API_PREFIX: str = "/api"
@@ -110,15 +110,11 @@ class Settings(BaseSettings):
     WECHAT_APPID: str = ""
     WECHAT_SECRET: str = ""
 
-    # 微信接口出网代理（解决「沙箱出网 IP 是动态池、加不完白名单」的问题）。
-    # 形如 socks5://127.0.0.1:10800 或 http://127.0.0.1:8888。
-    # 留空 = 直连（保持原行为）。只作用于调用 api.weixin.qq.com 的请求，
-    # 不影响 LLM 等其他出网流量（见 services/wechat.py 的 _proxy 逻辑）。
-    # 配套部署脚本：deploy/proxy-guard.sh（建隧道 + 断线自愈）。
-    WECHAT_PROXY: str = ""
-    # 走代理时是否校验「实际出口 IP」与预期一致（防隧道指向错机器）。
-    # 形如 49.233.223.252；留空则跳过校验。仅启动自检与 /wechat 系统状态用。
-    WECHAT_PROXY_EXPECT_IP: str = ""
+    # 微信接口：恒直连（服务器出网 IP 已固定并加入公众号后台「IP 白名单」）。
+    # 早期为绕过「沙箱出网 IP 是动态池、加不完白名单」的问题，曾支持
+    # WECHAT_PROXY 固定出口代理（经 SSH 隧道转发）。现服务器 IP 已加白，
+    # 该机制已移除——微信请求一律直连，无代理、无隧道依赖。
+    # 如需排查出网 IP，见 services/wechat.py 的 probe_egress_ip（系统状态页用）。
 
     # ---------- 文件 ----------
     UPLOAD_DIR: str = "./data/uploads"

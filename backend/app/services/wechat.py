@@ -37,35 +37,27 @@ _WECHAT_ERR_HINT = {
 
 
 def _client_kwargs(timeout: int) -> dict:
-    """构造 httpx.AsyncClient 的公共参数。
+    """构造 httpx.AsyncClient 的公共参数（恒直连）。
 
-    微信接口的出网 IP 会被平台校验（白名单），而沙箱/容器出网往往是**动态 IP 池**，
-    无法稳定加白。这里支持把「仅微信请求」强制走固定出口（如经 SSH 隧道转发的
-    SOCKS5 代理 `socks5://127.0.0.1:10800`，出口即那台固定公网 IP 的机器）。
-
-    - `WECHAT_PROXY` 为空 → 直连（原行为，不做任何改变）；
-    - 只影响本模块（微信）的请求，LLM 等其他出网流量不受影响。
+    微信接口出网 IP 会被公众号后台「IP 白名单」校验，直接把服务器出网 IP
+    加进白名单即可（已在生产验证）。早期为绕过「动态出网 IP 加不完白名单」
+    曾支持 `WECHAT_PROXY` 固定出口代理（SSH 隧道），现已移除——服务器 IP
+    已固定并加白，微信请求一律直连，无代理、无隧道依赖。
     """
-    kw: dict = {"timeout": timeout}
-    proxy = (settings.WECHAT_PROXY or "").strip()
-    if proxy:
-        kw["proxy"] = proxy
-    return kw
+    return {"timeout": timeout}
 
 
-# 走代理（SSH 隧道）时，长连接/大文件上传偶发「Server disconnected」瞬断。
-# 这类错误重试即可成功，不影响幂等性（拉 token 幂等；上传素材会产生孤儿素材但无害）。
+# 网络瞬断（长连接/大文件上传偶发「Server disconnected」）时重试即可成功，
+# 不影响幂等性（拉 token 幂等；上传素材会产生孤儿素材但无害）。
 # 值 = 总尝试次数（含首次）。
-_PROXY_RETRY = 3
+_RETRY = 2
 
 
 async def probe_egress_ip(timeout: int = 10) -> dict:
     """探测微信请求实际会用的出口 IP（用于系统状态页 / 排查白名单）。
 
-    返回 {ok, ip?, via_proxy, error?}。直连时用公共回显服务查本机出口；
-    走代理时同样走代理查，才能反映微信真正看到的来源 IP。
+    恒直连：用公共回显服务查本机出网 IP，即微信看到的来源 IP。
     """
-    proxy = (settings.WECHAT_PROXY or "").strip()
     kw = _client_kwargs(timeout)
     last_err = ""
     for i in range(3):  # 公共回显服务偶发抖动，多试几次
@@ -74,11 +66,11 @@ async def probe_egress_ip(timeout: int = 10) -> dict:
                 resp = await client.get("https://ifconfig.me/ip")
                 ip = resp.text.strip()
             if ip:
-                return {"ok": True, "ip": ip, "via_proxy": bool(proxy)}
+                return {"ok": True, "ip": ip}
         except Exception as exc:  # noqa: BLE001
             last_err = str(exc)
             await asyncio.sleep(0.5)
-    return {"ok": False, "via_proxy": bool(proxy), "error": last_err}
+    return {"ok": False, "error": last_err}
 
 
 def _friendly_error(data: dict) -> str:
@@ -207,7 +199,7 @@ class WeChatClient:
         url = f"{WECHAT_API}/cgi-bin/media/uploadimg?access_token={token}"
         data_bytes = Path(file_path).read_bytes()
         name = Path(file_path).name
-        total = _PROXY_RETRY if settings.WECHAT_PROXY else 1
+        total = _RETRY
         data = None
         for i in range(total):
             try:
@@ -218,7 +210,7 @@ class WeChatClient:
                 break
             except httpx.TransportError as exc:
                 if i < total - 1:
-                    logger.warning("图片上传经代理瞬断，重试 %d/%d：%s", i + 1, total - 1, exc)
+                    logger.warning("图片上传网络瞬断，重试 %d/%d：%s", i + 1, total - 1, exc)
                     await asyncio.sleep(0.8 * (i + 1))
                 else:
                     raise
@@ -236,7 +228,7 @@ class WeChatClient:
         url = f"{WECHAT_API}/cgi-bin/material/add_material?access_token={token}&type=image"
         data_bytes = Path(file_path).read_bytes()
         name = Path(file_path).name
-        total = _PROXY_RETRY if settings.WECHAT_PROXY else 1
+        total = _RETRY
         data = None
         for i in range(total):
             try:
@@ -247,7 +239,7 @@ class WeChatClient:
                 break
             except httpx.TransportError as exc:
                 if i < total - 1:
-                    logger.warning("封面上传经代理瞬断，重试 %d/%d：%s", i + 1, total - 1, exc)
+                    logger.warning("封面上传网络瞬断，重试 %d/%d：%s", i + 1, total - 1, exc)
                     await asyncio.sleep(0.8 * (i + 1))
                 else:
                     raise
@@ -394,7 +386,7 @@ class WeChatClient:
         import json as _json
 
         body = _json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        total = _PROXY_RETRY if settings.WECHAT_PROXY else 1
+        total = _RETRY
         data = None
         try:
             for i in range(total):
@@ -409,7 +401,7 @@ class WeChatClient:
                     break
                 except httpx.TransportError as exc:
                     if i < total - 1:
-                        logger.warning("推送草稿经代理瞬断，重试 %d/%d：%s", i + 1, total - 1, exc)
+                        logger.warning("推送草稿网络瞬断，重试 %d/%d：%s", i + 1, total - 1, exc)
                         await asyncio.sleep(0.8 * (i + 1))
                     else:
                         raise
@@ -489,7 +481,7 @@ class WeChatClient:
         import json as _json
 
         body = _json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        total = _PROXY_RETRY if settings.WECHAT_PROXY else 1
+        total = _RETRY
         data = None
         try:
             for i in range(total):
@@ -504,7 +496,7 @@ class WeChatClient:
                     break
                 except httpx.TransportError as exc:
                     if i < total - 1:
-                        logger.warning("更新草稿经代理瞬断，重试 %d/%d：%s", i + 1, total - 1, exc)
+                        logger.warning("更新草稿网络瞬断，重试 %d/%d：%s", i + 1, total - 1, exc)
                         await asyncio.sleep(0.8 * (i + 1))
                     else:
                         raise
@@ -558,7 +550,7 @@ class WeChatClient:
         import json as _json
 
         body = _json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        total = _PROXY_RETRY if settings.WECHAT_PROXY else 1
+        total = _RETRY
         data = None
         try:
             for i in range(total):
@@ -573,7 +565,7 @@ class WeChatClient:
                     break
                 except httpx.TransportError as exc:
                     if i < total - 1:
-                        logger.warning("删除草稿经代理瞬断，重试 %d/%d：%s", i + 1, total - 1, exc)
+                        logger.warning("删除草稿网络瞬断，重试 %d/%d：%s", i + 1, total - 1, exc)
                         await asyncio.sleep(0.8 * (i + 1))
                     else:
                         raise
@@ -628,18 +620,18 @@ def slot_name(ad_slot: str | None) -> str:
 
 
 async def _get_json(self, url: str, params: dict) -> dict:
-    """GET 并解析 JSON，代理瞬断时重试（与 _PROXY_RETRY 一致）。"""
-    total = _PROXY_RETRY if settings.WECHAT_PROXY else 1
+    """GET 并解析 JSON，网络瞬断时重试。"""
+    total = _RETRY
     last_exc: Exception | None = None
     for i in range(total):
         try:
             async with httpx.AsyncClient(**_client_kwargs(20)) as client:
                 resp = await client.get(url, params=params)
                 return resp.json()
-        except httpx.TransportError as exc:  # 代理瞬断，重试即可
+        except httpx.TransportError as exc:  # 网络瞬断，重试即可
             last_exc = exc
             if i < total - 1:
-                logger.warning("微信 GET 经代理瞬断，重试 %d/%d：%s", i + 1, total - 1, exc)
+                logger.warning("微信 GET 网络瞬断，重试 %d/%d：%s", i + 1, total - 1, exc)
                 await asyncio.sleep(0.8 * (i + 1))
             else:
                 raise

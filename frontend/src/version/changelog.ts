@@ -22,6 +22,15 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '1.10.7',
+    date: '2026-11-03',
+    title: '清理：微信出口移除代理/SSH 隧道，恒直连',
+    highlights: [
+      '微信接口（草稿推送 / 流量主广告与结算）移除 WECHAT_PROXY 固定出口代理（SSH 隧道）机制，一律直连——服务器出网 IP 已加公众号后台「IP 白名单」，不再依赖隧道。',
+      '根治「隧道断开 → 微信请求全挂且报 All connection attempts failed」的隐患：代理退役后该故障结构上不可能再现；系统状态页的出网 IP 排查仍保留。',
+    ],
+  },
+  {
     version: '1.10.6',
     date: '2026-11-02',
     title: '新增：应用内本月朱雀用量估算',

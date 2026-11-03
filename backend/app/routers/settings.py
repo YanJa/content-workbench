@@ -217,8 +217,7 @@ async def check_account(
 ):
     """测试连通性：拉 access_token。成功则回写 verified_at。
 
-    同时附带 `egress` 字段（实际出口 IP + 是否走固定代理），
-    方便在「IP 不在白名单」时直接看到该加哪个 IP。
+    同时附带 `egress` 字段（实际出口 IP），方便在「IP 不在白名单」时直接看到该加哪个 IP。
     """
     a = await _get(db, account_id, owner)
     client = WeChatClient(appid=a.appid, secret=a.secret)
