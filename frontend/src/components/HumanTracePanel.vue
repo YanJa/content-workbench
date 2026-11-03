@@ -38,6 +38,7 @@ import {
   zhuqueDetect,
   downloadDetectReport,
   saveTraceSnapshot,
+  getTraceSnapshot,
   getZhuqueUsage,
   type TraceReport,
   type HumanizeResult,
@@ -184,6 +185,9 @@ async function load() {
         source: source.value,
       }),
       getHumanizeLevels(),
+      // 回填已落库的朱雀结果：重开抽屉/切页面回来不该逼用户重测（花钱的检测只测一次）。
+      // 内部吞掉一切错误，绝不挡体检主流程。
+      restoreZhuqueFromSnapshot(),
     ])
     report.value = rep
     levels.value = lv.levels
@@ -222,6 +226,37 @@ async function persistSnapshot(
     })
   } catch {
     /* 静默 */
+  }
+}
+
+/**
+ * 从落库快照（Content.meta['aigc_trace']）回填朱雀结果。
+ *
+ * 朱雀是花钱的外部调用，结果却被存在组件内存里 —— 切页面/换条目组件重挂载就丢，
+ * 重开抽屉只剩「开始检测」，等于逼用户再花一遍钱。快照本来就随检测落库了
+ * （persistSnapshot），这里在打开抽屉时读回来，按钮即恢复「重新检测」。
+ *
+ * 只补内存里**没有**的那份：本次会话刚测的（可能比快照新，比如快照保存失败）
+ * 不覆盖。本地体检不回填 —— 零成本，每次打开都该重跑最新文本。
+ */
+async function restoreZhuqueFromSnapshot() {
+  if (!props.contentId) return
+  try {
+    const snap = await getTraceSnapshot(props.contentId)
+    if (!snap) return
+    const next = { ...zhuqueMap.value }
+    let changed = false
+    for (const key of ['layout', 'body'] as TraceSource[]) {
+      if (next[key]) continue
+      const z = snap[key]?.zhuque
+      if (z && z.ok) {
+        next[key] = z
+        changed = true
+      }
+    }
+    if (changed) zhuqueMap.value = next
+  } catch {
+    /* 静默：快照只是回看，拉不到就不回填，用户可重测 */
   }
 }
 

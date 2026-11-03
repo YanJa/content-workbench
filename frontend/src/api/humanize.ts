@@ -194,6 +194,28 @@ export async function saveTraceSnapshot(
   await http.put(`/content/items/${contentId}/trace-snapshot`, payload)
 }
 
+/** 单个检测对象（layout/body）的快照槽：体检与朱雀各存各的，互不打断。 */
+export interface TraceSnapshotSlot {
+  source?: TraceSource
+  scan?: TraceReport | null
+  zhuque?: ZhuqueResult | null
+}
+
+/** 落库的检测快照（Content.meta['aigc_trace']），按检测对象各存一份。 */
+export interface TraceSnapshot {
+  saved_at?: number
+  platform?: string
+  sub_type?: string
+  layout?: TraceSnapshotSlot
+  body?: TraceSnapshotSlot
+}
+
+/** 读回已落库的检测快照（重开抽屉恢复朱雀结果用，不重新检测、不花钱）。 */
+export async function getTraceSnapshot(contentId: string): Promise<TraceSnapshot | null> {
+  const { data } = await http.get(`/content/items/${contentId}`)
+  return (data?.meta?.aigc_trace as TraceSnapshot) || null
+}
+
 /** 下载「AI 生成检测报告单」HTML（朱雀 + 本地体检，浏览器打开后可 Ctrl+P 存 PDF）。 */
 export async function downloadDetectReport(payload: {
   content_id?: string

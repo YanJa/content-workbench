@@ -22,6 +22,15 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '1.10.8',
+    date: '2026-11-03',
+    title: '修复：朱雀检测结果重开抽屉后丢失',
+    highlights: [
+      '痕迹体检抽屉重开（切页面/换条目回来）后恢复上次的朱雀检测结果，按钮直接显示「重新检测」并展示结论，不再回落「开始检测」逼用户重测花钱。',
+      '打开抽屉时从已落库的检测快照（meta.aigc_trace）回填朱雀结果，按检测对象（排版产物/源文）各回各的；本次会话刚测的结果不被旧快照覆盖。',
+    ],
+  },
+  {
     version: '1.10.7',
     date: '2026-11-03',
     title: '清理：微信出口移除代理/SSH 隧道，恒直连',
