@@ -36,6 +36,7 @@ import {
 } from '@/api/layout'
 import { attachAssetToContent, type Asset } from '@/api/assets'
 import { usePermGate } from '@/composables/usePermGate'
+import { useRouter } from 'vue-router'
 import type { ContentImage } from '@/types'
 
 /**
@@ -47,6 +48,17 @@ import type { ContentImage } from '@/types'
  */
 const imageGenGate = usePermGate({ perm: 'layout.image_gen' })
 const coverGate = usePermGate({ perm: 'layout.cover' })
+const crawlGate = usePermGate({ perm: 'assets.crawl' })
+const router = useRouter()
+
+/**
+ * 从「文章排版后配图」直达采集弹层。
+ * 采集是素材库页的能力，但用户的使用场景在文章里 —— 带 content_id 跳过去，
+ * 素材库页会自动打开弹层并预选这篇文章，不用回去翻列表找刚写的那篇。
+ */
+function goCrawlForArticle() {
+  void router.push({ name: 'assets', query: { crawl: '1', content_id: props.contentId } })
+}
 
 const props = defineProps<{
   contentId: string
@@ -457,6 +469,17 @@ async function confirmAlt(img: ContentImage) {
         从素材库选
       </NButton>
       <AssetPicker v-model:show="assetPickerShow" @picked="onAssetPicked" />
+      <!-- 与「从素材库选」并列：一个用攒下来的图，一个按这篇文章现找 -->
+      <NButton
+        v-if="!isReadonly"
+        size="small"
+        secondary
+        :disabled="crawlGate.blocked.value"
+        :title="crawlGate.blocked.value ? crawlGate.reason.value : '按当前文章内容找配图'"
+        @click="goCrawlForArticle"
+      >
+        按文章找配图
+      </NButton>
       <div v-if="imageGenGate.reason.value" class="hint warn gate-tip">
         {{ imageGenGate.reason.value }}
       </div>

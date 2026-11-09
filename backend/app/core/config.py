@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     APP_NAME: str = "内容运营工作台"
     # 版本号：全系统唯一来源。前端从 /health 读它展示，并据它判断「是否升过级」
     # 来弹「新功能」提醒。改版本请同步 frontend/package.json（仅作人工对照）。
-    APP_VERSION: str = "1.10.8"
+    APP_VERSION: str = "1.10.9"
     APP_ENV: Literal["dev", "prod"] = "dev"
     DEBUG: bool = True
     API_PREFIX: str = "/api"
@@ -166,6 +166,27 @@ class Settings(BaseSettings):
     # Openverse：CC 授权聚合源，可按「允许商用」过滤，作为合规补充。
     # 匿名也能用（100 次/天，5 次/小时）；要提到 10000 次/天需注册 OAuth 拿 token。
     OPENVERSE_TOKEN: str = ""
+
+    # ---------- 受控采集（按文章内容找配图） ----------
+    # 这是「用户显式指定站点 → 抓自己有权用的图」的通道，不是全网爬虫。
+    # 留空 = **自动按关键词找文章**不可用（fail-closed），但用户直接粘贴文章
+    # URL 采集仍可用；填上域名才开放自动搜索，避免拿搜索引擎当全网入口。
+    # 只填你拥有版权或已获授权的域名，逗号分隔：
+    #   ASSET_CRAWL_ALLOW_DOMAINS=myblog.com,cdn.myblog.com
+    ASSET_CRAWL_ALLOW_DOMAINS: str = ""
+    # 站内搜索模板（可选），含 {q} 占位。留空则用 Bing 网页搜索后再按白名单过滤。
+    #   ASSET_CRAWL_SEARCH_TEMPLATE=https://myblog.com/search?q={q}
+    ASSET_CRAWL_SEARCH_TEMPLATE: str = ""
+    # 单次最多访问几个页面 / 最多产出几张候选（硬上限：页 10、图 40）
+    ASSET_CRAWL_MAX_PAGES: int = 5
+    ASSET_CRAWL_MAX_IMAGES: int = 20
+    # 尊重 robots.txt。关掉的正当场景是「这是我自己的站」，不是绕开别人。
+    ASSET_CRAWL_RESPECT_ROBOTS: bool = True
+    # 页面之间间隔（秒），不做并发，避免给源站造成压力
+    ASSET_CRAWL_DELAY_SEC: float = 1.0
+    ASSET_CRAWL_TIMEOUT: int = 15
+    # 需要 JS 渲染的站点才开。依赖需另装：pip install playwright && playwright install chromium
+    ASSET_CRAWL_USE_BROWSER: bool = False
 
     # ---------- 火山引擎 / 小云雀（Pippit）----------
     # 小云雀的开放 API 托管在火山引擎「视觉智能」下（Service=cv，Region=cn-north-1），

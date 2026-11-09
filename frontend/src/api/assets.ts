@@ -233,6 +233,97 @@ export async function attachAssetToContent(
   return data
 }
 
+// ---------------------------------------------------------------- 按文章采集（受控爬虫）
+/**
+ * 和「在线搜图」是两套东西，别混：
+ *  - 在线搜图 = 查 Pixabay/Openverse 的 API，拿到的是**已明确授权可商用**的素材；
+ *  - 按文章采集 = 从你指定的站点页面里抽配图，授权状态未知，入库时
+ *    `license=unknown`，卡片上会一直挂着「授权待确认」。
+ *
+ * 流程同样是两段式：preview 只出候选（不落库），import 勾选后才真正入库。
+ */
+export interface CrawlConfig {
+  ok: boolean
+  /** 采集通道整体可用（显式 URL 模式始终可用） */
+  enabled: boolean
+  /** 能否「按文章自动找配图」——需要后端配了域名白名单 */
+  auto_search: boolean
+  domains: string[]
+  respect_robots: boolean
+  use_browser: boolean
+  max_pages: number
+  max_images: number
+  hint: string
+}
+
+/** 预览候选。thumb_url 是后端现签的直链，只在 30 分钟内有效。 */
+export interface CrawlCandidate {
+  id: string
+  thumb_url: string
+  source_url: string
+  page_url: string
+  page_title: string
+  domain: string
+  alt: string
+  width: number
+  height: number
+  size_bytes: number
+  mime: string
+  fetched_at: number
+  /** 采集来源一律 unknown，前端打「授权待确认」 */
+  license: string
+}
+
+export interface CrawlPreviewResult {
+  ok: boolean
+  items: CrawlCandidate[]
+  errors: { source: string; reason: string }[]
+  /** 后端实际用的检索词（没传关键词时由标题/正文提取） */
+  keywords: string[]
+  pages_visited: number
+}
+
+export interface CrawlImportResult {
+  ok: boolean
+  imported: Asset[]
+  imported_count: number
+  /** 真新建条数；duplicates 是 hash 去重命中的条数 */
+  created: number
+  duplicates: number
+  failed: { id: string; reason: string }[]
+}
+
+export async function crawlConfig(): Promise<CrawlConfig> {
+  const { data } = await http.get('/assets/crawl/config')
+  return data
+}
+
+export async function crawlPreview(payload: {
+  title?: string
+  body?: string
+  keywords?: string[]
+  page_urls?: string[]
+  max_pages?: number
+  max_images?: number
+}): Promise<CrawlPreviewResult> {
+  // 采集要逐页抓取 + 限速，比普通接口慢得多，超时给足
+  const { data } = await http.post('/assets/crawl/preview', payload, { timeout: 180000 })
+  return data
+}
+
+/** rightsConfirmed 是后端强制的合规闸门，不勾会直接 400。 */
+export async function crawlImport(
+  ids: string[],
+  rightsConfirmed: boolean,
+): Promise<CrawlImportResult> {
+  const { data } = await http.post(
+    '/assets/crawl/import',
+    { ids, rights_confirmed: rightsConfirmed },
+    { timeout: 120000 },
+  )
+  return data
+}
+
 // ---------------------------------------------------------------- 目录（folder）
 /** 当前用户全部目录（扁平）+ 未归类计数。前端自行组树。 */
 export async function listAssetFolders(): Promise<{

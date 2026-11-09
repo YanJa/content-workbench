@@ -288,6 +288,15 @@ sudo chown -R www-data:www-data dist
 
 Node 环境没有 pnpm 时先 `corepack enable` 或 `npm i -g pnpm@10`。
 
+> **备案号**：页面底部的 ICP 备案号不写在代码里，由构建期环境变量注入。
+> 在 `frontend/.env`（不进 git）里加一行再构建，否则页脚不渲染：
+>
+> ```bash
+> echo 'VITE_ICP_BEIAN=你的备案号' >> /opt/content-workbench/frontend/.env
+> ```
+>
+> 只在中国大陆境内公网部署时需要。忘了配的话，`pnpm build` 会打印 `[cwb] 未设置 VITE_ICP_BEIAN` 警告。
+
 > **pnpm 版本注意**：项目锁定了 pnpm 10。pnpm 12 默认有个 `minimumReleaseAge`（24 小时）策略，会把刚发布的依赖判为「太新」而拒绝安装。`frontend/.npmrc` 里已写 `minimumReleaseAge=0` 兜底。
 
 ### 3.6 配置 nginx
@@ -312,6 +321,7 @@ sudo systemctl reload nginx
 - [ ] `CORS_ORIGINS` 改成真实域名（别留 localhost）
 - [ ] `systemctl status cwb-backend` 是 active (running)
 - [ ] `pnpm build` 产出 `dist/index.html`
+- [ ] 境内公网部署时 `frontend/.env` 已配 `VITE_ICP_BEIAN`，页面底部能看到备案号
 - [ ] `nginx -t` 通过，页面能打开
 - [ ] **nginx 里 `proxy_buffering off` 已生效** —— 打开对话页发一句，字应是逐字冒出来的，不是等半天一次性刷出
 - [ ] `data/` 目录权限正确（www-data 可写），重启服务后数据仍在

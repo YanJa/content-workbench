@@ -745,10 +745,12 @@ const PRODUCT_NAME = '内容运营工作台'
 const PRODUCT_BLURB =
   'AI 多轮对话创作公众号 / 小红书 / 抖音三平台内容，发布队列与公众号草稿箱一键管理'
 
-/** 注册地址：固定指向公网注册页直链（2026-10-19 用户指定）。不管管理员
- *  从哪个域名打开后台，发给用户的都是这一条 —— 邀请文案是发出去给人
- *  用的，跟着 location.origin 走会把内网/调试地址漏给对方。 */
-const INVITE_URL = 'https://cwb.draftpaper.ltd/register'
+/** 注册地址：邀请文案会发给外部用户，所以不能跟着 location.origin 走
+ *  （会把内网 / 调试地址漏给对方）。
+ *  默认取当前站点域名，别人部署到自己的域名时自动正确；
+ *  需要固定成某个公网直链，在 frontend/.env 配 VITE_INVITE_URL（不进 git）。 */
+const INVITE_URL =
+  (import.meta.env.VITE_INVITE_URL ?? '').trim() || `${window.location.origin}/register`
 
 /** 合成可直接粘贴到微信 / 钉钉的邀请注册文案 */
 function buildInviteText(code: string): string {

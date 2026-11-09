@@ -279,7 +279,11 @@ async def delete_asset(db: AsyncSession, asset: Asset) -> None:
 
 
 async def count_recent_imports(db: AsyncSession, owner: str, window_seconds: int = 3600) -> int:
-    """近一小时从在线源导入的数量。用于卡合规上限。
+    """近一小时从**外部来源**导入的数量。用于卡合规上限。
+
+    `search`（在线图源）与 `crawl`（受控采集）共用同一个额度：两者都是
+    「把别人的图搬进自己素材库」，只数其中一种等于给另一条开了后门。
+    手动 upload / AI 生成不计入 —— 那是用户自己上传或平台生成的。
 
     直接数 assets 表，不额外维护计数器：导入是低频动作（一次几张），
     一次带索引的 count 足够快，省一张表也省一处可能不同步的状态。
@@ -290,7 +294,7 @@ async def count_recent_imports(db: AsyncSession, owner: str, window_seconds: int
             await db.execute(
                 select(func.count(Asset.id)).where(
                     Asset.owner == owner,
-                    Asset.source == "search",
+                    Asset.source.in_(("search", "crawl")),
                     Asset.created_at >= since,
                 )
             )

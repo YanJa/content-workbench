@@ -7,6 +7,10 @@ import { useAuthStore } from './stores/auth'
 import { useThemeStore } from './stores/theme'
 import './styles/main.css'
 import './styles/theme.css'
+import { mountIcpFooter } from './utils/icp'
+
+// 备案号来自构建期环境变量，未配置时什么都不做（开源版默认无页脚）
+mountIcpFooter()
 
 const app = createApp(App)
 app.use(createPinia())

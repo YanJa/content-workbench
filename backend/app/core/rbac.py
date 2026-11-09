@@ -89,6 +89,7 @@ PERMISSIONS: list[tuple[str, str, str]] = [
     # 素材库：上传不设权限点（跟「新建内容」一个量级），只有「从在线图源导入」
     # 和「删除」值得单独管 —— 前者受图源条款限速，后者不可逆。
     ("assets", "assets.import", "从在线图源导入素材"),
+    ("assets", "assets.crawl", "按文章采集配图"),
     ("assets", "assets.delete", "删除素材"),
 ]
 

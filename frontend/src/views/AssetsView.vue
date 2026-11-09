@@ -42,6 +42,9 @@ import {
   assetStats,
   assetTree,
   createAssetFolder,
+  crawlConfig,
+  crawlImport,
+  crawlPreview,
   deleteAsset,
   deleteAssetFolder,
   downloadAssetsZip,
@@ -60,13 +63,20 @@ import {
   type AssetSourceStatus,
   type AssetStats,
   type AssetTreeNode,
+  type CrawlCandidate,
+  type CrawlConfig,
 } from '@/api/assets'
+import { getContent, listContents } from '@/api/queue'
+import { useRoute } from 'vue-router'
+import type { ContentItem } from '@/types'
 import { usePermGate } from '@/composables/usePermGate'
 
 const message = useMessage()
 const dialog = useDialog()
+const route = useRoute()
 const deleteGate = usePermGate({ perm: 'assets.delete' })
 const importGate = usePermGate({ perm: 'assets.import' })
+const crawlGate = usePermGate({ perm: 'assets.crawl' })
 
 const items = ref<Asset[]>([])
 const total = ref(0)
@@ -89,6 +99,7 @@ const sourceOptions = [
   { label: '全部来源', value: '' },
   { label: '手动上传', value: 'upload' },
   { label: '在线导入', value: 'search' },
+  { label: '文章采集', value: 'crawl' },
   { label: 'AI 生成', value: 'ai' },
   { label: '封面', value: 'cover' },
 ]
@@ -390,6 +401,196 @@ const searched = ref(false)
 /** 各图源的失败原因，空数组 = 没有源失败 */
 const sErrors = ref<{ source: string; reason: string }[]>([])
 
+// ---------------- 按文章采集（受控爬虫） ----------------
+// 与「在线搜图」并列，但语义完全不同：这里的素材授权状态未知，所以
+// 弹层里必须一直显示「授权待确认」，导入前还要用户显式勾一次权利确认。
+const crawlShow = ref(false)
+const crawlCfg = ref<CrawlConfig | null>(null)
+/** article = 按文章内容自动找相关页；urls = 用户直接指定文章页（无需白名单） */
+const crawlMode = ref<'article' | 'urls'>('article')
+const crawlContents = ref<ContentItem[]>([])
+const crawlContentId = ref('')
+const crawlContentLoading = ref(false)
+const crawlTitle = ref('')
+const crawlBody = ref('')
+/** 用户可覆盖的检索词，逗号/空格分隔；留空则由后端从标题正文提取 */
+const crawlKeywords = ref('')
+const crawlUrls = ref('')
+const crawlItems = ref<CrawlCandidate[]>([])
+const crawlSelected = ref<string[]>([])
+const crawlLoading = ref(false)
+const crawlImporting = ref(false)
+const crawlErrors = ref<{ source: string; reason: string }[]>([])
+const crawlRights = ref(false)
+const crawlPreviewed = ref(false)
+const crawlKeywordsUsed = ref<string[]>([])
+const crawlPages = ref(0)
+
+const crawlContentOptions = computed(() =>
+  crawlContents.value.map((c) => ({
+    label: (c.title || '未命名内容').slice(0, 60),
+    value: c.id,
+  })),
+)
+/** 没配白名单时，自动找图这一路必须关掉，但显式 URL 仍可用 */
+const crawlAutoDisabled = computed(
+  () => crawlMode.value === 'article' && !crawlCfg.value?.auto_search,
+)
+
+function onCrawlMode(v: string) {
+  crawlMode.value = v === 'urls' ? 'urls' : 'article'
+}
+
+async function openCrawl() {
+  crawlShow.value = true
+  // 每次打开都重取：白名单可能刚在后端改过，文章也可能是刚写的
+  try {
+    const [cfg, list] = await Promise.all([crawlConfig(), listContents()])
+    crawlCfg.value = cfg
+    crawlContents.value = Array.isArray(list) ? list : []
+  } catch {
+    message.error('读取采集配置失败，检查后端是否在运行')
+  }
+}
+
+async function onCrawlContent(id: string | null) {
+  crawlContentId.value = id || ''
+  if (!id) {
+    crawlTitle.value = ''
+    crawlBody.value = ''
+    return
+  }
+  crawlContentLoading.value = true
+  try {
+    const c = await getContent(id)
+    crawlTitle.value = c.title || ''
+    // HTML 标签会污染中文 n-gram，正文给后端前先掉一层标签
+    crawlBody.value = (c.body || '').replace(/<[^>]+>/g, ' ').slice(0, 20000)
+    crawlKeywords.value = ''
+  } catch {
+    message.error('读取文章内容失败')
+  } finally {
+    crawlContentLoading.value = false
+  }
+}
+
+function parseCrawlKeywords(s: string): string[] {
+  return s
+    .split(/[,，、\s]+/)
+    .map((x) => x.trim())
+    .filter(Boolean)
+    .slice(0, 8)
+}
+
+async function doCrawlPreview() {
+  if (crawlGate.blocked.value) {
+    message.warning(crawlGate.reason.value)
+    return
+  }
+  const pageUrls =
+    crawlMode.value === 'urls'
+      ? crawlUrls.value.split(/[\n\r]+/).map((x) => x.trim()).filter(Boolean).slice(0, 10)
+      : []
+  if (crawlMode.value === 'urls' && !pageUrls.length) {
+    message.warning('先粘贴至少一个文章页 URL')
+    return
+  }
+  if (crawlAutoDisabled.value) {
+    message.warning('按文章自动找配图需要先配置采集域名白名单，或改用「粘贴文章 URL」')
+    return
+  }
+  if (
+    crawlMode.value === 'article' &&
+    !(crawlTitle.value.trim() || crawlBody.value.trim() || crawlKeywords.value.trim())
+  ) {
+    message.warning('先选一篇文章，或填写关键词')
+    return
+  }
+  crawlLoading.value = true
+  crawlPreviewed.value = true
+  crawlErrors.value = []
+  crawlItems.value = []
+  crawlSelected.value = []
+  crawlRights.value = false
+  try {
+    const r = await crawlPreview({
+      title: crawlMode.value === 'article' ? crawlTitle.value : '',
+      body: crawlMode.value === 'article' ? crawlBody.value : '',
+      keywords: crawlMode.value === 'article' ? parseCrawlKeywords(crawlKeywords.value) : [],
+      page_urls: pageUrls,
+    })
+    crawlItems.value = r.items || []
+    crawlErrors.value = r.errors || []
+    crawlKeywordsUsed.value = r.keywords || []
+    crawlPages.value = r.pages_visited || 0
+    if (!crawlItems.value.length) {
+      message.info('没找到可用配图，换个关键词，或直接粘贴文章页 URL 试试')
+    }
+  } catch (e: unknown) {
+    const status = (e as { response?: { status?: number } })?.response?.status
+    const detailMsg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    if (status === 403) message.warning(detailMsg || '没有「按文章采集配图」的使用权限')
+    else message.error(detailMsg || '采集失败，检查后端是否在运行')
+  } finally {
+    crawlLoading.value = false
+  }
+}
+
+function toggleCrawlSelect(id: string) {
+  const i = crawlSelected.value.indexOf(id)
+  if (i >= 0) crawlSelected.value.splice(i, 1)
+  else crawlSelected.value.push(id)
+}
+
+function crawlSelectAll() {
+  crawlSelected.value = crawlItems.value.map((c) => c.id)
+}
+
+function crawlClearSelect() {
+  crawlSelected.value = []
+}
+
+async function doCrawlImport() {
+  if (!crawlRights.value) {
+    message.warning('请先确认对这些素材拥有权利或已获授权')
+    return
+  }
+  if (!crawlSelected.value.length) {
+    message.warning('先勾选要导入的图片')
+    return
+  }
+  if (crawlGate.blocked.value) {
+    message.warning(crawlGate.reason.value)
+    return
+  }
+  const ids = [...crawlSelected.value]
+  crawlImporting.value = true
+  try {
+    const r = await crawlImport(ids, true)
+    const parts = [`新建 ${r.created} 张`]
+    if (r.duplicates) parts.push(`重复 ${r.duplicates} 张`)
+    if (r.failed?.length) parts.push(`失败 ${r.failed.length} 张`)
+    message.success(parts.join('，'))
+    if (r.failed?.length) message.warning(r.failed[0].reason)
+    // 失败的候选留在列表里让用户看原因，成功的摘掉
+    const failedIds = new Set((r.failed || []).map((f) => f.id))
+    crawlItems.value = crawlItems.value.filter(
+      (c) => !ids.includes(c.id) || failedIds.has(c.id),
+    )
+    crawlSelected.value = crawlSelected.value.filter((id) => failedIds.has(id))
+    crawlRights.value = false
+    await refreshAll()
+  } catch (e: unknown) {
+    const status = (e as { response?: { status?: number } })?.response?.status
+    const detailMsg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    if (status === 400) message.warning(detailMsg || '请先勾选权利确认')
+    else if (status === 403) message.warning(detailMsg || '没有该功能的权限')
+    else message.error(detailMsg || '导入失败')
+  } finally {
+    crawlImporting.value = false
+  }
+}
+
 const uploading = ref(false)
 
 const usagePct = computed(() => {
@@ -579,6 +780,12 @@ async function doImport(c: AssetCandidate) {
 
 // ---------------- 展示辅助 ----------------
 function licenseTag(a: { source_name: string; license: string }) {
+  // 采集来源授权状态未知：这个徽标必须一直挂着，不能让「自有」把它盖掉。
+  // 只按 source_name 判，不用 license=unknown —— 有些自有素材也留着 unknown，
+  // 给它们打「授权待确认」是误报。
+  if (a.source_name === 'crawl') {
+    return { text: '授权待确认', type: 'warning' as const }
+  }
   if (a.source_name === 'pixabay') return { text: 'Pixabay', type: 'success' as const }
   if (a.source_name === 'openverse') {
     return a.license === 'cc0' || a.license === 'pdm'
@@ -777,6 +984,15 @@ onMounted(() => {
   void refreshAll()
   void loadSources()
   if (viewMode.value === 'tree') void loadTree()
+  // 从文章配图面板「按文章找配图」跳过来：自动开弹层并预选那篇内容，
+  // 省掉「回素材库 → 从几十篇里找刚写的那篇」这一步。
+  if (route.query.crawl === '1') {
+    const cid = typeof route.query.content_id === 'string' ? route.query.content_id : ''
+    void (async () => {
+      await openCrawl()
+      if (cid) await onCrawlContent(cid)
+    })()
+  }
 })
 </script>
 
@@ -848,6 +1064,15 @@ onMounted(() => {
               <NRadioButton value="tree">树形</NRadioButton>
             </NRadioGroup>
             <NButton size="small" secondary @click="searchShow = true">在线搜图</NButton>
+            <NButton
+              size="small"
+              secondary
+              :disabled="crawlGate.blocked.value"
+              :title="crawlGate.blocked.value ? crawlGate.reason.value : '按文章内容找配图'"
+              @click="openCrawl"
+            >
+              按文章采集
+            </NButton>
             <NUpload
               :show-file-list="false"
               accept="image/*"
@@ -1145,6 +1370,173 @@ onMounted(() => {
           </div>
         </NSpin>
       </NModal>
+
+      <!-- ---------------- 按文章采集（受控爬虫） ---------------- -->
+      <NModal
+        v-model:show="crawlShow"
+        preset="card"
+        title="按文章采集配图"
+        style="width: 900px; max-width: 94vw"
+      >
+        <div class="crawl-note">
+          从你<strong>有权使用</strong>的站点页面里抽配图。只保留原图、记录来源页，
+          <strong>不去除水印</strong>；入库后许可一律标记为「授权待确认」，
+          请自行核对版权后再用于发布。预览阶段的图片只存在内存里，不入库。
+        </div>
+        <div v-if="crawlCfg?.hint" class="crawl-hint">{{ crawlCfg.hint }}</div>
+
+        <NRadioGroup :value="crawlMode" size="small" class="crawl-mode" @update:value="onCrawlMode">
+          <NRadioButton value="article">按文章内容找</NRadioButton>
+          <NRadioButton value="urls">粘贴文章 URL</NRadioButton>
+        </NRadioGroup>
+
+        <div v-if="crawlMode === 'article'" class="crawl-form">
+          <div class="crawl-row">
+            <NSelect
+              :value="crawlContentId"
+              :options="crawlContentOptions"
+              :loading="crawlContentLoading"
+              size="small"
+              filterable
+              clearable
+              placeholder="选一篇已保存的文章（自动带出标题与正文）"
+              style="width: 340px"
+              @update:value="onCrawlContent"
+            />
+            <NInput
+              v-model:value="crawlTitle"
+              size="small"
+              placeholder="标题，可直接改"
+              style="flex: 1; min-width: 180px"
+            />
+          </div>
+          <div class="crawl-row">
+            <NInput
+              v-model:value="crawlKeywords"
+              size="small"
+              clearable
+              placeholder="检索关键词，逗号分隔；留空则自动从标题/正文提取"
+              style="flex: 1"
+            />
+            <NButton
+              size="small"
+              type="primary"
+              :loading="crawlLoading"
+              :disabled="crawlAutoDisabled || crawlGate.blocked.value"
+              @click="doCrawlPreview"
+            >
+              开始采集
+            </NButton>
+          </div>
+          <div v-if="crawlAutoDisabled" class="crawl-warn">
+            自动找配图必须先在后端 <code>.env</code> 配好
+            <code>ASSET_CRAWL_ALLOW_DOMAINS</code>（你有权采集的站点域名，逗号分隔）；
+            也可以切到「粘贴文章 URL」模式直接采集指定页面。
+          </div>
+        </div>
+
+        <div v-else class="crawl-form">
+          <NInput
+            v-model:value="crawlUrls"
+            type="textarea"
+            :rows="3"
+            placeholder="一行一个文章页 URL（https://…），最多 10 个"
+          />
+          <div class="crawl-row">
+            <span class="crawl-tip">只抓这些页面里的图片，尊重 robots.txt、逐页限速。</span>
+            <div class="footer-gap" />
+            <NButton
+              size="small"
+              type="primary"
+              :loading="crawlLoading"
+              :disabled="crawlGate.blocked.value"
+              @click="doCrawlPreview"
+            >
+              开始采集
+            </NButton>
+          </div>
+        </div>
+
+        <div v-if="crawlKeywordsUsed.length || crawlPages" class="crawl-kws">
+          <span v-if="crawlKeywordsUsed.length">检索词：</span>
+          <NTag v-for="k in crawlKeywordsUsed" :key="k" size="tiny" :bordered="false">{{ k }}</NTag>
+          <span v-if="crawlPages">访问 {{ crawlPages }} 个页面</span>
+        </div>
+
+        <div v-if="crawlErrors.length" class="search-err">
+          <div v-for="(e, i) in crawlErrors" :key="i">
+            <strong>{{ e.source }}</strong>：{{ e.reason }}
+          </div>
+        </div>
+
+        <NSpin :show="crawlLoading">
+          <div class="search-pane">
+            <div v-if="crawlItems.length" class="grid">
+              <div
+                v-for="c in crawlItems"
+                :key="c.id"
+                class="cell"
+                :class="{ checked: crawlSelected.includes(c.id) }"
+              >
+                <div class="cell-click" @click="toggleCrawlSelect(c.id)">
+                  <img :src="c.thumb_url" :alt="c.alt || c.page_title" loading="lazy" />
+                  <span class="crawl-tick" :class="{ on: crawlSelected.includes(c.id) }">
+                    {{ crawlSelected.includes(c.id) ? '✓' : '' }}
+                  </span>
+                  <NTag class="badge" size="tiny" :bordered="false" type="warning">授权待确认</NTag>
+                  <div class="cell-body">
+                    <div class="cell-title">{{ c.alt || c.page_title || '未命名配图' }}</div>
+                    <div class="cell-meta">
+                      <span>{{ c.domain }}</span>
+                      <span>{{ c.width }}×{{ c.height }}</span>
+                    </div>
+                    <a
+                      class="cell-src"
+                      :href="c.page_url"
+                      target="_blank"
+                      rel="noreferrer"
+                      @click.stop
+                    >来源页 ↗</a>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <NEmpty
+              v-else
+              :description="
+                crawlErrors.length
+                  ? '采集未成功，原因见上方'
+                  : crawlPreviewed
+                    ? '没找到可用配图，换个关键词或直接粘贴文章页'
+                    : '选一篇文章或粘贴 URL，点「开始采集」预览候选'
+              "
+              style="padding: 46px 0"
+            />
+          </div>
+        </NSpin>
+
+        <template #footer>
+          <div class="crawl-footer">
+            <NCheckbox v-model:checked="crawlRights">
+              我对这些图片拥有权利或已获授权
+            </NCheckbox>
+            <span class="crawl-sel">已选 {{ crawlSelected.length }} 张</span>
+            <NButton size="tiny" quaternary @click="crawlSelectAll">全选</NButton>
+            <NButton size="tiny" quaternary @click="crawlClearSelect">清空</NButton>
+            <div class="footer-gap" />
+            <NButton size="small" @click="crawlShow = false">关闭</NButton>
+            <NButton
+              size="small"
+              type="primary"
+              :loading="crawlImporting"
+              :disabled="!crawlRights || !crawlSelected.length || crawlGate.blocked.value"
+              @click="doCrawlImport"
+            >
+              导入选中
+            </NButton>
+          </div>
+        </template>
+      </NModal>
     </NCard>
   </div>
 </template>
@@ -1412,6 +1804,110 @@ onMounted(() => {
 }
 .s-import {
   margin: 0 8px 8px;
+}
+
+/* ---------------- 按文章采集 ---------------- */
+.crawl-note {
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.75;
+  color: var(--app-text-2, #666);
+  background: var(--app-sunken, rgba(128, 128, 128, 0.06));
+}
+.crawl-note strong {
+  color: var(--app-text-1, #333);
+}
+.crawl-hint {
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #a8690a;
+  background: rgba(240, 165, 20, 0.1);
+  border: 1px solid rgba(240, 165, 20, 0.28);
+}
+.crawl-mode {
+  display: block;
+  margin-bottom: 10px;
+}
+.crawl-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.crawl-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.crawl-warn {
+  font-size: 12px;
+  line-height: 1.7;
+  color: #a8690a;
+}
+.crawl-warn code {
+  font-size: 11px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: var(--app-sunken, rgba(128, 128, 128, 0.14));
+}
+.crawl-tip {
+  font-size: 12px;
+  color: var(--app-text-3, #999);
+}
+.crawl-kws {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 8px 0;
+  font-size: 12px;
+  color: var(--app-text-3, #999);
+}
+.crawl-tick {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 19px;
+  height: 19px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.85);
+  background: rgba(0, 0, 0, 0.32);
+  color: #fff;
+  font-size: 12px;
+  line-height: 1;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+.crawl-tick.on {
+  background: var(--app-primary, #2080f0);
+  border-color: var(--app-primary, #2080f0);
+}
+.cell-src {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--app-primary, #2080f0);
+  text-decoration: none;
+}
+.cell-src:hover {
+  text-decoration: underline;
+}
+.crawl-footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+.crawl-sel {
+  color: var(--app-text-3, #999);
 }
 
 /* 窄屏：目录栏收到顶部 */

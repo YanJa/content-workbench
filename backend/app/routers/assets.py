@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import mimetypes
 import time
 import urllib.parse
@@ -34,12 +35,15 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.rbac import require_use
+from app.core.security import link_url
 from app.core.tenant import current_owner_id, link_auth
 from app.db.session import get_db
 from app.models.asset import Asset, AssetFolder
 from app.models.content import Content
 from app.services import assets as svc
 from app.services import asset_sources
+from app.services import asset_crawler
 from app.services.assets import AssetError
 from app.services.storage import get_storage
 
@@ -602,6 +606,173 @@ async def import_asset(
     except AssetError as exc:
         raise HTTPException(400, str(exc)) from exc
     return {"ok": True, "created": created, "asset": svc.asset_dict(asset)}
+
+
+# ---------------------------------------------------------------- 受控采集（按文章找配图）
+class CrawlPreviewReq(BaseModel):
+    # 二选一：给文章标题/正文由后端提关键词，或直接给关键词 / 文章 URL 列表
+    title: str = ""
+    body: str = ""
+    keywords: list[str] = []
+    page_urls: list[str] = []
+    max_pages: int | None = None
+    max_images: int | None = None
+
+
+class CrawlImportReq(BaseModel):
+    ids: list[str] = Field(default_factory=list, max_length=40)
+    # 合规闸门：用户必须显式确认对这些素材拥有权利或已获授权。
+    # 不勾选就不给导 —— 这是产品逻辑，不是免责声明。
+    rights_confirmed: bool = False
+
+
+@router.get("/assets/crawl/config")
+async def crawl_config(
+    _owner: str = Depends(current_owner_id),
+    _user=Depends(require_use("assets.crawl")),
+) -> dict[str, Any]:
+    """采集通道配置状态。
+
+    两种模式要分开看，别用一个 `enabled` 把路堵死：
+      - **显式 URL 模式**：用户自己粘贴文章页，始终可用（页面 HTTPS + 公网即可）；
+      - **自动找图模式**：按关键词去搜索引擎找文章，必须有白名单才放行，
+        否则等于拿搜索引擎当「全网采集入口」，护栏就名存实亡了。
+    """
+    domains = asset_crawler.allow_domains()
+    return {
+        "ok": True,
+        "enabled": True,
+        "auto_search": bool(domains),
+        "domains": domains,
+        "respect_robots": bool(settings.ASSET_CRAWL_RESPECT_ROBOTS),
+        "use_browser": bool(settings.ASSET_CRAWL_USE_BROWSER),
+        "max_pages": int(settings.ASSET_CRAWL_MAX_PAGES),
+        "max_images": int(settings.ASSET_CRAWL_MAX_IMAGES),
+        "hint": ""
+        if domains
+        else "未配置采集域名白名单：可直接粘贴文章 URL 采集；"
+        "若想按文章自动找配图，请先在后端 .env 填写你有权采集的站点域名",
+    }
+
+
+@router.post("/assets/crawl/preview")
+async def crawl_preview(
+    req: CrawlPreviewReq,
+    owner: str = Depends(current_owner_id),
+    _user=Depends(require_use("assets.crawl")),
+) -> dict[str, Any]:
+    """采集预览：**不落库**，图片只进进程内缓存。
+
+    放在线搜图后面是因为两者形态一致：「先给候选，选中才入库」。
+    这样用户看看不中意不会往库里塞垃圾，也让 compliance 闸门落在导入那一步。
+    """
+    result = await asset_crawler.crawl_preview(
+        owner,
+        keywords=req.keywords[:8],
+        title=req.title[:300],
+        body=req.body[:20000],
+        page_urls=[u for u in req.page_urls[:10] if u],
+        max_pages=req.max_pages,
+        max_images=req.max_images,
+    )
+    prefix = f"{settings.API_PREFIX}/assets/crawl/thumb"
+    payload = result.to_dict(prefix)
+    # 预览直链签名：绑 path + owner，拿到一个 URL 只能读那一张候选图
+    for item in payload["items"]:
+        item["thumb_url"] = link_url(
+            f"{settings.API_PREFIX}/assets/crawl/thumb/{item['id']}", owner
+        )
+    return payload
+
+
+@router.get("/assets/crawl/thumb/{cid}")
+async def crawl_thumb(
+    cid: str,
+    owner: str = Depends(link_auth),
+) -> Response:
+    """候选图直链。<img src> 带不了 Authorization 头，走 HMAC 签名。"""
+    hit = asset_crawler.cache_get(cid, owner)
+    if not hit:
+        raise HTTPException(404, "预览已过期，请重新采集")
+    return Response(
+        content=hit.data,
+        media_type=hit.mime or "image/jpeg",
+        headers={"Cache-Control": "private, max-age=1800"},
+    )
+
+
+@router.post("/assets/crawl/import")
+async def crawl_import(
+    req: CrawlImportReq,
+    db: AsyncSession = Depends(get_db),
+    owner: str = Depends(current_owner_id),
+    _user=Depends(require_use("assets.crawl")),
+) -> dict[str, Any]:
+    """把勾选的候选入库。
+
+    三道护栏（对应 asset_crawler 文件头）：
+      1. 必须显式勾选「我拥有权利或已获授权」；
+      2. 与在线导入共用每小时条数上限，不做批量囤图；
+      3. license 固定 unknown + 来源页留痕，**不做去水印**。
+    """
+    if not req.rights_confirmed:
+        raise HTTPException(400, "请先确认对这些素材拥有权利或已获授权")
+    if not req.ids:
+        raise HTTPException(400, "没有选中任何图片")
+
+    imported: list[dict[str, Any]] = []
+    failed: list[dict[str, str]] = []
+    created_count = 0
+    duplicate_count = 0
+    for cid in req.ids[:40]:
+        cand = asset_crawler.cache_get(cid, owner)
+        if not cand:
+            failed.append({"id": cid, "reason": "预览已过期，请重新采集"})
+            continue
+        # 与在线图源共用限速：导入总量受 ASSET_IMPORT_PER_HOUR 约束
+        recent = await svc.count_recent_imports(db, owner)
+        if recent >= max(1, settings.ASSET_IMPORT_PER_HOUR):
+            failed.append({"id": cid, "reason": "已达每小时导入上限，稍后再试"})
+            break
+        try:
+            asset, created = await svc.save_bytes(
+                db,
+                owner,
+                cand.data,
+                kind="image",
+                source="crawl",
+                source_name="crawl",
+                source_id=hashlib.sha256(cand.source_url.encode()).hexdigest()[:32],
+                source_url=cand.page_url,
+                license="unknown",  # 采集来源授权状态未知，前端打「授权待确认」
+                # 文章页和图片原始地址都留痕：日后核对授权时，只知道文章页
+                # 是找不回那张图的（尤其图片在第三方 CDN 上时）。
+                attribution_text=(
+                    f"来源页：{cand.page_url}\n"
+                    f"图片地址：{cand.source_url}\n"
+                    "采集来源，授权状态待确认"
+                ),
+                title=(cand.alt or cand.page_title or cand.domain)[:300],
+                tags=[cand.domain] if cand.domain else [],
+                mime=cand.mime,
+                filename=cand.filename,
+            )
+        except AssetError as exc:
+            failed.append({"id": cid, "reason": str(exc)})
+            continue
+        if created:
+            created_count += 1
+        else:
+            duplicate_count += 1  # hash 去重命中：库里已有同一张图
+        imported.append(svc.asset_dict(asset))
+    return {
+        "ok": True,
+        "imported": imported,
+        "imported_count": len(imported),
+        "created": created_count,
+        "duplicates": duplicate_count,
+        "failed": failed,
+    }
 
 
 # ---------------------------------------------------------------- 发布链路复用
