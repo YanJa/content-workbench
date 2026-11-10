@@ -39,9 +39,14 @@ from app.services.gzh_validate import validate_gzh_html
 from app.services.zhihu_render import render_gzh_plain
 from app.services.llm import get_llm
 from app.services.usage import make_sink
+from app.services import skill as skill_svc
 
 # 最多让模型重修几次（每次把校验报错回喂）。2 次足够，再多是浪费 token。
 _MAX_FIX_ROUNDS = 2
+
+# 起标题技能的正文上限：排版是轻量任务，正文太长会把正文写作的指令挤薄。
+# 技能系统自己的上限（SKILL_BODY_MAX_CHARS=20000）是给对话用的，这里取更紧的一档。
+_TIETU_TITLE_SKILL_BODY_MAX = 4000
 
 # 进度回调：(percent, stage) -> None
 ProgressCb = Callable[[int, str], None]
@@ -630,26 +635,83 @@ async def _layout_plaintext(
     }
 
 
+async def _tietu_title_skill(db: AsyncSession, owner: str) -> tuple[str, str]:
+    """激活「起标题」技能，返回 (技能名, 正文)；不可用时返回 ("", "")。
+
+    走 skill_svc.activate 而不是直接查表：启用状态、解析状态、使用次数都沿用
+    技能系统既有语义，技能页能看到这个技能确实被排版链路调用了。
+    起标题只是增强项——找不到 / 停用 / 报错一律静默回落默认规则，绝不阻断排版。
+    """
+    name = (settings.GZH_TIETU_TITLE_SKILL or "").strip()
+    if not name or db is None:
+        return "", ""
+    try:
+        res = await skill_svc.activate(db, owner or "default", name)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("贴图标题技能 `%s` 激活失败，回落默认标题规则: %s", name, exc)
+        return "", ""
+    if not res.get("ok"):
+        logger.info(
+            "贴图标题技能 `%s` 不可用（%s），回落默认标题规则", name, res.get("error")
+        )
+        return "", ""
+    body = (res.get("instructions") or "").strip()[:_TIETU_TITLE_SKILL_BODY_MAX]
+    return name, body
+
+
+def _tietu_system_prompt(base: str, skill_name: str, skill_body: str) -> str:
+    """把起标题技能的方法论拼进贴图排版 system 指令，并覆盖掉不适配的部分。
+
+    技能是给「对话里让人挑标题」写的（典型如「一次给 5 个候选 + 每个说明理由」），
+    而排版链路只要一行能直接用的首图标题。所以注入后必须追加覆盖规则，
+    否则模型真会把候选列表写进 layouts.gzh.text，整篇贴图文案就废了。
+    """
+    if not skill_body:
+        return base
+    return (
+        base
+        + f"\n\n【首图标题方法论（来自技能 {skill_name}，必须遵守）】\n"
+        + skill_body
+        + "\n\n【本场景覆盖规则（优先级高于上面的技能说明）】\n"
+        "1. 技能若要求给多个候选或逐个说明理由，改为：在心里按其方法比较几个候选，"
+        "只把最好的那一个写成第一行；不要输出候选列表、编号、理由或任何解释。\n"
+        "2. 第一行长度以「不超过 20 字」为准（它是首图上的大字，放不下更多）；"
+        "与技能里的字数建议冲突时取更短的那个。\n"
+        "3. 标题必须和正文事实一致：不夸大、不虚构、不做震惊体（微信对震惊体限流）。\n"
+        "4. 第一行之后仍按上面「正文 100-400 字、3-5 个 emoji 短点、段间空行」输出；"
+        "整段只输出纯文本，不要 Markdown 符号、不要堆话题标签。"
+    )
+
+
 async def _layout_gzh_tietu(db: AsyncSession, content: Content) -> dict[str, Any]:
     """公众号「贴图」不做 HTML 排版，只做文本规整（首图标题 + 分点 emoji + 标签归位）。
 
     贴图是图片消息形态：3-9 张图 + 一段纯短文案，发布端粘的是文本而非富文本。
     规整口径与小红书接近但有公众号差异：微信没有 #话题# 的强聚合文化，
     标签可有可无（0-1 个），不学小红书那样结尾堆一排。
+
+    首图标题这行同时也是推 newspic 草稿时的 title，所以按当前 owner 的
+    「起标题」技能（默认 wechat-hot-title）来写，让标题更抓眼；技能不可用
+    就回落默认规则。技能正文只注入这一次排版调用，不额外增加模型调用。
     """
     llm = get_llm()
+    base_system = (
+        "你是公众号贴图文案排版助手。把下面的 Markdown 整理成可直接粘贴到"
+        "公众号「图片」消息里的纯文本：第一行是首图标题，不超过 20 字、"
+        "前 8 个字必须出钩子；正文 100-400 字只讲一个点，分 3-5 个短点、"
+        "每点用 emoji 开头、段间空行，口语第一人称。"
+        "不要输出 Markdown 语法符号（#、*、>），不要堆 #话题# 标签"
+        "（最多 1 个，不放也行），不要输出任何解释说明，只输出整理后的纯文本。"
+    )
+    owner = content.owner or "default"
+    title_skill_name, title_skill_body = await _tietu_title_skill(db, owner)
+    system = _tietu_system_prompt(base_system, title_skill_name, title_skill_body)
+    logger.info(
+        "贴图排版首图标题技能: %s (owner=%s)",
+        title_skill_name or "未启用，走默认规则", owner,
+    )
     messages = [
-        {
-            "role": "system",
-            "content": (
-                "你是公众号贴图文案排版助手。把下面的 Markdown 整理成可直接粘贴到"
-                "公众号「图片」消息里的纯文本：第一行是首图标题，不超过 20 字、"
-                "前 8 个字必须出钩子；正文 100-400 字只讲一个点，分 3-5 个短点、"
-                "每点用 emoji 开头、段间空行，口语第一人称。"
-                "不要输出 Markdown 语法符号（#、*、>），不要堆 #话题# 标签"
-                "（最多 1 个，不放也行），不要输出任何解释说明，只输出整理后的纯文本。"
-            ),
-        },
+        {"role": "system", "content": system},
         {"role": "user", "content": content.body or ""},
     ]
     result = await llm.chat(
@@ -663,7 +725,14 @@ async def _layout_gzh_tietu(db: AsyncSession, content: Content) -> dict[str, Any
 
     now = int(time.time())
     layouts = dict(content.layouts or {})
-    layouts["gzh"] = {"text": text, "theme": "tietu", "updated_at": now}
+    layouts["gzh"] = {
+        "text": text,
+        "theme": "tietu",
+        "updated_at": now,
+        # 记一笔本次标题是按哪个技能起的，方便回溯；空串=技能不可用、走默认规则。
+        # 前端只读 layouts.gzh.text，多一个字段不影响。
+        "title_skill": title_skill_name,
+    }
     content.layouts = layouts
     content.layout_status = "ready"
     content.updated_at = now

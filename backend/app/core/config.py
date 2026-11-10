@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     APP_NAME: str = "内容运营工作台"
     # 版本号：全系统唯一来源。前端从 /health 读它展示，并据它判断「是否升过级」
     # 来弹「新功能」提醒。改版本请同步 frontend/package.json（仅作人工对照）。
-    APP_VERSION: str = "1.10.10"
+    APP_VERSION: str = "1.10.11"
     APP_ENV: Literal["dev", "prod"] = "dev"
     DEBUG: bool = True
     API_PREFIX: str = "/api"
@@ -303,6 +303,13 @@ class Settings(BaseSettings):
     SKILL_ZIP_MAX_FILES: int = 30
     SKILL_ZIP_FILE_MAX: int = 200_000
     SKILL_ZIP_TOTAL_MAX: int = 1_000_000
+
+    # 公众号贴图「一键排版」时用来起首图标题的技能名。
+    # 按 owner 走 services/skill.activate 激活，把技能正文当作标题方法论注入
+    # 排版提示词；技能不存在 / 停用 / 解析失败 / 报错时静默回落原有标题规则，
+    # 绝不因为「起标题」这个增强项让排版失败。留空则整个能力关闭。
+    # 默认指向用户已上传的 wechat-hot-title（用同名上传即可覆盖方法论）。
+    GZH_TIETU_TITLE_SKILL: str = "wechat-hot-title"
 
     # ---------- 知乎数据开放平台（热点灵感的数据源） ----------
     # 在 https://developer.zhihu.com/profile 申请。鉴权是 Bearer + 秒级时间戳
