@@ -35,6 +35,7 @@ import { useAuthStore } from '@/stores/auth'
 import ActionBtn from '@/components/ActionBtn.vue'
 import IconTextBtn from '@/components/IconTextBtn.vue'
 import HotInspiration from '@/components/HotInspiration.vue'
+import { buildInspirePrompt, buildQuestionPrompt } from '@/utils/inspirePrompt'
 import { usePermGate } from '@/composables/usePermGate'
 import { estimateUsage } from '@/api/usage'
 import { saveToQueue, fetchSavedMap } from '@/api/queue'
@@ -667,7 +668,7 @@ function useRecommendedQuestion(q: ZhihuQuestion) {
     zhihuSub.value = 'answer'
   }
   chat.zhihuQuestion = q.url
-  input.value = `回答知乎问题「${q.title}」：就当自己真被问到了，用平时聊天的口气说实话。从你自己的经历和感受聊起——当时怎么选的、踩过什么坑、现在回头看值不值，别端着也别跟谁比优劣。结论可以放开头，300 字左右，像写给一个正纠结的朋友，别写成标准答案。`
+  input.value = buildQuestionPrompt(q.title)
   inspireShow.value = false
   void nextTick(() => {
     document.querySelector<HTMLTextAreaElement>('.composer textarea')?.focus()
@@ -711,47 +712,25 @@ async function onRefreshHot() {
 }
 
 /**
- * 「以此选题」：按当前平台拼一句**能自洽的提问**填进输入框。
+ * 「以此选题」：把灵感本身的背景和当前创作场景拼成一句像人会说的话。
  *
- * 两个刻意的选择：
+ * 句式与「场景化 / 去机器味」的规则都在 utils/inspirePrompt.ts，这里只把当前
+ * 平台的 ref 传过去。两个刻意的选择保持不变：
  *   - 不自动发送：热点只是起点，用户看完还能改，发了就改不了了；
- *   - 平台感知：与快捷指令同一套口径，切了小红书就不能问出公众号句式。
+ *   - 平台感知：切了小红书就不能问出公众号句式。
  */
-function topicPrompt(title: string, source: 'zhihu' | 'weibo' = 'zhihu'): string {
-  const t = `「${title}」`
-  // 来源词：知乎热榜 / 微博热搜，其余句式不变
-  const srcWord = source === 'weibo' ? '微博热搜话题' : '知乎热榜话题'
-  if (scene.value === 'gzh') {
-    if (gzhSub.value === 'tietu')
-      return `${srcWord}${t}适合做成贴图，帮我写一条 100 字左右的短文案，再配 3 个有画面感的首图标题`
-    return `围绕${srcWord}${t}写一篇公众号文章，先给我 3 个不一样的切入角度，挑一个你最想写的`
-  }
-  if (scene.value === 'xiaohongshu')
-    return `${srcWord}${t}很适合发小红书，帮我写一篇像真人分享的观点笔记，标题要让人想点进来`
-  if (scene.value === 'douyin')
-    return `把${srcWord}${t}做成一条 60 秒口播，开头 3 秒就得把人留住，说话像平时聊天别念稿`
-  if (scene.value === 'zhihu') {
-    if (zhihuSub.value === 'article')
-      return `就${srcWord}${t}写一篇知乎专栏，得是你自己真的想通的，最好还能给别人一套能照做的法子`
-    if (zhihuSub.value === 'idea')
-      return `就${srcWord}${t}写一条知乎想法，只说一个你刚注意到的细节，100 字上下就行`
-    return `以${srcWord}${t}为背景，写个回答：就当自己真被问到了，用聊天的口气说实话，从你自己的经历和感受聊起，别端着也别比优劣，300 字左右，像写给一个正纠结的朋友。`
-  }
-  if (scene.value === 'toutiao') {
-    if (toutiaoSub.value === 'weitoutiao')
-      return `就${srcWord}${t}写一条微头条，没标题，前三行就把话说到位，像跟陌生人唠一句`
-    return `就${srcWord}${t}写一篇头条图文，得有个能留住人的标题和开头，写点实在的，别空谈`
-  }
-  if (scene.value === 'baijiahao') {
-    if (baijiahaoSub.value === 'dongtai')
-      return `就${srcWord}${t}写一条百家号动态，一个观点配张图，随手发，重在真实`
-    return `就${srcWord}${t}写一篇百家号长文，关键词往前放，让人搜得到、读得完`
-  }
-  return `我想拿${srcWord}${t}写点东西，先帮我想几个能写的切入角度，再说说各自更适合发哪个平台`
+function topicPrompt(t: InspireItem, source: 'zhihu' | 'weibo' = 'zhihu'): string {
+  return buildInspirePrompt(t, source, {
+    platform: scene.value,
+    gzhSub: gzhSub.value,
+    zhihuSub: zhihuSub.value,
+    toutiaoSub: toutiaoSub.value,
+    baijiahaoSub: baijiahaoSub.value,
+  })
 }
 
 function useHotTopic(t: InspireItem, source: 'zhihu' | 'weibo' = 'zhihu') {
-  input.value = topicPrompt(t.title, source)
+  input.value = topicPrompt(t, source)
   inspireShow.value = false
   // 聚焦输入框：抽屉/卡片点完，光标就该在用户要改的地方
   void nextTick(() => {
