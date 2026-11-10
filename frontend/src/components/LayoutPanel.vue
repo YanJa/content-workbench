@@ -211,6 +211,21 @@ const hasChanges = computed(() => dirty.value || plainDirty.value)
 const isPlaintext = computed(() => isTietu.value || isPlaintextPlatform.value)
 
 /**
+ * 配图面板只给公众号两类（图文 / 贴图）显示。
+ *
+ * 发布链路里只有公众号有草稿箱 API：知乎只给发布页链接，小红书 / 抖音 /
+ * 头条 / 百家号都是「复制文本带走」。配好的图在这些平台根本带不过去，
+ * 留着入口只会让人误以为图会跟着稿子一起发布，属于半成品。
+ *
+ * 贴图虽没有草稿箱接口，但图片消息本身就是「图 + 短文案」，配图是内容主体，
+ * 所以按 platform === 'gzh' 一并保留（gzh 只有 article / tietu 两个子形态）。
+ *
+ * 只收起 UI 入口，不动 content.images：其它平台历史内容里已配过的图仍在库里，
+ * 将来要恢复显示或做「打包下载」不用重做数据。
+ */
+const showImagePanel = computed(() => local.value?.platform === 'gzh')
+
+/**
  * 已发布回看用的 AI 痕迹检测快照：落库在 Content.meta['aigc_trace']，按检测对象
  * 各存一份（layout=排版产物 / body=源文）。发布看的是排版产物那份，所以优先取
  * layout，没有再回落 body。没有快照（发布前没做过检测）就返回 null —— 对应
@@ -461,7 +476,9 @@ async function onLayout() {
       // 按内容自己的平台传：知乎走语义 HTML，头条/百家号走纯文本规整，
       // 其余（含公众号图文）走富文本排版。传错会把头条当公众号排一版 HTML。
       (local.value.platform as 'gzh' | 'xiaohongshu' | 'zhihu' | 'toutiao' | 'baijiahao') || 'gzh',
-      autoCover.value,
+      // 非公众号类型不生成封面：产物是纯文本/复制带走，封面用不上，
+      // 白跑一次无头浏览器截图没意义（开关已隐藏，这里再兜一层）
+      showImagePanel.value && autoCover.value,
       authorName.value.trim(),
       authorIntro.value.trim(),
       accountId.value,
@@ -1027,7 +1044,7 @@ onBeforeUnmount(() => {
           </IconTextBtn>
           <div v-if="layoutGate.reason.value" class="gate-tip">⚠ {{ layoutGate.reason.value }}</div>
           <NCheckbox
-            v-if="coverReady && !isZhihu && !isPlaintext"
+            v-if="showImagePanel && coverReady && !isZhihu && !isPlaintext"
             v-model:checked="autoCover"
             size="small"
             :disabled="layouting"
@@ -1265,8 +1282,10 @@ onBeforeUnmount(() => {
             >
               重置
             </IconTextBtn>
+            <!-- 与配图面板同一个门控：非公众号类型不提供插图入口，
+                 否则会出现「配图面板没了，却还能往 HTML 里插图」的割裂 -->
             <IconTextBtn
-              v-if="!isReadonly"
+              v-if="!isReadonly && showImagePanel"
               :name="insertMode ? 'check' : 'plus'"
               size="tiny"
               :type="insertMode ? 'primary' : 'default'"
@@ -1354,20 +1373,22 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <NDivider style="margin: 14px 0 8px">配图</NDivider>
-      <ImageManager
-        :content-id="local.id"
-        :images="local.images || []"
-        :gen-ready="genReady"
-        :cover-ready="coverReady"
-        :cover-styles="coverStyles"
-        :cover-default-style="coverDefaultStyle"
-        :cover-default-tag="coverDefaultTag"
-        :body="local.body || ''"
-        :theme="theme"
-        :readonly="isReadonly"
-        @changed="onImagesChanged"
-      />
+      <template v-if="showImagePanel">
+        <NDivider style="margin: 14px 0 8px">配图</NDivider>
+        <ImageManager
+          :content-id="local.id"
+          :images="local.images || []"
+          :gen-ready="genReady"
+          :cover-ready="coverReady"
+          :cover-styles="coverStyles"
+          :cover-default-style="coverDefaultStyle"
+          :cover-default-tag="coverDefaultTag"
+          :body="local.body || ''"
+          :theme="theme"
+          :readonly="isReadonly"
+          @changed="onImagesChanged"
+        />
+      </template>
     </div>
     <NEmpty v-else description="未选择内容" />
   </NModal>
