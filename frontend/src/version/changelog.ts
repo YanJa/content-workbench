@@ -22,6 +22,17 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '1.10.10',
+    date: '2026-11-10',
+    title: '新增：公众号贴图也能推草稿箱',
+    highlights: [
+      '公众号「贴图」（图片消息）现在可直接推到微信草稿箱：按官方 article_type=newspic 组装载荷，配图逐张上传为永久素材（最多 20 张、首图即封面），文案首行自动作为首图标题，正文纯文本不带 HTML。',
+      '图文消息继续走原来的 HTML + 封面链路；同一任务二次推送仍是原地更新草稿、草稿失效自动退回新建，贴图同样适用。',
+      '按微信官方文档纠正 draft/update 的 articles 形态（应为对象而非数组），并修正上传图片的 MIME 声明：jpg / webp 不再被当成 png 提交。',
+      '贴图推送按钮不再被「纯文本平台」门控误藏；按钮要求「已有文案 + 至少 1 张图」，缺什么直接给提示。',
+    ],
+  },
+  {
     version: '1.10.9',
     date: '2026-11-09',
     title: '新增：按文章内容采集配图（受控采集）',

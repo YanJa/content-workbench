@@ -445,24 +445,186 @@ async def save_content(
     return {"ok": True, "content_id": content_id, "message": "已保存为草稿（尚未入队）"}
 
 
+async def _push_newspic_draft(
+    *,
+    client,
+    source: str,
+    db,
+    ctx: dict,
+    title: str,
+    text: str,
+    digest: str,
+    content_id: str,
+    author: str,
+    need_open_comment: bool,
+):
+    """推送「图片消息 / 贴图」草稿（article_type=newspic）。
+
+    与图文消息的分野（微信 draft/add、draft/update 官方约束）：
+      - content 只能纯文本，不支持 HTML / 外链图 → 不做 transfer_inline_images、
+        不做关注卡二维码转存；
+      - image_info.image_list[].image_media_id 必须是**永久 MediaID**，逐张走
+        material/add_material（即 client.upload_thumb 的返回），最多 20 张；
+      - 首图即封面，没有 thumb_media_id；
+      - title 取贴图文案首行（首图标题，≤32 字），不是内容标题。
+    """
+    from pathlib import Path
+
+    from app.core.config import settings
+    from app.models.content import Content, QueueItem
+    from app.services.wechat import split_newspic_text
+
+    # 1) 文案：优先用前端传来的（可能是用户手改过、还没保存的那版），
+    #    否则回落库里的排版产物 layouts.gzh.text
+    raw_text = (text or "").strip()
+    content = None
+    if db is not None and content_id:
+        try:
+            content = await db.get(Content, content_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("贴图推送读取内容失败: %s", exc)
+    if not raw_text and content is not None:
+        layouts = content.layouts or {}
+        gzh = layouts.get("gzh") or {}
+        if isinstance(gzh, dict):
+            raw_text = (gzh.get("text") or "").strip()
+
+    news_title, body = split_newspic_text(raw_text, title)
+    if not news_title and not body:
+        return {
+            "ok": False,
+            "error": "贴图文案是空的",
+            "hint": "先点「一键排版」生成贴图文案（首行是首图标题）",
+        }
+
+    # 2) 图片：content.images 按顺序逐张上传为永久素材。
+    #    只取前 20 张（微信上限，wechat.build_article 里还会再截一次），
+    #    避免配了 50 张时白传 30 张。
+    images = list((content.images or []) if content is not None else [])
+    image_media_ids: list[str] = []
+    failed_images: list[dict[str, str]] = []
+    for img in images[:20]:
+        rel = (img.get("path") or "") if isinstance(img, dict) else ""
+        full = Path(settings.UPLOAD_DIR) / rel if rel else None
+        if full is None or not full.exists():
+            failed_images.append({"path": rel, "reason": "本地文件不存在"})
+            continue
+        try:
+            # upload_thumb 实际走 material/add_material?type=image，
+            # 返回的永久 media_id 正是 newspic 需要的 image_media_id
+            mid = await client.upload_thumb(str(full))
+            if mid:
+                image_media_ids.append(mid)
+            else:
+                failed_images.append({"path": rel, "reason": "微信未返回 media_id"})
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("贴图图片上传失败: path=%s err=%s", rel, exc)
+            failed_images.append({"path": rel, "reason": str(exc)})
+
+    if not image_media_ids:
+        return {
+            "ok": False,
+            "error": "贴图至少需要 1 张图片，且图片必须已存到本地",
+            "hint": "在下方「配图」里添加图片后再推送；图片消息首图即封面",
+            "failed_images": failed_images,
+        }
+
+    if content is not None and content.summary and not digest:
+        digest = (content.summary or "")[:120]
+
+    # 3) author：显式传了就用，否则回退系统「作者信息」设置（与图文链路一致）
+    from app.routers.settings import _get_setting
+
+    owner = ctx.get("owner", "default")
+    final_author = (author or "").strip()
+    if not final_author and db is not None:
+        try:
+            final_author = (await _get_setting(db, owner, "author_name") or "").strip()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("读取作者信息失败（贴图 author 留空）: %s", exc)
+
+    # 4) 同一任务再次推送 → 原地更新；草稿已失效（40007）→ 退回新建
+    existing_media_id = ""
+    if content_id and db is not None:
+        try:
+            from sqlalchemy import select
+
+            stmt = select(QueueItem).where(
+                QueueItem.owner == owner,
+                QueueItem.content_id == content_id,
+            )
+            for it in (await db.execute(stmt)).scalars().all():
+                if getattr(it, "wechat_media_id", ""):
+                    existing_media_id = it.wechat_media_id
+                    break
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("查询已有推送记录失败（按新建走）: %s", exc)
+
+    common = dict(
+        title=news_title,
+        html=body,
+        digest=digest,
+        author=final_author,
+        need_open_comment=need_open_comment,
+        article_type="newspic",
+        image_media_ids=image_media_ids,
+    )
+    if existing_media_id:
+        result = await client.update_draft(media_id=existing_media_id, **common)
+        if not result.get("ok") and result.get("errcode") == 40007:
+            result = await client.add_draft(**common)
+            if result.get("ok"):
+                result["replaced"] = False
+                result["note"] = "原草稿已不存在（可能已群发），已为你新建一篇贴图草稿"
+        else:
+            result["replaced"] = True
+    else:
+        result = await client.add_draft(**common)
+
+    result["article_type"] = "newspic"
+    result["image_count"] = len(image_media_ids)
+    if failed_images:
+        result["failed_images"] = failed_images
+        result["warning"] = f"有 {len(failed_images)} 张图未能上传，已跳过"
+    logger.info(
+        "推送贴图草稿: title=%s ok=%s 凭证来源=%s 图片=%d 失败=%d 替换=%s",
+        news_title, result.get("ok"), source, len(image_media_ids),
+        len(failed_images), bool(existing_media_id),
+    )
+    return result
+
+
 # ------------------------------------------------------------ 需确认的工具
 @tool(
     name="push_wechat_draft",
     description=(
-        "把公众号文章推送到微信公众号草稿箱。"
+        "把公众号文章（图文 news）或贴图（图片消息 newspic）推送到微信公众号草稿箱。"
         "注意：本操作会真实写入微信后台，必须经用户确认后才能执行。"
-        "仅支持公众号平台。"
+        "仅支持公众号平台。图文传 html + content_id（自动转存配图、首图作封面）；"
+        "贴图传 article_type=newspic + text（纯文案），图片从 content_id 对应内容的配图里取。"
     ),
     parameters={
         "type": "object",
         "properties": {
-            "title": {"type": "string", "description": "文章标题"},
-            "html": {"type": "string", "description": "公众号兼容的 HTML 正文（内联样式）"},
-            "digest": {"type": "string", "description": "摘要，120 字内"},
+            "title": {"type": "string", "description": "文章标题。贴图时作为兜底标题，优先用 text 首行的首图标题"},
+            "html": {
+                "type": "string",
+                "description": "公众号兼容的 HTML 正文（内联样式）。图文消息必填；贴图消息不要传",
+            },
+            "article_type": {
+                "type": "string",
+                "enum": ["news", "newspic"],
+                "description": "文章类型：news=图文消息（默认），newspic=图片消息/贴图",
+            },
+            "text": {
+                "type": "string",
+                "description": "贴图专用：纯文本文案，第一行为首图标题。留空则回落内容排版产物 layouts.gzh.text",
+            },
+            "digest": {"type": "string", "description": "摘要，120 字内（仅图文消息有效）"},
             "content_id": {
                 "type": "string",
-                "description": "内容 ID（可选）。带上会把正文里的本地配图转存到微信素材库，"
-                "并用首图作封面。不带则原样推送。",
+                "description": "内容 ID（可选但强烈建议）。图文：把正文里的本地配图转存到微信素材库并用首图作封面；"
+                "贴图：从该内容的配图里逐张上传为永久素材。不带则图文原样推送、贴图无图可推。",
             },
             "author": {
                 "type": "string",
@@ -477,31 +639,37 @@ async def save_content(
                 "description": "公众号账号 ID（可选）。留空则用默认公众号；一个都没配时回退 .env。",
             },
         },
-        "required": ["title", "html"],
+        "required": ["title"],
     },
     requires_confirm=True,
 )
 async def push_wechat_draft(
     title: str,
-    html: str,
+    html: str = "",
     digest: str = "",
     content_id: str = "",
     author: str = "",
     need_open_comment: bool = True,
     account_id: str = "",
+    article_type: str = "news",
+    text: str = "",
     ctx: dict | None = None,
 ):
-    """推送公众号草稿箱。
+    """推送公众号草稿箱（图文 news / 贴图 newspic）。
 
     真实实现需要的准备工作：
       1. AppID + AppSecret（公众平台 → 设置与开发 → 基本配置）
          —— 可在「系统状态」页添加公众号，无需改 .env；也兼容 .env 全局凭证
       2. 服务器出网 IP 加入公众号后台的 API IP 白名单（**填沙箱出网 IP，不是 SSH 隧道 IP**）
-      3. 正文里的外链图片必须先调 material/uploadimg 上传到微信素材库，
-         否则发布后图片会失效
+      3. 图文：正文里的外链图片必须先调 material/uploadimg 上传到微信素材库，
+         否则发布后图片会失效；贴图：图片必须走 material/add_material 拿永久 MediaID
 
-    带 content_id 时：自动把本地配图转存到微信 + 用首图做封面。
+    带 content_id 时：图文自动把本地配图转存到微信 + 用首图做封面；
+    贴图自动把配图逐张上传为永久素材（最多 20 张，首图即封面）。
     account_id 留空则用默认公众号；一个号都没配时回退 .env。
+
+    参数注入见 registry.execute：按函数签名过滤 arguments 并注入 ctx，
+    所以新增 article_type / text 只要前端 confirmTool 的 arguments 带上即可。
     """
     ctx = ctx or {}
     db = ctx.get("db")
@@ -513,6 +681,23 @@ async def push_wechat_draft(
             "error": "未配置微信凭证",
             "hint": "到「系统状态」页添加公众号，或在 .env 里填 WECHAT_APPID / WECHAT_SECRET",
         }
+
+    # 图片消息（贴图）走独立链路：纯文本 + 永久素材图片。
+    # HTML 转存、关注卡二维码转存、封面硬拦全是图文消息专属，对 newspic 都不适用
+    # （微信明确要求图片消息的 content 只支持纯文本，首图即封面）。
+    if article_type == "newspic":
+        return await _push_newspic_draft(
+            client=client,
+            source=source,
+            db=db,
+            ctx=ctx,
+            title=title,
+            text=text,
+            digest=digest,
+            content_id=content_id,
+            author=author,
+            need_open_comment=need_open_comment,
+        )
 
     # 带 content_id：处理图片（转存正文图 + 首图当封面）
     thumb_id = ""

@@ -5,8 +5,8 @@
     替代真人完成内容创作、发布」。因此本客户端**只做草稿箱写入**，
     不做自动群发。
 
-    草稿箱接口（draft/add）对个人订阅号同样开放，是官方接口，合规可用；
-    发布接口（freepublish）个人号已被回收，且自动发布本身违规。
+    草稿箱接口（draft/add、draft/update，支持 news 图文与 newspic 图片消息）
+    是官方接口，合规可用；发布接口（freepublish）自动发布本身违规。
 
     所以终态是：自动进草稿 → 人工核对 → 人工群发。
 """
@@ -127,6 +127,121 @@ def _replace_src_by_filename(
     return out, len(matches)
 
 
+# ---------------------------------------------------------------- 贴图（newspic）文案 / 载荷
+# 微信 draft/add、draft/update 的 article_type 分两类（2026-11 官方文档）：
+#   news    —— 图文消息：content 是 HTML 片段，thumb_media_id 必填（封面）
+#   newspic —— 图片消息（贴图）：content 只能是**纯文本**（不支持 HTML/外链图），
+#              image_info.image_list[].image_media_id 必填（永久素材 media_id），
+#              最多 20 张，首图即封面，不传 thumb_media_id
+_NEWPIC_MAX_IMAGES = 20
+_NEWPIC_TITLE_MAX = 32
+
+
+def _image_mime(name: str) -> str:
+    """按扩展名给图片 MIME：微信 add_material / uploadimg 会看声明的图片类型。
+
+    早先恒传 image/png，jpg/webp 文件字节虽对但声明类型不符，微信偶发
+    40005「invalid file type」。按真实扩展名给，少踩一个坑。
+    """
+    import mimetypes
+
+    return mimetypes.guess_type(name)[0] or "image/png"
+
+
+def clean_newspic_text(text: str) -> str:
+    """贴图正文：剥掉残留 Markdown 标记，保留换行与 emoji。
+
+    排版 prompt 已要求「不输出 Markdown 语法符号」，但用户会手改、旧数据也可能
+    带进 `# ` / `**` / 列表符号。newspic 的 content 是纯文本，微信不渲染这些
+    符号，留着就是一屏幕星号，所以在这里清一遍。
+    """
+    import re
+
+    if not text:
+        return ""
+    out = text.replace("\r\n", "\n").replace("\r", "\n")
+    # 行首列表 / 引用符号去掉，内容保留
+    out = re.sub(r"^[ \t]*[-*+>]+[ \t]+", "", out, flags=re.M)
+    # 强调与行内代码：**xx** / __xx__ / `xx` → xx
+    out = re.sub(r"\*\*(.+?)\*\*", r"\1", out)
+    out = re.sub(r"__(.+?)__", r"\1", out)
+    out = re.sub(r"`([^`]+)`", r"\1", out)
+    # 行首标题井号（历史数据里的「# 首图标题」写法）
+    out = re.sub(r"^[ \t]*#{1,6}[ \t]*", "", out, flags=re.M)
+    # [文字](url) → 文字：newspic 正文不支持外链，留 url 没意义
+    out = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", out)
+    # 3 行以上连续空行收成 1 个空行，别把正文撑成一屏空白
+    out = re.sub(r"\n{3,}", "\n\n", out)
+    return out.strip()
+
+
+def split_newspic_text(text: str, fallback_title: str = "") -> tuple[str, str]:
+    """把贴图文案拆成 (首图标题, 正文纯文本)。
+
+    排版产物 layouts.gzh.text 的**第一行就是首图标题**（_layout_gzh_tietu 的
+    prompt 明确要求不输出 Markdown 符号），其余是正文。兼容旧的 `# 标题` 写法
+    （提示词里的输出格式说明曾带 #，历史数据可能还有）。
+    """
+    cleaned = clean_newspic_text(text or "")
+    lines = cleaned.split("\n")
+    idx = next((i for i, ln in enumerate(lines) if ln.strip()), -1)
+    if idx < 0:
+        return (fallback_title or "").strip()[:_NEWPIC_TITLE_MAX], ""
+    title = lines[idx].strip()[:_NEWPIC_TITLE_MAX]
+    body_lines = [ln.rstrip() for ln in lines[idx + 1:]]
+    while body_lines and not body_lines[0].strip():
+        body_lines.pop(0)
+    while body_lines and not body_lines[-1].strip():
+        body_lines.pop()
+    return title, "\n".join(body_lines).strip()
+
+
+def build_article(
+    *,
+    article_type: str,
+    title: str,
+    content: str,
+    digest: str = "",
+    author: str = "",
+    need_open_comment: bool = True,
+    thumb_media_id: str = "",
+    image_media_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    """构造 draft/add、draft/update 共用的单篇 article 对象。
+
+    两类文章共用 title/author/digest/content 等字段，差异只在：
+      news    → thumb_media_id（封面）
+      newspic → article_type + image_info.image_list（贴图）
+    抽出来是为了 add / update 不会一个支持贴图、另一个忘了同步。
+    """
+    article: dict[str, Any] = {
+        "title": title,
+        "content": content,
+        "need_open_comment": 1 if need_open_comment else 0,
+        "only_fans_can_comment": 0,
+    }
+    if article_type == "newspic":
+        ids = [str(m).strip() for m in (image_media_ids or []) if str(m).strip()]
+        article["article_type"] = "newspic"
+        article["author"] = author or ""
+        article["image_info"] = {
+            "image_list": [{"image_media_id": mid} for mid in ids[:_NEWPIC_MAX_IMAGES]]
+        }
+        # 官方 add/update 的 newspic 示例只有上面这些字段：digest（摘要）、
+        # content_source_url（阅读原文）、thumb_media_id（封面）都是 news 专属。
+        # 图片消息首图即封面，多传 thumb_media_id 可能被判参数冲突，索性不带。
+    else:
+        article.update(
+            {
+                "author": author or "",
+                "digest": digest,
+                "content_source_url": "",
+                "thumb_media_id": thumb_media_id,
+            }
+        )
+    return article
+
+
 class WeChatClient:
     def __init__(self, appid: str | None = None, secret: str | None = None) -> None:
         # 不传则回退 .env（兼容老行为：只有一套全局凭证时的用法）
@@ -204,7 +319,7 @@ class WeChatClient:
         for i in range(total):
             try:
                 async with httpx.AsyncClient(**_client_kwargs(60)) as client:
-                    files = {"media": (name, data_bytes, "image/png")}
+                    files = {"media": (name, data_bytes, _image_mime(name))}
                     resp = await client.post(url, files=files)
                     data = resp.json()
                 break
@@ -233,7 +348,7 @@ class WeChatClient:
         for i in range(total):
             try:
                 async with httpx.AsyncClient(**_client_kwargs(60)) as client:
-                    files = {"media": (name, data_bytes, "image/png")}
+                    files = {"media": (name, data_bytes, _image_mime(name))}
                     resp = await client.post(url, files=files)
                     data = resp.json()
                 break
@@ -336,25 +451,34 @@ class WeChatClient:
         thumb_media_id: str = "",
         author: str = "",
         need_open_comment: bool = True,
+        article_type: str = "news",
+        image_media_ids: list[str] | None = None,
     ) -> dict[str, Any]:
-        """创建草稿。
+        """创建草稿（draft/add），支持图文 news 与贴图 newspic 两类。
 
-        html 必须是公众号兼容的内联样式片段（<section>…</section>），
-        即 gzh-design 排版引擎的产物。
-        thumb_media_id：封面图媒体 id（来自 upload_thumb）。
-        **微信要求每篇草稿必须有封面**：实测空串 / 省略该字段都返回
-        40007「invalid media_id」（2026-10-21 探测确认），没有“无封面草稿”
-        这种状态。所以这里显式拦截并给出可操作的提示，而不是把微信的
-        40007 原样抛给用户。
+        html / content：
+          - news    → 公众号兼容的内联样式 HTML 片段（gzh-design 产物）
+          - newspic → **纯文本**（贴图正文不支持 HTML / 外链图）
+        thumb_media_id：news 的封面永久素材 id（来自 upload_thumb）。
+          **图文消息必须有封面**：实测空串 / 省略都返回 40007「invalid media_id」
+          （2026-10-21 探测确认），所以显式拦截并给可操作提示，而不是把
+          微信的 40007 原样抛给用户。
+        image_media_ids：newspic 的图片永久素材 id 列表（≤20，首图即封面），
+          由上层把 content.images 逐张走 material/add_material 上传得到。
 
         need_open_comment：是否打开留言。微信默认 0（关闭），但内容号几乎
         都需要留言来承接互动，所以本平台**默认打开**（传 True → 1）。
-        传 False 时同时把 only_fans_can_comment 置 0（所有人可评论）——
-        关着留言却留着「仅粉丝可评论」没有意义，且会让后台状态看着矛盾。
         """
         if not self.configured:
             return {"ok": False, "error": "未配置 WECHAT_APPID / WECHAT_SECRET"}
-        if not thumb_media_id:
+        if article_type == "newspic":
+            if not [m for m in (image_media_ids or []) if str(m).strip()]:
+                return {
+                    "ok": False,
+                    "error": "贴图至少需要 1 张图片（图片消息没有封面字段，首图即封面）",
+                    "hint": "先在队列里点「加工排版」并在「配图」里添加图片后再推送",
+                }
+        elif not thumb_media_id:
             return {
                 "ok": False,
                 "error": "缺少封面图：微信要求每篇草稿必须有封面",
@@ -366,18 +490,19 @@ class WeChatClient:
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": str(exc)}
 
+        # add 的 articles 是**数组**（官方文档标 objarray），别和 update 的 object 搞混
         payload = {
             "articles": [
-                {
-                    "title": title,
-                    "author": author or "",
-                    "digest": digest,
-                    "content": html,
-                    "content_source_url": "",
-                    "thumb_media_id": thumb_media_id,  # 封面（永久素材 id），可为空
-                    "need_open_comment": 1 if need_open_comment else 0,
-                    "only_fans_can_comment": 0,
-                }
+                build_article(
+                    article_type=article_type,
+                    title=title,
+                    content=html,
+                    digest=digest,
+                    author=author,
+                    need_open_comment=need_open_comment,
+                    thumb_media_id=thumb_media_id,
+                    image_media_ids=image_media_ids,
+                )
             ]
         }
         url = f"{WECHAT_API}/cgi-bin/draft/add?access_token={token}"
@@ -433,11 +558,18 @@ class WeChatClient:
         thumb_media_id: str = "",
         author: str = "",
         need_open_comment: bool = True,
+        article_type: str = "news",
+        image_media_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         """原地更新草稿箱里已有的一篇（cgi-bin/draft/update）。
 
         用于「同一任务多次推送」：复用上一次推送得到的 media_id 替换内容，
         而不是再 add 一条，避免草稿箱堆积重复草稿。
+
+        **articles 是 object 不是数组**：官方文档 draft_update 的 Body.articles
+        标的是 Object Payload（示例 `"articles": { ... }`），和 draft/add 的
+        objarray 不同。旧实现沿用了数组形态，这里一并按官方纠正；news /
+        newspic 两种 article_type 都受支持。
 
         index=0 表示更新该草稿内的第 1 篇图文（本平台一篇草稿就是一篇图文）。
         若 media_id 已失效（被群发 / 后台删除 / 过期清理）→ 微信返回 40007，
@@ -447,7 +579,14 @@ class WeChatClient:
             return {"ok": False, "error": "未配置 WECHAT_APPID / WECHAT_SECRET"}
         if not media_id:
             return {"ok": False, "error": "缺少 media_id，无法原地更新"}
-        if not thumb_media_id:
+        if article_type == "newspic":
+            if not [m for m in (image_media_ids or []) if str(m).strip()]:
+                return {
+                    "ok": False,
+                    "error": "贴图至少需要 1 张图片（图片消息没有封面字段，首图即封面）",
+                    "hint": "先在队列里点「加工排版」并在「配图」里添加图片后再推送",
+                }
+        elif not thumb_media_id:
             return {
                 "ok": False,
                 "error": "缺少封面图：微信要求每篇草稿必须有封面",
@@ -462,18 +601,16 @@ class WeChatClient:
         payload = {
             "media_id": media_id,
             "index": 0,
-            "articles": [
-                {
-                    "title": title,
-                    "author": author or "",
-                    "digest": digest,
-                    "content": html,
-                    "content_source_url": "",
-                    "thumb_media_id": thumb_media_id,  # 封面（永久素材 id），可为空
-                    "need_open_comment": 1 if need_open_comment else 0,
-                    "only_fans_can_comment": 0,
-                }
-            ],
+            "articles": build_article(
+                article_type=article_type,
+                title=title,
+                content=html,
+                digest=digest,
+                author=author,
+                need_open_comment=need_open_comment,
+                thumb_media_id=thumb_media_id,
+                image_media_ids=image_media_ids,
+            ),
         }
         url = f"{WECHAT_API}/cgi-bin/draft/update?access_token={token}"
 

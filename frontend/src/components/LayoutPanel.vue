@@ -151,9 +151,12 @@ const followCardHint = computed(() => {
 const isZhihu = computed(() => local.value?.platform === 'zhihu')
 
 /**
- * 公众号「贴图」子形态：图片消息没有富文本、没有草稿箱接口，
- * 排版产物是 layouts.gzh.text 纯文本（首图标题 + emoji 分点），
- * 所以主题/话题标签/推送草稿箱/作者占位符这套图文链路全部不适用。
+ * 公众号「贴图」子形态：图片消息没有富文本，排版产物是 layouts.gzh.text
+ * 纯文本（首图标题 + emoji 分点），所以主题/话题标签/作者占位符这套
+ * 图文专属链路不适用。
+ *
+ * 但「推草稿箱」是适用的：微信 draft/add、draft/update 都支持
+ * article_type=newspic（图片消息），见 onPushDraft 里的分支。
  */
 const isTietu = computed(
   () => local.value?.platform === 'gzh' && (local.value?.sub_type ?? 'article') === 'tietu',
@@ -205,8 +208,11 @@ const hasPlainEdit = computed(
 const hasChanges = computed(() => dirty.value || plainDirty.value)
 /**
  * 「不适用公众号那套富文本链路」的总开关：贴图 / 头条 / 百家号都算。
- * 下面所有主题、封面、作者、草稿箱、话题标签的渲染条件统一用它，
+ * 主题、封面、作者占位符、话题标签的渲染条件统一用它，
  * 免得每加一个纯文本平台就要去改十处 v-if。
+ *
+ * 注意**推草稿箱不在内**：贴图虽然走纯文本，但微信 draft/add 支持
+ * article_type=newspic，能推「图片消息」草稿。那个按钮改用 canPushDraft 单独门控。
  */
 const isPlaintext = computed(() => isTietu.value || isPlaintextPlatform.value)
 
@@ -217,13 +223,30 @@ const isPlaintext = computed(() => isTietu.value || isPlaintextPlatform.value)
  * 头条 / 百家号都是「复制文本带走」。配好的图在这些平台根本带不过去，
  * 留着入口只会让人误以为图会跟着稿子一起发布，属于半成品。
  *
- * 贴图虽没有草稿箱接口，但图片消息本身就是「图 + 短文案」，配图是内容主体，
+ * 公众号图文用配图做正文插图和封面；贴图的图片消息本身就是「图 + 短文案」，
+ * 配图是内容主体（推 newspic 草稿时逐张上传为永久素材，首图即封面）。
  * 所以按 platform === 'gzh' 一并保留（gzh 只有 article / tietu 两个子形态）。
  *
  * 只收起 UI 入口，不动 content.images：其它平台历史内容里已配过的图仍在库里，
  * 将来要恢复显示或做「打包下载」不用重做数据。
  */
 const showImagePanel = computed(() => local.value?.platform === 'gzh')
+
+/**
+ * 推草稿箱按钮能否点。两类要求不同：
+ *  - 图文 news：必须有排版后的 HTML（还要有封面，后端会再拦一次）
+ *  - 贴图 newspic：必须有文案 + 至少 1 张图（图片消息首图即封面，没有封面字段）
+ */
+const tietuImages = computed(() => local.value?.images || [])
+const canPushDraft = computed(() =>
+  isTietu.value
+    ? !!plainDraft.value.trim() && tietuImages.value.length > 0
+    : hasHtml.value,
+)
+/** 推草稿按钮是否显示：公众号图文、公众号贴图；其余平台没有草稿箱 API */
+const canShowPushDraft = computed(
+  () => !isReadonly.value && (isTietu.value || (!isZhihu.value && !isPlaintext.value)),
+)
 
 /**
  * 已发布回看用的 AI 痕迹检测快照：落库在 Content.meta['aigc_trace']，按检测对象
@@ -599,10 +622,20 @@ async function onCopyRich() {
   message[ok ? 'success' : 'warning'](ok ? '已复制 HTML 源码' : '复制失败')
 }
 
-/** 推公众号草稿箱（用排版后的 body_html）。 */
+/** 推公众号草稿箱：图文传 body_html，贴图传纯文案 + article_type=newspic。 */
 async function onPushDraft() {
   if (!local.value) return
-  if (!html.value) {
+  const tietu = isTietu.value
+  if (tietu) {
+    if (!plainDraft.value.trim()) {
+      message.warning('先点「一键排版」生成贴图文案')
+      return
+    }
+    if (tietuImages.value.length === 0) {
+      message.warning('贴图至少需要 1 张图片，先在下方「配图」里添加')
+      return
+    }
+  } else if (!html.value) {
     message.warning('先点「一键排版」生成公众号正文')
     return
   }
@@ -612,17 +645,25 @@ async function onPushDraft() {
   }
   pushing.value = true
   try {
+    const args: Record<string, unknown> = {
+      title: local.value.title,
+      content_id: local.value.id,
+      author: authorName.value.trim(),
+      account_id: accountId.value,
+    }
+    if (tietu) {
+      // 图片消息：微信要求 content 为纯文本，图片由后端从 content.images
+      // 逐张上传为永久素材（首图即封面）。传的是当前显示版本，手改未保存也能推。
+      args.article_type = 'newspic'
+      args.text = plainDraft.value
+    } else {
+      args.html = html.value
+    }
     const res = await confirmTool({
       // 加工面板推送不来自任何对话，不传 conversation_id
       tool_call_id: `q_${local.value.id}`,
       tool_name: 'push_wechat_draft',
-      arguments: {
-        title: local.value.title,
-        html: html.value,
-        content_id: local.value.id,
-        author: authorName.value.trim(),
-        account_id: accountId.value,
-      },
+      arguments: args,
     })
     const r = res.result as { ok?: boolean; error?: string; message?: string }
     if (r?.ok) {
@@ -1064,7 +1105,7 @@ onBeforeUnmount(() => {
             痕迹体检
           </IconTextBtn>
         </template>
-        <template v-if="!isReadonly && !isZhihu && !isPlaintext">
+        <template v-if="canShowPushDraft">
           <NSelect
             v-if="wechatAccounts.length > 1"
             v-model:value="accountId"
@@ -1080,7 +1121,7 @@ onBeforeUnmount(() => {
             name="send"
             type="primary"
             ghost
-            :disabled="!hasHtml || layouting || pushGate.blocked.value"
+            :disabled="!canPushDraft || layouting || pushGate.blocked.value"
             :loading="pushing"
             @click="onPushDraft"
           >
@@ -1088,11 +1129,14 @@ onBeforeUnmount(() => {
               pushGate.blocked.value
                 ? '无法推送'
                 : pushGate.left.value === null
-                  ? '推公众号草稿箱'
-                  : `推公众号草稿箱（剩 ${pushGate.left.value}）`
+                  ? isTietu ? '推贴图草稿箱' : '推公众号草稿箱'
+                  : `${isTietu ? '推贴图' : '推公众号'}草稿箱（剩 ${pushGate.left.value}）`
             }}
           </IconTextBtn>
           <div v-if="pushGate.reason.value" class="gate-tip">⚠ {{ pushGate.reason.value }}</div>
+          <div v-if="isTietu && !canPushDraft" class="gate-tip">
+            ⚠ 贴图需先「一键排版」生成文案，并在下方「配图」里至少加 1 张图
+          </div>
         </template>
         <!-- 保存对任何平台都要有：知乎用户改完 Markdown 也得能存 -->
         <template v-if="!isReadonly">
