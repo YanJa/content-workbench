@@ -47,7 +47,9 @@ DEPLOY_SCRIPT ?= $(CURDIR)/../deploy/deploy.sh
 DEPLOY_IP := $(shell echo "$(DEPLOY_HOST)" | sed 's/.*@//')
 
 SSH := ssh -i $(SSH_KEY) $(SSH_OPTS) $(strip $(DEPLOY_HOST))
-SCP := scp -i $(SSH_KEY) $(SSH_OPTS)
+# 上传刻意不用 scp：与目标机短时两次建连（scp + ssh）容易在 KEX 阶段被重置
+# （实测 kex_exchange_identification: Connection reset by peer，ssh 却正常）。
+# sync-* 统一走「tar 走 stdin + 远端 sh -c 解包」的单连接方案，少一次握手。
 
 .PHONY: help init config _check \
         status health logs \
@@ -194,30 +196,16 @@ backups: _check ## 列出远端备份
 sync-backend: _check ## 只传后端代码
 	@echo "→ 本地语法预检 …"
 	@$(PY) -m compileall -q $(CURDIR)/backend/app
-	@echo "→ 打包后端代码 …"
-	@tar czf /tmp/cwb-backend.tgz -C $(CURDIR) \
+	@echo "→ 打包并同步后端代码（单连接）…"
+	@tar czf - -C $(CURDIR) \
 	    --exclude='__pycache__' --exclude='*.pyc' --exclude='.pytest_cache' \
-	    backend/app
-	@$(SCP) /tmp/cwb-backend.tgz $(DEPLOY_HOST):/tmp/
-	@printf '%s\n' \
-	  'set -e' \
-	  'rm -rf /tmp/cwb-backend-new && mkdir -p /tmp/cwb-backend-new' \
-	  'tar xzf /tmp/cwb-backend.tgz -C /tmp/cwb-backend-new' \
-	  'cp -r /tmp/cwb-backend-new/backend/app/. $(REMOTE_ROOT)/backend/app/' \
-	  'echo "✓ 后端代码已同步（.env 未改动，需 make restart 才生效）"' \
-	  | $(SSH) 'sudo bash -s'
+	    backend/app \
+	  | $(SSH) 'sudo sh -c "set -e; rm -rf /tmp/cwb-backend-new; mkdir -p /tmp/cwb-backend-new; tar xzf - -C /tmp/cwb-backend-new; cp -r /tmp/cwb-backend-new/backend/app/. $(REMOTE_ROOT)/backend/app/; echo ✓ 后端代码已同步（.env 未改动，需 make restart 才生效）"'
 
 sync-frontend: _check build ## 构建并传前端 dist
-	@echo "→ 打包前端产物 …"
-	@tar czf /tmp/cwb-dist.tgz -C $(CURDIR)/frontend/dist .
-	@$(SCP) /tmp/cwb-dist.tgz $(DEPLOY_HOST):/tmp/
-	@printf '%s\n' \
-	  'set -e' \
-	  'rm -rf /tmp/cwb-dist-new && mkdir -p /tmp/cwb-dist-new' \
-	  'tar xzf /tmp/cwb-dist.tgz -C /tmp/cwb-dist-new' \
-	  'cp -r /tmp/cwb-dist-new/. $(REMOTE_ROOT)/frontend/dist/' \
-	  'echo "✓ 前端产物已同步（静态文件无需重启服务）"' \
-	  | $(SSH) 'sudo bash -s'
+	@echo "→ 打包并同步前端产物（单连接）…"
+	@tar czf - -C $(CURDIR)/frontend/dist . \
+	  | $(SSH) 'sudo sh -c "set -e; rm -rf /tmp/cwb-dist-new; mkdir -p /tmp/cwb-dist-new; tar xzf - -C /tmp/cwb-dist-new; cp -r /tmp/cwb-dist-new/. $(REMOTE_ROOT)/frontend/dist/; echo ✓ 前端产物已同步（静态文件无需重启服务）"'
 
 sync: sync-backend sync-frontend ## 前后端一起传
 
