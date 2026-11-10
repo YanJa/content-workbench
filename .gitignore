@@ -17,6 +17,10 @@ data/
 .env
 backend/.env
 
+# Makefile 的本地部署配置：里面有真实服务器 IP / 登录用户 / 密钥路径，
+# 由 make init 生成，绝不进公开仓库（与「运营主体信息不入库」同一条约定）
+.env.deploy
+
 # 日志与系统文件
 *.log
 .DS_Store

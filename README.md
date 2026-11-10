@@ -82,10 +82,46 @@ npm 换源：`npm config set registry https://mirrors.tencent.com/npm/`
 不走容器，用 **uv + systemd + nginx**，完整步骤见 [deploy/README.md](deploy/README.md)。
 生产环境建议配置火山 TOS 对象存储（`STORAGE_BACKEND=s3`），图片直出云端不占服务器带宽。
 
+### 4. 常用运维命令（Makefile）
+
+项目根目录自带 `Makefile`，把上传代码、启停服务、备份这些重复动作收成短命令。
+第一次用先生成**本地**配置 —— 里面是服务器 IP，已被 `.gitignore` 忽略，不会进公开仓库：
+
+```bash
+make init      # 生成 .env.deploy，填 DEPLOY_HOST=cwb@你的服务器IP
+make config    # 确认配置生效
+make status    # 看两个服务是否活着
+make health    # 探活 8001 / 8090
+```
+
+| 场景 | 命令 |
+|---|---|
+| 看日志 | `make logs N=100`、`make logs SVC=miniapp-backend` |
+| 启停重启 | `make start` / `make stop` / `make restart`（`SVC=` 可切服务）、`make restart-all` |
+| 只传后端代码 | `make sync-backend`（**不覆盖服务器 `.env`**） |
+| 只传前端产物 | `make sync-frontend`（自动先构建） |
+| 前后端都传 | `make sync` |
+| 一键发布 | `make deploy` = 构建 → 远端备份 → 同步 → 重启 |
+| 备份 / 查备份 | `make backup` / `make backups` |
+| 登录服务器 | `make ssh` |
+| 小程序 Go 后端 | `make miniapp-build` → `make miniapp-deploy` |
+| 本地开发 | `make build` / `make type-check` / `make test` |
+
+所有联网命令都要求 `DEPLOY_HOST`，没配会直接给可执行提示，而不是甩一串 SSH 报错；
+也能临时指定 `make status DEPLOY_HOST=cwb@1.2.3.4`。完整列表跑 `make help`。
+
+两点注意：
+
+- `sync-backend` 是**增量覆盖**，只传 `backend/app`，不会删除服务器上多余的旧文件；
+  改了 `requirements.txt`、`.env.example` 或 systemd 单元，仍需按 [部署手册](deploy/README.md) 手动处理。
+- `miniapp-*` 目标依赖工作区里的 `deploy/` 与 `miniapp-backend/`（本仓库之外的兄弟目录），
+  路径可用 `DEPLOY_SCRIPT` / `MINIAPP_SRC` 覆盖；`deploy.sh` 固定以 `cwb` 用户登录。
+
 ## 目录结构
 
 ```
 content-workbench-pro/
+├── Makefile                # 上传 / 部署 / 启停快捷命令（make help）
 ├── backend/
 │   ├── app/
 │   │   ├── core/            # 配置、缓存（Redis/内存双实现）、RBAC、日志
@@ -140,6 +176,7 @@ content-workbench-pro/
 |---|---|
 | ICP 备案号 | `frontend/.env` 的 `VITE_ICP_BEIAN`，构建时注入（见 `frontend/src/utils/icp.ts`） |
 | 域名 / 服务器 IP | `frontend/.env` 的 `VITE_ALLOWED_HOSTS`、服务器上的 nginx 配置 |
+| 部署目标机 / SSH 密钥路径 | 本地 `.env.deploy`（`make init` 生成，被 `.gitignore` 忽略，`Makefile` 用） |
 | 密钥、API Key、JWT secret | `backend/.env`、`frontend/.env`（均被 `.gitignore` 忽略） |
 
 新增示例配置一律用占位值：`XICP备00000000号-1`、`your-domain.com`、`sk-xxx`。
