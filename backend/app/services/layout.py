@@ -686,7 +686,7 @@ def _tietu_system_prompt(base: str, skill_name: str, skill_body: str) -> str:
 async def _layout_gzh_tietu(db: AsyncSession, content: Content) -> dict[str, Any]:
     """公众号「贴图」不做 HTML 排版，只做文本规整（首图标题 + 分点 emoji + 标签归位）。
 
-    贴图是图片消息形态：3-9 张图 + 一段纯短文案，发布端粘的是文本而非富文本。
+    贴图是图片消息形态：5-6 张图 + 一段纯短文案，发布端粘的是文本而非富文本。
     规整口径与小红书接近但有公众号差异：微信没有 #话题# 的强聚合文化，
     标签可有可无（0-1 个），不学小红书那样结尾堆一排。
 

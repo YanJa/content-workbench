@@ -132,8 +132,13 @@ def _replace_src_by_filename(
 #   news    —— 图文消息：content 是 HTML 片段，thumb_media_id 必填（封面）
 #   newspic —— 图片消息（贴图）：content 只能是**纯文本**（不支持 HTML/外链图），
 #              image_info.image_list[].image_media_id 必填（永久素材 media_id），
-#              最多 20 张，首图即封面，不传 thumb_media_id
-_NEWPIC_MAX_IMAGES = 20
+#              接口最多 20 张，首图即封面，不传 thumb_media_id
+#
+# 产品口径：接口给到 20 张，但贴图铺太多会稀释信息、拖慢发布，统一收敛到
+# 5-6 张（硬上限 6）。这是**业务上限**，不是微信上限；推送链路也导入同一个
+# 常量，避免「载荷只截 6 张、却先上传 20 张」这种数字漂移。
+NEWPIC_MAX_IMAGES = 6
+_NEWPIC_MAX_IMAGES = NEWPIC_MAX_IMAGES  # 载荷截断层沿用内部名，值同源
 _NEWPIC_TITLE_MAX = 32
 
 

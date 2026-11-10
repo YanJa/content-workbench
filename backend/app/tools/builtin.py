@@ -464,7 +464,8 @@ async def _push_newspic_draft(
       - content 只能纯文本，不支持 HTML / 外链图 → 不做 transfer_inline_images、
         不做关注卡二维码转存；
       - image_info.image_list[].image_media_id 必须是**永久 MediaID**，逐张走
-        material/add_material（即 client.upload_thumb 的返回），最多 20 张；
+        material/add_material（即 client.upload_thumb 的返回），业务上限 6 张
+        （见 wechat.NEWPIC_MAX_IMAGES，微信接口本身允许 20 张）；
       - 首图即封面，没有 thumb_media_id；
       - title 取贴图文案首行（首图标题，≤32 字），不是内容标题。
     """
@@ -472,7 +473,7 @@ async def _push_newspic_draft(
 
     from app.core.config import settings
     from app.models.content import Content, QueueItem
-    from app.services.wechat import split_newspic_text
+    from app.services.wechat import NEWPIC_MAX_IMAGES, split_newspic_text
 
     # 1) 文案：优先用前端传来的（可能是用户手改过、还没保存的那版），
     #    否则回落库里的排版产物 layouts.gzh.text
@@ -498,12 +499,13 @@ async def _push_newspic_draft(
         }
 
     # 2) 图片：content.images 按顺序逐张上传为永久素材。
-    #    只取前 20 张（微信上限，wechat.build_article 里还会再截一次），
-    #    避免配了 50 张时白传 30 张。
+    #    贴图不宜铺太多图，产品口径 5-6 张、硬上限 6：只上传前 6 张，
+    #    超出的既不传微信也不报错，免得配了 20 张时白传一大半。
+    #    wechat.build_article 会按同一常量再截一次，双保险。
     images = list((content.images or []) if content is not None else [])
     image_media_ids: list[str] = []
     failed_images: list[dict[str, str]] = []
-    for img in images[:20]:
+    for img in images[:NEWPIC_MAX_IMAGES]:
         rel = (img.get("path") or "") if isinstance(img, dict) else ""
         full = Path(settings.UPLOAD_DIR) / rel if rel else None
         if full is None or not full.exists():
@@ -583,9 +585,18 @@ async def _push_newspic_draft(
 
     result["article_type"] = "newspic"
     result["image_count"] = len(image_media_ids)
+    result["total_images"] = len(images)
+    if len(images) > NEWPIC_MAX_IMAGES:
+        dropped = len(images) - NEWPIC_MAX_IMAGES
+        result["truncated_images"] = dropped
+        result["warning"] = (
+            f"贴图按 5-6 张的口径推送：共配了 {len(images)} 张，只用前 "
+            f"{NEWPIC_MAX_IMAGES} 张，其余 {dropped} 张未上传"
+        )
     if failed_images:
         result["failed_images"] = failed_images
-        result["warning"] = f"有 {len(failed_images)} 张图未能上传，已跳过"
+        extra = f"有 {len(failed_images)} 张图未能上传，已跳过"
+        result["warning"] = f"{result['warning']}；{extra}" if result.get("warning") else extra
     logger.info(
         "推送贴图草稿: title=%s ok=%s 凭证来源=%s 图片=%d 失败=%d 替换=%s",
         news_title, result.get("ok"), source, len(image_media_ids),
@@ -665,7 +676,7 @@ async def push_wechat_draft(
          否则发布后图片会失效；贴图：图片必须走 material/add_material 拿永久 MediaID
 
     带 content_id 时：图文自动把本地配图转存到微信 + 用首图做封面；
-    贴图自动把配图逐张上传为永久素材（最多 20 张，首图即封面）。
+    贴图自动把配图逐张上传为永久素材（5-6 张为宜，最多 6 张，首图即封面）。
     account_id 留空则用默认公众号；一个号都没配时回退 .env。
 
     参数注入见 registry.execute：按函数签名过滤 arguments 并注入 ctx，

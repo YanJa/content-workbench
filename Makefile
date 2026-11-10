@@ -137,8 +137,8 @@ config: ## 查看当前生效配置
 status: _check ## 查看两个服务运行状态
 	@$(SSH) 'printf "  %-20s " "$(SVC):"; sudo systemctl is-active $(SVC); printf "  %-20s " "$(MINI_SVC):"; sudo systemctl is-active $(MINI_SVC)'
 
-health: _check ## 探活两个健康接口
-	@$(SSH) 'printf "  [8001] "; curl -s --max-time 5 http://127.0.0.1:8001/api/health; echo; printf "  [8090] "; curl -s --max-time 5 http://127.0.0.1:8090/api/health; echo'
+health: _check ## 探活两个健康接口（后端重启约需 3 秒，带重试避免刚重启时空响应）
+	@$(SSH) 'printf "  [8001] "; curl -s --max-time 5 --retry 5 --retry-delay 1 --retry-connrefused http://127.0.0.1:8001/api/health; echo; printf "  [8090] "; curl -s --max-time 5 --retry 2 --retry-delay 1 --retry-connrefused http://127.0.0.1:8090/api/health; echo'
 
 logs: _check ## 看日志（SVC=... N=...）
 	@$(SSH) 'sudo journalctl -u $(SVC) -n $(N) --no-pager'

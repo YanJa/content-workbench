@@ -210,7 +210,7 @@ const CHECKLISTS: Record<string, { channel: string; path: string; items: { key: 
     items: [
       { key: 'cover', text: '封面图已做（3:4，首图带大字标题）' },
       { key: 'title', text: '标题 20 字内且含 emoji 或「｜」' },
-      { key: 'imgs', text: '配图 3-9 张已导出' },
+      { key: 'imgs', text: '配图 5-6 张已导出' },
       { key: 'tags', text: '话题标签已核对（含 3 个长尾词）' },
       { key: 'loc', text: '需要的话已挂位置 / 是否含商业报备' },
     ],
@@ -266,10 +266,10 @@ const CHECKLISTS: Record<string, { channel: string; path: string; items: { key: 
   // 发布链路是「图片 + 一段纯文本」，检查项跟图文文章完全不同。
   gzh_tietu: {
     channel: '公众号图片消息（手动发布）',
-    path: '复制文案 → 导出配图 3-9 张 → 到公众号后台发「图片」→ 回来标记已发',
+    path: '复制文案 → 导出配图 5-6 张 → 到公众号后台发「图片」→ 回来标记已发',
     items: [
       { key: 'title', text: '首图标题 ≤20 字，前 8 个字出钩子' },
-      { key: 'imgs', text: '配图 3-9 张已导出，首图信息量最大' },
+      { key: 'imgs', text: '配图 5-6 张已导出，首图信息量最大' },
       { key: 'len', text: '正文 100-400 字，只讲一个点' },
       { key: 'tone', text: '口语第一人称，没有「希望对你有帮助」式收尾' },
       { key: 'tags', text: '话题标签最多 1 个，没堆一排' },
@@ -849,7 +849,7 @@ async function onPushDraft(row: QueueItem) {
       ''
     const ok = await copyText(tietuText)
     message[ok ? 'success' : 'warning'](
-      ok ? '贴图文案已复制，配好 3-9 张图后去公众号后台发「图片」' : '复制失败，请到「加工排版」里手动复制',
+      ok ? '贴图文案已复制，配好 5-6 张图后去公众号后台发「图片」' : '复制失败，请到「加工排版」里手动复制',
     )
     return
   }

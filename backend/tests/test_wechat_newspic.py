@@ -2,7 +2,7 @@
 
 依据 2026-11 微信官方 draft/add、draft/update 文档：
   - draft/add   的 articles 是 **数组**；draft/update 的 articles 是 **对象**
-  - newspic：content 只支持纯文本，image_info.image_list 最多 20 张且必须是
+  - newspic：content 只支持纯文本，image_info.image_list 业务上限 6 张（接口 20 张）且必须是
     永久 MediaID，首图即封面，不传 thumb_media_id
   - news：content 是 HTML，thumb_media_id 必填（封面）
 
@@ -150,13 +150,16 @@ def test_add_draft_newspic_requires_image(monkeypatch):
     asyncio.run(_run())
 
 
-def test_add_draft_newspic_caps_20_images(monkeypatch):
+def test_add_draft_newspic_caps_6_images(monkeypatch):
+    """产品口径 5-6 张：载荷最多带 6 张（微信接口本身允许 20 张）"""
+
     async def _run():
         c = _client_with_fake_http(monkeypatch)
         await c.add_draft("标题", "正文", article_type="newspic",
                           image_media_ids=[f"M{i}" for i in range(25)])
         lst = _CaptureClient.bodies[-1]["articles"][0]["image_info"]["image_list"]
-        assert len(lst) == 20 and lst[0] == {"image_media_id": "M0"}
+        assert len(lst) == 6 and lst[0] == {"image_media_id": "M0"}
+        assert lst[-1] == {"image_media_id": "M5"}
 
     asyncio.run(_run())
 
@@ -343,7 +346,9 @@ def test_push_newspic_reuses_media_id(tmp_path, monkeypatch):
     asyncio.run(_run())
 
 
-def test_push_newspic_caps_uploads_at_20(tmp_path, monkeypatch):
+def test_push_newspic_caps_uploads_at_6(tmp_path, monkeypatch):
+    """配了 22 张也只上传前 6 张，并明确告诉用户截掉了几张"""
+
     async def _run():
         paths = []
         for i in range(22):
@@ -359,8 +364,10 @@ def test_push_newspic_caps_uploads_at_20(tmp_path, monkeypatch):
                 title="标题", article_type="newspic", text="首图\n\n正文",
                 content_id="c1", ctx={"db": s, "owner": "default"},
             )
-            assert res["ok"] is True and res["image_count"] == 20, res
-            assert client.upload_thumb.await_count == 20
+            assert res["ok"] is True and res["image_count"] == 6, res
+            assert client.upload_thumb.await_count == 6
+            assert res["total_images"] == 22 and res["truncated_images"] == 16
+            assert "只用前 6 张" in res["warning"]
         await engine.dispose()
 
     asyncio.run(_run())

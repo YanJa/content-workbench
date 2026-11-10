@@ -1419,6 +1419,12 @@ onBeforeUnmount(() => {
 
       <template v-if="showImagePanel">
         <NDivider style="margin: 14px 0 8px">配图</NDivider>
+        <div v-if="isTietu" class="tietu-img-tip">
+          贴图建议 <b>5-6 张</b>，最多 6 张；第 7 张起推送草稿时不会带上。
+          <span v-if="tietuImages.length > 6" class="over">
+            当前 {{ tietuImages.length }} 张，已超 {{ tietuImages.length - 6 }} 张
+          </span>
+        </div>
         <ImageManager
           :content-id="local.id"
           :images="local.images || []"
@@ -1545,6 +1551,21 @@ onBeforeUnmount(() => {
   font-size: 12px;
   line-height: 1.6;
   color: #d03050;
+}
+/* 贴图配图张数提示：只在贴图形态出现，别让它变成又一次「系统警告」 */
+.tietu-img-tip {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: #fff7ed;
+  color: #9a4a12;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.tietu-img-tip .over {
+  margin-left: 6px;
+  color: #d03050;
+  font-weight: 600;
 }
 .author-row {
   display: flex;

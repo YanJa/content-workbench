@@ -437,7 +437,7 @@ async function confirmAlt(img: ContentImage) {
         v-model:value="count"
         size="small"
         :min="1"
-        :max="4"
+        :max="6"
         style="width: 92px"
         :disabled="generating"
       />
